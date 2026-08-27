@@ -1,0 +1,70 @@
+# =============================================================================
+#  Homepage — fragment do wklejenia w services.yaml
+# =============================================================================
+#  Podmień:
+#     192.168.1.60  -> IP ESP z WLED
+#     malinka:8088  -> host:port kontenera wled-panel
+#
+#  Dwa kafelki, bo robią różne rzeczy:
+#   * "Pasek LED"  — widget customapi: pokazuje STAN (on/off, jasność, efekt).
+#                    Zapytanie leci z serwera Homepage, nie z przeglądarki.
+#   * "Sterowanie" — widget iframe z panelem: tu się KLIKA.
+#                    To zapytanie leci z przeglądarki, dlatego panel siedzi
+#                    za nginxem, który proxuje WLED-a (jeden origin, zero CORS).
+#
+#  Po edycji services.yaml Homepage przeładowuje config sam, ale gdyby nie:
+#     docker restart homepage
+# =============================================================================
+
+- Dom:
+    - Pasek LED:
+        icon: mdi-led-strip-variant
+        href: http://malinka:8088/
+        description: Salon — pasek RGB 12V na ESP8266
+        siteMonitor: http://192.168.1.60/json/info
+        widget:
+          type: customapi
+          url: http://192.168.1.60/json
+          refreshInterval: 5000
+          display: list
+          mappings:
+            # UWAGA: "on" MUSI być w cudzysłowie. Bez niego YAML zamienia je
+            # na wartość logiczną true i widget szuka pola o nazwie "true".
+            - field:
+                state: "on"
+              label: Stan
+              format: text
+              remap:
+                - value: true
+                  to: włączony
+                - value: false
+                  to: wyłączony
+            - field:
+                state: bri
+              label: Jasność
+              format: number
+              suffix: "/255"
+            - field:
+                info: name
+              label: Urządzenie
+              format: text
+            - field:
+                info: uptime
+              label: Uptime
+              format: duration
+
+    - Sterowanie LED:
+        icon: mdi-tune-variant
+        description: Włącz, przygaś, zmień kolor
+        widget:
+          type: iframe
+          name: led-panel
+          src: http://malinka:8088/
+          # Wysokość: panel ma ~330 px. Dopasuj klasami Tailwinda, jeśli
+          # w Twoim układzie kolumn wychodzi za ciasno albo z pustym marginesem.
+          classes: h-96 sm:h-96 md:h-96 lg:h-96 xl:h-96 2xl:h-96
+          allowScrolling: "no"
+          allowFullscreen: false
+          referrerPolicy: same-origin
+          loadingStrategy: lazy
+          refreshInterval: 0

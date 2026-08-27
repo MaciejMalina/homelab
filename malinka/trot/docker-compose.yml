@@ -1,0 +1,28 @@
+# =============================================================================
+#  MALINKA — serwis "trot" (appka produkcyjna tartaku dla wujka)
+# =============================================================================
+#  Różnice względem docker-compose.yml w repo trot/ (ten w repo mapuje
+#  "80:3000" — na malince port 80 jest już zajęty przez NPM/reverse proxy):
+#    - port hosta zmieniony na 3010 (wolny — sprawdź `ss -tlnp | grep 3010`
+#      zanim uruchomisz, na wypadek gdyby coś już go zajmowało)
+#    - nazwa kontenera jarvis_trot, żeby było widać w `docker ps` co to
+#    - restart: unless-stopped (jak reszta usług na malince)
+#    - wolumen na bazę SQLite jest już w oryginalnym compose — zostawiony
+#
+#  Uruchomienie (po skopiowaniu całego folderu trot/ na malinkę, patrz
+#  docs/JARVIS-trot-wdrozenie.md):
+#     cd ~/trot
+#     docker compose -f docker-compose.yml up -d --build
+#     docker stats jarvis_trot --no-stream    # ile RAM realnie zjada
+# =============================================================================
+services:
+  app:
+    build: .
+    container_name: jarvis_trot
+    ports:
+      - "3010:3000"
+    volumes:
+      - ./prisma:/app/prisma
+    environment:
+      - DATABASE_URL=file:/app/prisma/database.sqlite
+    restart: unless-stopped

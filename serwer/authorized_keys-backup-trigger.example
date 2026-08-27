@@ -1,0 +1,23 @@
+# =============================================================================
+#  SERWER — /home/bkptrigger/.ssh/authorized_keys
+# =============================================================================
+#  Jedna linia, bez łamania. Podmień <KLUCZ_PUBLICZNY_MALINKI> na zawartość
+#  klucza publicznego wygenerowanego na MALINCE poleceniem:
+#
+#     ssh-keygen -t ed25519 -N '' -C 'jarvis-server-backup-trigger malinka->serwer' \
+#                -f /home/macmal/.ssh/jarvis-server-backup-trigger
+#
+#  Uprawnienia po wklejeniu:
+#     sudo chown -R bkptrigger:bkptrigger /home/bkptrigger/.ssh
+#     sudo chmod 700 /home/bkptrigger/.ssh && sudo chmod 600 /home/bkptrigger/.ssh/authorized_keys
+#
+#  restrict = wyłącza WSZYSTKO (port/agent/X11 forwarding, pty, user-rc),
+#  a potem nic nie włączamy z powrotem poza jedną komendą.
+# =============================================================================
+
+restrict,command="/usr/local/bin/jarvis-server-backup-agent.sh" ssh-ed25519 <KLUCZ_PUBLICZNY_MALINKI> jarvis-server-backup-trigger malinka->serwer
+
+# Opcjonalnie zawęź jeszcze, z którego adresu klucz w ogóle działa
+# (podmień 192.168.1.x na IP malinki):
+#
+# restrict,from="192.168.1.x",command="/usr/local/bin/jarvis-server-backup-agent.sh" ssh-ed25519 <KLUCZ_PUBLICZNY_MALINKI> jarvis-server-backup-trigger

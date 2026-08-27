@@ -1,0 +1,218 @@
+<!DOCTYPE html>
+<html lang="pl">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Pasek LED</title>
+<style>
+  :root{
+    --bg:#f6f7f9; --panel:#ffffff; --line:#e2e5ea; --txt:#1c1f24; --dim:#6b7280;
+    --accent:#3b82f6; --off:#9ca3af; --on:#22c55e; --radius:10px;
+  }
+  @media (prefers-color-scheme: dark){
+    :root{ --bg:#14161a; --panel:#1c1f25; --line:#2b2f37; --txt:#e8eaed; --dim:#9aa2ae; }
+  }
+  *{box-sizing:border-box}
+  body{
+    margin:0; padding:10px; background:var(--bg); color:var(--txt);
+    font:14px/1.45 ui-sans-serif,system-ui,-apple-system,"Segoe UI",Roboto,sans-serif;
+  }
+  .karta{background:var(--panel);border:1px solid var(--line);border-radius:var(--radius);padding:12px}
+  .gora{display:flex;align-items:center;gap:10px;margin-bottom:12px}
+  .kropka{width:10px;height:10px;border-radius:50%;background:var(--off);flex:none;transition:.2s}
+  .kropka.on{background:var(--on);box-shadow:0 0 8px var(--on)}
+  .nazwa{font-weight:600;flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+  .stan{color:var(--dim);font-size:12px;font-variant-numeric:tabular-nums}
+
+  button{
+    font:inherit;color:var(--txt);background:var(--panel);border:1px solid var(--line);
+    border-radius:8px;padding:8px 10px;cursor:pointer;transition:.12s;
+  }
+  button:hover{border-color:var(--accent)}
+  button:active{transform:scale(.97)}
+  button[disabled]{opacity:.45;cursor:not-allowed}
+  .glowny{flex:1;font-weight:600}
+  .glowny.wl{background:var(--accent);border-color:var(--accent);color:#fff}
+
+  .rzad{display:flex;gap:8px;margin-bottom:10px}
+  .etyk{font-size:11px;color:var(--dim);text-transform:uppercase;letter-spacing:.05em;margin:0 0 5px}
+
+  input[type=range]{width:100%;accent-color:var(--accent);height:22px}
+
+  .kolory{display:grid;grid-template-columns:repeat(8,1fr);gap:6px}
+  .kolory button{padding:0;height:26px;border-radius:6px;border:1px solid var(--line)}
+  input[type=color]{
+    width:100%;height:26px;padding:0;border:1px solid var(--line);
+    border-radius:6px;background:none;cursor:pointer
+  }
+  .presety{display:grid;grid-template-columns:repeat(4,1fr);gap:6px}
+  .presety button{font-size:12px;padding:6px 0}
+
+  .blad{
+    display:none;margin-top:10px;padding:8px;border-radius:8px;font-size:12px;
+    background:#fee2e2;color:#991b1b;border:1px solid #fca5a5;
+  }
+  @media (prefers-color-scheme: dark){ .blad{background:#3b1213;color:#fca5a5;border-color:#7f2426} }
+  .blad.widoczny{display:block}
+  .stopka{margin-top:10px;text-align:right}
+  .stopka a{color:var(--dim);font-size:11px;text-decoration:none}
+  .stopka a:hover{color:var(--accent)}
+</style>
+</head>
+<body>
+<div class="karta">
+
+  <div class="gora">
+    <span class="kropka" id="kropka"></span>
+    <span class="nazwa" id="nazwa">Pasek LED</span>
+    <span class="stan" id="stan">łączę…</span>
+  </div>
+
+  <div class="rzad">
+    <button class="glowny" id="btnToggle">Włącz</button>
+    <button id="btnOff" title="Wyłącz">Wył.</button>
+  </div>
+
+  <p class="etyk">Jasność <span id="briTxt">—</span></p>
+  <input type="range" id="bri" min="1" max="255" value="128" disabled>
+
+  <p class="etyk" style="margin-top:12px">Kolor</p>
+  <div class="kolory">
+    <button style="background:#ffffff" data-rgb="255,255,255" title="Biały"></button>
+    <button style="background:#ffb46b" data-rgb="255,150,60"  title="Ciepły"></button>
+    <button style="background:#ff3b30" data-rgb="255,0,0"     title="Czerwony"></button>
+    <button style="background:#ff9500" data-rgb="255,120,0"   title="Pomarańczowy"></button>
+    <button style="background:#34c759" data-rgb="0,200,60"    title="Zielony"></button>
+    <button style="background:#0a84ff" data-rgb="0,90,255"    title="Niebieski"></button>
+    <button style="background:#af52de" data-rgb="150,50,220"  title="Fiolet"></button>
+    <button style="background:#ff2d95" data-rgb="255,20,140"  title="Róż"></button>
+  </div>
+  <div style="margin-top:6px"><input type="color" id="wybor" value="#ff9640"></div>
+
+  <p class="etyk" style="margin-top:12px">Presety</p>
+  <div class="presety">
+    <button data-ps="1">1</button>
+    <button data-ps="2">2</button>
+    <button data-ps="3">3</button>
+    <button data-ps="4">4</button>
+  </div>
+
+  <div class="blad" id="blad"></div>
+
+  <div class="stopka"><a href="/pelne/" target="_blank" rel="noopener">pełne UI WLED →</a></div>
+</div>
+
+<script>
+/* ---------------------------------------------------------------------------
+   Panel gada z WLED-em przez nginx pod /wled/ — ten sam origin co panel,
+   więc zwykły fetch działa bez CORS-a i bez trybu no-cors (czyli widzimy
+   odpowiedzi i możemy pokazać realny stan, a nie strzelać w ciemno).
+---------------------------------------------------------------------------- */
+const API = '/wled/json';
+const $ = id => document.getElementById(id);
+
+let stan = { on:false, bri:128 };
+let blokadaOdswiezania = 0;      // po kliknięciu nie nadpisuj UI starym stanem
+let odpytywanie = null;
+
+function pokazBlad(txt){
+  const b = $('blad');
+  if (!txt) { b.classList.remove('widoczny'); return; }
+  b.textContent = txt;
+  b.classList.add('widoczny');
+}
+
+function rysuj(){
+  $('kropka').classList.toggle('on', !!stan.on);
+  $('btnToggle').textContent = stan.on ? 'Wyłącz' : 'Włącz';
+  $('btnToggle').classList.toggle('wl', !!stan.on);
+  $('bri').value = stan.bri || 1;
+  $('bri').disabled = false;
+  const proc = Math.round((stan.bri || 0) / 255 * 100);
+  $('briTxt').textContent = proc + '%';
+  $('stan').textContent = stan.on ? proc + '%' : 'wyłączony';
+}
+
+async function pobierzStan(){
+  if (Date.now() < blokadaOdswiezania) return;
+  try{
+    const r = await fetch(API + '/state', {cache:'no-store'});
+    if(!r.ok) throw new Error('HTTP ' + r.status);
+    const s = await r.json();
+    stan.on = s.on; stan.bri = s.bri;
+    pokazBlad('');
+    rysuj();
+  }catch(e){
+    $('stan').textContent = 'brak łączności';
+    $('kropka').classList.remove('on');
+    pokazBlad('Nie mogę dobić się do WLED-a. Sprawdź, czy ESP jest w sieci i czy IP w nginx.conf się zgadza.');
+  }
+}
+
+async function wyslij(dane){
+  blokadaOdswiezania = Date.now() + 1200;
+  try{
+    const r = await fetch(API + '/state', {
+      method:'POST',
+      headers:{'Content-Type':'application/json'},
+      body: JSON.stringify(Object.assign({v:true}, dane))   // v:true = zwróć nowy stan
+    });
+    if(!r.ok) throw new Error('HTTP ' + r.status);
+    const s = await r.json();
+    if (s && typeof s.on !== 'undefined'){ stan.on = s.on; stan.bri = s.bri; }
+    pokazBlad('');
+    rysuj();
+  }catch(e){
+    pokazBlad('Polecenie nie doszło do WLED-a (' + e.message + ').');
+  }
+}
+
+/* --- zdarzenia ----------------------------------------------------------- */
+$('btnToggle').onclick = () => wyslij({on: !stan.on});
+$('btnOff').onclick    = () => wyslij({on: false});
+
+// suwak: reagujemy dopiero po puszczeniu, żeby nie zalać ESP setką POST-ów
+let briTimer = null;
+$('bri').oninput = e => {
+  $('briTxt').textContent = Math.round(e.target.value/255*100) + '%';
+  blokadaOdswiezania = Date.now() + 1500;
+  clearTimeout(briTimer);
+  briTimer = setTimeout(() => wyslij({on:true, bri: Number(e.target.value)}), 220);
+};
+
+document.querySelectorAll('[data-rgb]').forEach(b => {
+  b.onclick = () => {
+    const [r,g,bl] = b.dataset.rgb.split(',').map(Number);
+    wyslij({on:true, seg:[{col:[[r,g,bl]]}]});
+  };
+});
+
+$('wybor').oninput = e => {
+  const h = e.target.value;
+  wyslij({on:true, seg:[{col:[[
+    parseInt(h.substr(1,2),16),
+    parseInt(h.substr(3,2),16),
+    parseInt(h.substr(5,2),16)
+  ]]}]});
+};
+
+document.querySelectorAll('[data-ps]').forEach(b => {
+  b.onclick = () => wyslij({ps: Number(b.dataset.ps)});
+});
+
+/* --- nazwa urządzenia + start odpytywania -------------------------------- */
+fetch(API + '/info').then(r => r.json())
+  .then(i => { if(i && i.name) $('nazwa').textContent = i.name; })
+  .catch(()=>{});
+
+pobierzStan();
+odpytywanie = setInterval(pobierzStan, 5000);
+
+// Nie odpytuj, gdy kafelek jest niewidoczny — Homepage potrafi wisieć całą dobę
+document.addEventListener('visibilitychange', () => {
+  if (document.hidden){ clearInterval(odpytywanie); odpytywanie = null; }
+  else if (!odpytywanie){ pobierzStan(); odpytywanie = setInterval(pobierzStan, 5000); }
+});
+</script>
+</body>
+</html>

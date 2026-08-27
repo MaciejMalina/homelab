@@ -1,0 +1,14 @@
+[Unit]
+Description=JARVIS - tygodniowy obraz nosnika malinki
+After=network-online.target docker.service
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+ExecStart=/opt/jarvis/scripts/backup-malinka.sh image
+Nice=10
+IOSchedulingClass=idle
+TimeoutStartSec=4h
+
+[Install]
+WantedBy=multi-user.target

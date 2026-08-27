@@ -1,0 +1,14 @@
+[Unit]
+Description=JARVIS - tygodniowy obraz nosnika malinki
+
+[Timer]
+# Niedziela 03:40 — po codziennym rsyncu, żeby oba nie biły w sieć naraz.
+# UWAGA: na czas obrazu Docker na malince jest zatrzymany (AdGuard = DNS!).
+# Jeśli to przeszkadza, przenieś na godzinę, gdy nikt nie korzysta z sieci.
+OnCalendar=Sun *-*-* 03:40:00
+Persistent=true
+RandomizedDelaySec=10min
+AccuracySec=1min
+
+[Install]
+WantedBy=timers.target

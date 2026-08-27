@@ -1,0 +1,24 @@
+# =============================================================================
+#  MALINKA — /home/bkp/.ssh/authorized_keys
+# =============================================================================
+#  Jedna linia, bez łamania. Podmień <KLUCZ_PUBLICZNY_SERWERA> na zawartość
+#  /root/.ssh/jarvis_backup.pub wygenerowanego na SERWERZE poleceniem:
+#
+#     ssh-keygen -t ed25519 -N '' -C 'jarvis-backup serwer->malinka' \
+#                -f /root/.ssh/jarvis_backup
+#
+#  Uprawnienia po wklejeniu:
+#     sudo chown -R bkp:bkp /home/bkp/.ssh
+#     sudo chmod 700 /home/bkp/.ssh && sudo chmod 600 /home/bkp/.ssh/authorized_keys
+#
+#  restrict = wyłącza WSZYSTKO (port/agent/X11 forwarding, pty, user-rc),
+#  a potem nic nie włączamy z powrotem. Klucz staje się jednofunkcyjnym
+#  przyciskiem "oddaj dane", nie kluczem do systemu.
+# =============================================================================
+
+restrict,command="/usr/local/bin/jarvis-backup-agent.sh" ssh-ed25519 <KLUCZ_PUBLICZNY_SERWERA> jarvis-backup serwer->malinka
+
+# Opcjonalnie zawęź jeszcze, z którego adresu klucz w ogóle działa
+# (podmień 192.168.1.50 na IP serwera albo jego adres w tailnecie):
+#
+# restrict,from="192.168.1.50,100.64.0.0/10",command="/usr/local/bin/jarvis-backup-agent.sh" ssh-ed25519 <KLUCZ_PUBLICZNY_SERWERA> jarvis-backup

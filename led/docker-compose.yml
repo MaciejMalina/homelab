@@ -1,0 +1,38 @@
+# =============================================================================
+#  MALINKA — panel sterowania paskiem LED dla Homepage
+# =============================================================================
+#  Po co osobny kontener, skoro WLED ma własne UI?
+#  Bo przeglądarka blokowałaby zapytania z Homepage do WLED-a (inny origin,
+#  CORS). Ten nginx serwuje panel i JEDNOCZEŚNIE proxuje WLED-a pod /wled/ —
+#  wszystko leci z jednego origin, więc panel może i czytać stan, i zmieniać go.
+#  Efekt uboczny: WLED nie musi być wystawiony nigdzie poza LAN-em.
+#
+#  Katalog: /opt/jarvis/wled-panel/  (obok pozostałych stosów)
+#     docker compose up -d
+#     curl -s localhost:8088/wled/json/info   # test proxy
+# =============================================================================
+services:
+  wled-panel:
+    image: nginx:1.27-alpine          # przypięta wersja, nie :latest
+    container_name: wled-panel
+    restart: unless-stopped
+    ports:
+      - "8088:80"
+    volumes:
+      - ./wled-panel/index.html:/usr/share/nginx/html/index.html:ro
+      - ./wled-panel/nginx.conf:/etc/nginx/conf.d/default.conf:ro
+    environment:
+      - TZ=Europe/Warsaw
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://localhost/health"]
+      interval: 60s
+      timeout: 5s
+      retries: 3
+      start_period: 10s
+    labels:
+      # Homepage sam wykryje usługę, jeśli masz włączone docker discovery
+      - homepage.group=Dom
+      - homepage.name=Pasek LED
+      - homepage.icon=mdi-led-strip-variant
+      - homepage.href=http://malinka:8088/
+      - homepage.description=Sterowanie paskiem RGB w salonie

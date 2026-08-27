@@ -1,0 +1,10 @@
+# Konfiguracja sops — szyfrowanie sekretów kluczem age.
+# Klucz PRYWATNY żyje TYLKO lokalnie (u Macieja, backup w menedżerze haseł),
+# NIGDY w tym repo: ~/.config/sops/age/keys.txt
+#
+# Żeby edytować zaszyfrowany plik:
+#   sops secrets/<plik>.enc.yaml
+# (otwiera w $EDITOR, po zapisaniu automatycznie szyfruje z powrotem)
+creation_rules:
+  - path_regex: secrets/.*\.enc\.(yaml|yml|json|env)$
+    age: age136mefa62uk3y8jcgcxaqtudq4wq0mv0pya4wayp9vp4c7c468q7qjy02wh

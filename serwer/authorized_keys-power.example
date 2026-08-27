@@ -1,0 +1,18 @@
+# =============================================================================
+#  SERWER — /home/jpower/.ssh/authorized_keys
+# =============================================================================
+#  Podmień <KLUCZ_PUBLICZNY_BOTA> na zawartość klucza publicznego, którego
+#  bot Discord dziś używa do logowania jako root@serwer (znajdziesz go tam,
+#  gdzie bot trzyma prywatny klucz — najpewniej zamontowany do kontenera
+#  bota na malince, np. wolumen z ~/.ssh/id_ed25519 czy podobnie).
+#
+#  Uprawnienia po wklejeniu:
+#     sudo chown -R jpower:jpower /home/jpower/.ssh
+#     sudo chmod 700 /home/jpower/.ssh && sudo chmod 600 /home/jpower/.ssh/authorized_keys
+# =============================================================================
+
+restrict,command="/usr/local/bin/jarvis-power-agent.sh" ssh-ed25519 <KLUCZ_PUBLICZNY_BOTA> jarvis-bot power-control
+
+# Opcjonalnie zawęź jeszcze, z którego adresu klucz działa (IP/tailnet malinki):
+#
+# restrict,from="192.168.1.X,100.64.0.0/10",command="/usr/local/bin/jarvis-power-agent.sh" ssh-ed25519 <KLUCZ_PUBLICZNY_BOTA> jarvis-bot

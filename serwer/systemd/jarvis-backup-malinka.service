@@ -1,0 +1,13 @@
+[Unit]
+Description=JARVIS - backup malinki (pull z Raspberry Pi)
+Documentation=file:///opt/jarvis/scripts/backup-malinka.sh
+After=network-online.target docker.service
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+ExecStart=/opt/jarvis/scripts/backup-malinka.sh daily
+Nice=10
+IOSchedulingClass=idle
+TimeoutStartSec=3h
+# Skrypt sam zakłada /etc/jarvis-no-autoshutdown i sprząta w trapie EXIT

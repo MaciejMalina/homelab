@@ -1,0 +1,6 @@
+# Nigdy nie commitować:
+*.DRAFT.yaml
+*.dec.yaml
+*.dec.env
+.env
+*.env.local

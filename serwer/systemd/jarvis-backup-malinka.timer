@@ -1,0 +1,15 @@
+[Unit]
+Description=JARVIS - codzienny backup malinki
+
+[Timer]
+# Serwer jest efemeryczny (budzony przez WoL z malinki), więc:
+#  - malinka budzi serwer ~21:45,
+#  - ten timer strzela 22:00,
+#  - Persistent=true dogania przebieg, jeśli serwer akurat spał o właściwej porze.
+OnCalendar=*-*-* 22:00:00
+Persistent=true
+RandomizedDelaySec=5min
+AccuracySec=1min
+
+[Install]
+WantedBy=timers.target
