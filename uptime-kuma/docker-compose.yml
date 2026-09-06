@@ -44,14 +44,14 @@ services:
       - /var/run/docker.sock:/var/run/docker.sock:ro
     networks:
       - kuma-internal
-    read_only: true
-    tmpfs:
-      # entrypoint obrazu ZAWSZE generuje haproxy.cfg na starcie z env-ów
-      # powyżej — przy read_only:true bez tego wpisu kontener wpada w crash
-      # loop ("Read-only file system"). /run na wszelki wypadek (pid/socket
-      # haproxy w czasie działania).
-      - /usr/local/etc/haproxy
-      - /run
+    # UWAGA (2026-09-06): próbowaliśmy read_only:true + tmpfs pod
+    # /usr/local/etc/haproxy, ale to tmpfs przykrywa też wbudowany w obraz
+    # haproxy.cfg.template, więc entrypoint i tak się wywala (sed: No such
+    # file or directory) — to podejście wymagałoby osobnego wolumenu
+    # wstępnie wypełnionego szablonem, co jest przesadą tutaj. Zostawiamy
+    # kontener zapisywalny; twarde ograniczenia (CONTAINERS/EVENTS/POST=0,
+    # brak wystawionych portów, izolowana sieć kuma-internal,
+    # no-new-privileges) i tak dają sensowny poziom bezpieczeństwa.
     security_opt:
       - no-new-privileges:true
 
