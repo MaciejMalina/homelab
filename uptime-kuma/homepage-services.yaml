@@ -1,0 +1,19 @@
+# =============================================================================
+#  Homepage — fragment do wklejenia w services.yaml
+# =============================================================================
+#  Prosty kafelek-link na start. Homepage ma też natywny widget "uptimekuma",
+#  ale wymaga publicznej Status Page (Kuma -> Status Pages -> New) i jej
+#  slugu — dorzuć to później, jak już postawisz pierwsze monitory i będziesz
+#  wiedział co ma na niej być widoczne. Wtedy zamień poniższy blok na:
+#
+#    widget:
+#      type: uptimekuma
+#      url: http://malinka:3001
+#      slug: <slug-strony-statusu>
+# =============================================================================
+
+- Dom:
+    - Uptime Kuma:
+        icon: mdi-heart-pulse
+        href: http://malinka:3001/
+        description: Monitoring usług JARVIS-a

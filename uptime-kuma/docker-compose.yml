@@ -1,0 +1,81 @@
+# =============================================================================
+#  MALINKA — Uptime Kuma (monitoring usług JARVIS-a)
+# =============================================================================
+#  Dlaczego na malince, nie na serwerze? Serwer jest efemeryczny (usypiany,
+#  budzony WoL) — Kuma stojąca na nim traciłaby połowę próbek i sama by
+#  znikała razem z tym, co ma monitorować. Malinka jest always-on.
+#
+#  Docker socket NIE jest podpięty do Kumy bezpośrednio — audyt (sekcja 3.6
+#  roadmapy) ostrzega, że pełny /var/run/docker.sock to w praktyce root na
+#  hoście. Zamiast tego: docker-socket-proxy z prawami TYLKO do odczytu listy
+#  i stanu kontenerów (CONTAINERS=1, EVENTS=1), zero zapisu (POST=0). Kuma
+#  łączy się z proxy po wewnętrznej sieci dockerowej, nie po hoście.
+#
+#  UWAGA: sprawdź na hub.docker.com aktualne, stabilne tagi obu obrazów przed
+#  `docker compose up` — te poniżej to wersje znane na dzień pisania tego
+#  pliku, mogły od tego czasu wyjść nowsze (przypinamy wersję świadomie, nie
+#  :latest, zgodnie z DOCK-PIN z audytu — ale trzeba ją czasem podnieść ręcznie).
+#
+#  Katalog: /opt/jarvis/uptime-kuma/
+#     docker compose up -d
+#
+#  Po starcie (jednorazowo, w UI Kumy pod http://malinka:3001/):
+#     1. Załóż konto admina (pierwsze uruchomienie pyta o to samo).
+#     2. Settings -> Docker Hosts -> Add Docker Host:
+#          Connection Type: TCP
+#          Docker Daemon: tcp://docker-socket-proxy:2375
+#        (Kuma NIE czyta tego z env — konfiguracja idzie tylko przez UI)
+#     3. Settings -> Notifications -> Add -> Discord -> wklej webhook
+#        (ten sam co backup, WKLEJ GO TYLKO TU W UI, nie na czacie/w pliku)
+#     4. Dodaj monitory: HTTP(s) dla AdGuard/NPM/n8n/Homepage/Ollama, Docker
+#        dla kontenerów, Push dla zadań cron (backup itd. — Kuma daje URL do
+#        pingnięcia z crona, dokładnie jak healthchecks.io, tylko self-hosted).
+# =============================================================================
+services:
+  docker-socket-proxy:
+    image: tecnativa/docker-socket-proxy:0.3.0
+    container_name: docker-socket-proxy
+    restart: unless-stopped
+    environment:
+      - CONTAINERS=1   # lista + inspect kontenerów (status, health) — jedyne co Kuma potrzebuje
+      - EVENTS=1       # zdarzenia start/stop w czasie rzeczywistym
+      - POST=0         # jawnie: zero zapisu, na wszelki wypadek gdyby default się kiedyś zmienił
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock:ro
+    networks:
+      - kuma-internal
+    read_only: true
+    security_opt:
+      - no-new-privileges:true
+
+  uptime-kuma:
+    image: louislam/uptime-kuma:1.23.16
+    container_name: uptime-kuma
+    restart: unless-stopped
+    ports:
+      - "3001:3001"   # sprawdź `sudo ss -ltnp | grep 3001` — jeśli zajęte, zmień oba wystąpienia
+    volumes:
+      - ./uptime-kuma-data:/app/data
+    environment:
+      - TZ=Europe/Warsaw
+    networks:
+      - kuma-internal
+    depends_on:
+      - docker-socket-proxy
+    healthcheck:
+      test: ["CMD", "node", "extra/healthcheck.js"]
+      interval: 60s
+      timeout: 10s
+      retries: 3
+      start_period: 30s
+    labels:
+      # Homepage sam wykryje usługę, jeśli masz włączone docker discovery
+      - homepage.group=Dom
+      - homepage.name=Uptime Kuma
+      - homepage.icon=mdi-heart-pulse
+      - homepage.href=http://malinka:3001/
+      - homepage.description=Monitoring usług JARVIS-a
+
+networks:
+  kuma-internal:
+    driver: bridge
