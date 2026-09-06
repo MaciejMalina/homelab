@@ -45,6 +45,13 @@ services:
     networks:
       - kuma-internal
     read_only: true
+    tmpfs:
+      # entrypoint obrazu ZAWSZE generuje haproxy.cfg na starcie z env-ów
+      # powyżej — przy read_only:true bez tego wpisu kontener wpada w crash
+      # loop ("Read-only file system"). /run na wszelki wypadek (pid/socket
+      # haproxy w czasie działania).
+      - /usr/local/etc/haproxy
+      - /run
     security_opt:
       - no-new-privileges:true
 
