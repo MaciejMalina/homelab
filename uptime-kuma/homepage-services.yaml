@@ -1,10 +1,15 @@
 # =============================================================================
 #  Homepage — fragment do wklejenia w services.yaml
 # =============================================================================
+#  UWAGA (2026-09-06): grupa "Dom" z pierwszej wersji tego pliku nie istniała
+#  w rzeczywistym ~/homepage/config/services.yaml Macieja — prawdziwe grupy
+#  to m.in. "Zarządzanie Infrastrukturą" (obok Portainera/OliveTin), tam
+#  wklej poniższy blok.
+#
 #  Prosty kafelek-link na start. Homepage ma też natywny widget "uptimekuma",
 #  ale wymaga publicznej Status Page (Kuma -> Status Pages -> New) i jej
-#  slugu — dorzuć to później, jak już postawisz pierwsze monitory i będziesz
-#  wiedział co ma na niej być widoczne. Wtedy zamień poniższy blok na:
+#  slugu — dorzuć to później, jak już będziesz wiedział co ma na niej być
+#  widoczne. Wtedy zamień poniższy blok na:
 #
 #    widget:
 #      type: uptimekuma
@@ -12,8 +17,7 @@
 #      slug: <slug-strony-statusu>
 # =============================================================================
 
-- Dom:
     - Uptime Kuma:
-        icon: mdi-heart-pulse
+        icon: uptime-kuma.png   # jeśli ikona się nie załaduje, zamień na: mdi-heart-pulse
         href: http://malinka:3001/
         description: Monitoring usług JARVIS-a
