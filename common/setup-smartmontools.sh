@@ -76,12 +76,28 @@ if [ -z "$WEBHOOK" ]; then
 fi
 
 echo "== Włączam i startuję smartd =="
-systemctl enable --now smartd
-systemctl restart smartd
+# (poprawione 2026-09-06) Nazwa jednostki systemd dla smartd różni się między
+# dystrybucjami/wersjami: bywa "smartd.service" albo "smartmontools.service"
+# (to drugie widziane na Raspberry Pi OS / Debian trixie). Wykryj co faktycznie
+# jest dostępne zamiast zakładać jedną nazwę na sztywno.
+SMARTD_UNIT=""
+for u in smartd smartmontools; do
+  if systemctl list-unit-files "${u}.service" 2>/dev/null | grep -q "^${u}\.service"; then
+    SMARTD_UNIT="$u"
+    break
+  fi
+done
+if [ -z "$SMARTD_UNIT" ]; then
+  echo "  [!] Nie znalazłem ani smartd.service, ani smartmontools.service — sprawdź ręcznie:"
+  echo "      systemctl list-unit-files | grep -i smart"
+  SMARTD_UNIT="smartd"   # zgadywanie, żeby reszta skryptu nie wywaliła się na pusty string
+fi
+systemctl enable --now "$SMARTD_UNIT"
+systemctl restart "$SMARTD_UNIT"
 
 echo
 echo "== GOTOWE =="
-systemctl is-active smartd
+systemctl is-active "$SMARTD_UNIT"
 echo "Test alertu (wyśle testową wiadomość na webhook, jeśli podany):"
 echo "  sudo smartctl -t short /dev/sdX   # ręczny test krótki, sprawdź wynik po ~2 min: smartctl -a /dev/sdX"
 echo
