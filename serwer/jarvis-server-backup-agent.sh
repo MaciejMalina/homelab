@@ -47,7 +47,45 @@ case "$CMD" in
 
   run)
     log "run: startuję /opt/jarvis/scripts/backup.sh"
-    exec /opt/jarvis/scripts/backup.sh
+
+    # --- powiadomienie Discord: sukces/porazka backupu serwera (weryfikacja) ---
+    # (dodane 2026-08-31) Webhook czytany z tego samego configu co backup
+    # malinki (/etc/jarvis/backup-malinka.env) — jeden sekret, dwa skrypty.
+    CONF_NOTIFY=/etc/jarvis/backup-malinka.env
+    DISCORD_WEBHOOK=""
+    if [ -f "$CONF_NOTIFY" ]; then
+      DISCORD_WEBHOOK=$(grep -m1 '^DISCORD_WEBHOOK=' "$CONF_NOTIFY" 2>/dev/null | cut -d= -f2- || true)
+    fi
+
+    jsonstr() { # jsonstr <tekst> -> bezpieczny string JSON
+      local s="$1"
+      s=${s//\\/\\\\}; s=${s//\"/\\\"}; s=${s//$'\t'/\\t}; s=${s//$'\r'/}; s=${s//$'\n'/\\n}
+      printf '"%s"' "${s:0:3900}"
+    }
+    powiadom() { # powiadom <tytul> <tresc> <ok|err>
+      local tytul="$1" tresc="$2" typ="${3:-ok}" kolor
+      [ "$typ" = err ] && kolor=15158332 || kolor=3066993
+      [ -n "$DISCORD_WEBHOOK" ] || return 0
+      curl -fsS -m 15 -H 'Content-Type: application/json' -X POST "$DISCORD_WEBHOOK" \
+        -d "{\"embeds\":[{\"title\":$(jsonstr "$tytul"),\"description\":$(jsonstr "$tresc"),\"color\":$kolor}]}" \
+        >/dev/null 2>&1 || true
+    }
+
+    START_TS=$(date +%s)
+    RC=0
+    /opt/jarvis/scripts/backup.sh || RC=$?
+    CZAS=$(( $(date +%s) - START_TS ))
+    PODSUM="Czas: $((CZAS/60)) min $((CZAS%60)) s"
+
+    if [ "$RC" -eq 0 ]; then
+      log "run: backup.sh zakonczony OK (${CZAS}s)"
+      powiadom "JARVIS: backup serwera OK" "$PODSUM" ok
+    else
+      log "run: backup.sh zakonczony BLEDEM (kod $RC, ${CZAS}s)"
+      powiadom "JARVIS: backup serwera NIE POWIODL SIE" "$PODSUM
+Kod wyjscia: $RC" err
+    fi
+    exit "$RC"
     ;;
 
   *)
