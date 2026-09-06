@@ -47,6 +47,11 @@ DISCORD_WEBHOOK="${DISCORD_WEBHOOK:-}"        # https://discord.com/api/webhooks
 NTFY_URL="${NTFY_URL:-}"                      # np. https://ntfy.dom/jarvis
 HEALTHCHECK_URL="${HEALTHCHECK_URL:-}"        # ping start/fail/success
 
+# (dodane 2026-09-06) Uptime Kuma — push URL osobny dla trybu daily i image,
+# bo to dwa różne monitory z różnym interwałem bicia serca w Kumie.
+KUMA_PUSH_DAILY_URL="${KUMA_PUSH_DAILY_URL:-}"   # monitor "Backup malinka – dzienny"
+KUMA_PUSH_IMAGE_URL="${KUMA_PUSH_IMAGE_URL:-}"   # monitor "Backup malinka – obraz tygodniowy"
+
 LOCKFILE_IDLE="${LOCKFILE_IDLE:-/etc/jarvis-no-autoshutdown}"
 LOCKFILE_RUN="${LOCKFILE_RUN:-/run/backup-malinka.lock}"
 LOG="${LOG:-/var/log/jarvis-backup-malinka.log}"
@@ -107,6 +112,17 @@ powiadom() { # powiadom <tytul> <tresc> <ok|err>
 hc() { # hc <start|fail|""> — ping do healthchecks
   [ -n "$HEALTHCHECK_URL" ] || return 0
   curl -fsS -m 10 "${HEALTHCHECK_URL}${1:+/$1}" >/dev/null 2>&1 || true
+}
+
+kuma_push() { # kuma_push <up|down> <komunikat> — dead man's switch w Uptime Kumie
+  local url=""
+  case "$TRYB" in
+    daily) url="$KUMA_PUSH_DAILY_URL" ;;
+    image) url="$KUMA_PUSH_IMAGE_URL" ;;
+    *) return 0 ;;   # full/prune/verify/test — bez osobnego monitora Kumy
+  esac
+  [ -n "$url" ] || return 0
+  curl -fsS -m 10 -G "$url" --data-urlencode "status=$1" --data-urlencode "msg=$2" >/dev/null 2>&1 || true
 }
 
 sprzataj() {
@@ -360,10 +376,12 @@ say "===== KONIEC — sukcesy: ${#STEPS_OK[@]}, błędy: ${#STEPS_FAIL[@]}, czas
 if [ "${#STEPS_FAIL[@]}" -gt 0 ]; then
   powiadom "JARVIS: backup malinki NIE POWIÓDŁ SIĘ" "$PODSUM" err
   hc fail
+  kuma_push down "bledy: ${#STEPS_FAIL[@]}, czas: ${CZAS}s"
   exit 1
 else
   # Sukces raportujemy tylko dla obrazu/full — codzienny sukces to szum
   case "$TRYB" in image|full|verify) powiadom "JARVIS: backup malinki OK" "$PODSUM" ok ;; esac
   hc
+  kuma_push up "OK, czas: ${CZAS}s"
   exit 0
 fi

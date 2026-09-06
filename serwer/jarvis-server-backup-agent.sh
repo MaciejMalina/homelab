@@ -53,8 +53,10 @@ case "$CMD" in
     # malinki (/etc/jarvis/backup-malinka.env) — jeden sekret, dwa skrypty.
     CONF_NOTIFY=/etc/jarvis/backup-malinka.env
     DISCORD_WEBHOOK=""
+    KUMA_PUSH_URL=""   # (dodane 2026-09-06) monitor "Backup serwera (nightly)" w Uptime Kumie
     if [ -f "$CONF_NOTIFY" ]; then
       DISCORD_WEBHOOK=$(grep -m1 '^DISCORD_WEBHOOK=' "$CONF_NOTIFY" 2>/dev/null | cut -d= -f2- || true)
+      KUMA_PUSH_URL=$(grep -m1 '^KUMA_PUSH_SERVER_URL=' "$CONF_NOTIFY" 2>/dev/null | cut -d= -f2- || true)
     fi
 
     jsonstr() { # jsonstr <tekst> -> bezpieczny string JSON
@@ -70,6 +72,11 @@ case "$CMD" in
         -d "{\"embeds\":[{\"title\":$(jsonstr "$tytul"),\"description\":$(jsonstr "$tresc"),\"color\":$kolor}]}" \
         >/dev/null 2>&1 || true
     }
+    kuma_push() { # kuma_push <up|down> <komunikat> — dead man's switch w Uptime Kumie
+      [ -n "$KUMA_PUSH_URL" ] || return 0
+      curl -fsS -m 10 -G "$KUMA_PUSH_URL" --data-urlencode "status=$1" --data-urlencode "msg=$2" \
+        >/dev/null 2>&1 || true
+    }
 
     START_TS=$(date +%s)
     RC=0
@@ -80,10 +87,12 @@ case "$CMD" in
     if [ "$RC" -eq 0 ]; then
       log "run: backup.sh zakonczony OK (${CZAS}s)"
       powiadom "JARVIS: backup serwera OK" "$PODSUM" ok
+      kuma_push up "OK, czas: ${CZAS}s"
     else
       log "run: backup.sh zakonczony BLEDEM (kod $RC, ${CZAS}s)"
       powiadom "JARVIS: backup serwera NIE POWIODL SIE" "$PODSUM
 Kod wyjscia: $RC" err
+      kuma_push down "kod: $RC, czas: ${CZAS}s"
     fi
     exit "$RC"
     ;;
