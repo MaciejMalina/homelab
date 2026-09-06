@@ -1,0 +1,49 @@
+# =============================================================================
+#  SERWER — docker-socket-proxy (żeby Uptime Kuma na malince widziała
+#  kontenery serwera)
+# =============================================================================
+#  Ten sam wzorzec bezpieczeństwa co na malince (uptime-kuma/docker-compose.yml):
+#  tylko odczyt listy/stanu kontenerów (CONTAINERS=1, EVENTS=1), zero zapisu
+#  (POST=0). Różnica: tu Kuma NIE stoi na tym samym hoście, więc proxy musi
+#  wystawić port na sieć — ograniczamy to do adresu Tailscale serwera, żeby
+#  nie było słuchane na interfejsie publicznym/LAN.
+#
+#  PODMIEŃ poniższy adres IP, jeśli Tailscale IP serwera się zmieni
+#  (sprawdź: tailscale ip -4).
+#
+#  UWAGA (lekcja z 2026-09-06, patrz uptime-kuma/docker-compose.yml na
+#  malince): NIE dawać tu `read_only: true` — obraz generuje haproxy.cfg
+#  przy każdym starcie i wchodzi w crash loop bez zapisu.
+#
+#  Instalacja:
+#     scp -r docker-socket-proxy macmal@serwer:/tmp/
+#     ssh macmal@serwer
+#     sudo mkdir -p /opt/jarvis/docker-socket-proxy
+#     sudo cp /tmp/docker-socket-proxy/docker-compose.yml /opt/jarvis/docker-socket-proxy/
+#     cd /opt/jarvis/docker-socket-proxy && sudo docker compose up -d
+#
+#  Potem w Kumie (na malince): Settings -> Docker Hosts -> Add Docker Host:
+#     Przyjazna nazwa: serwer
+#     Typ połączenia: TCP
+#     Demon Dockera: tcp://100.93.105.37:2375
+#
+#  UWAGA: serwer jest efemeryczny (usypiany/budzony WoL) — kontenery na nim
+#  będą regularnie znikać z Kumy jako "down" bez żadnej awarii. Wyłącz
+#  powiadomienia Discord na monitorach Docker dla tego hosta (tak jak
+#  zrobiliśmy dla monitorów Ollama/N8N), inaczej dostaniesz spam co usypianie.
+# =============================================================================
+services:
+  docker-socket-proxy:
+    image: tecnativa/docker-socket-proxy:0.3.0
+    container_name: docker-socket-proxy
+    restart: unless-stopped
+    environment:
+      - CONTAINERS=1
+      - EVENTS=1
+      - POST=0
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock:ro
+    ports:
+      - "100.93.105.37:2375:2375"
+    security_opt:
+      - no-new-privileges:true
