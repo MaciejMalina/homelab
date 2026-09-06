@@ -222,15 +222,42 @@ krok_obraz() {
   IMAGE_IN_PROGRESS=0
 }
 
+restic_forget_raz() {
+  restic forget --tag malinka \
+        --keep-within "${RETENCJA_DNI}d" \
+        --keep-last "$RESTIC_KEEP_LAST" \
+        --prune
+}
+
+restic_forget_z_samonaprawa() {
+  # (dodane 2026-09-06) Widzieliśmy serię awarii: stary, osierocony lock
+  # (proces, który padł w środku poprzedniego przebiegu — reboot/OOM/kill)
+  # blokował KAŻDY kolejny forget/prune, aż do ręcznej interwencji.
+  # `restic unlock` bez --remove-all sam sprawdza, czy proces trzymający
+  # lock jeszcze żyje — bezpieczne do automatycznego wywołania, bo flock
+  # na tym skrypcie i tak nie dopuszcza dwóch backupów naraz.
+  local out rc
+  out=$(restic_forget_raz 2>&1); rc=$?
+  printf '%s\n' "$out" >> "$LOG"
+
+  if [ "$rc" -ne 0 ] && printf '%s' "$out" | grep -q 'already locked'; then
+    say "restic forget/prune: repo zablokowane przez osierocony lock — probuje 'restic unlock' i ponawiam raz"
+    if restic unlock 2>&1 | tee -a "$LOG"; then
+      out=$(restic_forget_raz 2>&1); rc=$?
+      printf '%s\n' "$out" >> "$LOG"
+    fi
+  fi
+
+  printf '%s\n' "$out"
+  return $rc
+}
+
 krok_retencja() {
   say "Retencja: kasuję kopie starsze niż $RETENCJA_DNI dni"
 
   # 1) restic — snapshoty malinki
   if restic cat config >/dev/null 2>&1; then
-    if restic forget --tag malinka \
-          --keep-within "${RETENCJA_DNI}d" \
-          --keep-last "$RESTIC_KEEP_LAST" \
-          --prune 2>&1 | tee -a "$LOG"; then
+    if restic_forget_z_samonaprawa; then
       ok "restic forget/prune (keep-within ${RETENCJA_DNI}d, keep-last $RESTIC_KEEP_LAST)"
     else
       bad "restic forget/prune"
