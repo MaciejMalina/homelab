@@ -5,11 +5,12 @@
 #  całą sekcję, tak jak przy grupie "Zarządzanie Infrastrukturą").
 #  Adresy na hoście `serwer` (nie `malinka`) - to tam stoi ~/utorent.
 #
-#  qbittorrent: link niżej zakłada port 8080 wprost na serwerze - to
-#  zadziała TYLKO dopóki qbittorrent nie ma jeszcze podpiętego gluetun
-#  (patrz UWAGA w docker-compose.yml obok). Gdy gluetun dojdzie, port
-#  qbittorrenta będzie wystawiony przez KONTENER gluetun, nie qbittorrent -
-#  trzeba będzie podmienić href na właściwy port stamtąd.
+#  qbittorrent: od 2026-09-07 port 8080 jest wystawiany przez KONTENER
+#  gluetun (network_mode: service:gluetun), nie przez qbittorrent
+#  bezpośrednio - ale href się NIE zmienia, bo gluetun publikuje ten sam
+#  port 8080 na hoście `serwer`. Jeśli kiedyś zmienisz port WebUI
+#  qbittorrenta, zmieniaj go w `ports:` pod gluetun w docker-compose.yml,
+#  nie pod qbittorrent (tam już nie ma sekcji ports).
 # =============================================================================
 
 - Media:
@@ -37,4 +38,4 @@
     - qBittorrent:
         icon: qbittorrent.png
         href: http://serwer:8080/
-        description: Klient torrent (na razie BEZ VPN - patrz uwaga w compose)
+        description: Klient torrent (przez VPN AirVPN via gluetun)

@@ -1,27 +1,69 @@
 # =============================================================================
 #  SERWER — ~/utorent (Jellyfin + automatyzacja pobierania mediów)
 # =============================================================================
-#  Realny compose Macieja (2026-09-07), ściągnięty z serwera do repo -
-#  zastępuje wcześniejszą propozycję serwer/jellyfin/ (ta zakładała NVENC na
-#  GTX 960 przez nvidia-container-toolkit; Maciej poszedł inną drogą -
-#  /dev/dri, czyli sprzętowe transkodowanie VAAPI przez iGPU procesora
-#  (i5-6500 ma Intel HD Graphics 530 z Quick Sync) - prostsze, nie wymaga
-#  nvidia-container-toolkit, i zostawia GTX 960 wyłącznie dla Ollamy.
+#  Historia: 2026-09-07 Maciej zbudował własny stack (VAAPI przez /dev/dri —
+#  iGPU Intel HD 530 procesora, GTX 960 zostaje wolna dla Ollamy). 2026-09-07
+#  (wieczór) dodany gluetun (VPN, AirVPN/WireGuard) + dane przeniesione z
+#  dysku systemowego na macierz RAID1 (/mnt/data, /dev/md0).
 #
-#  UWAGA: qbittorrent ma `network_mode: service:gluetun` + `depends_on:
-#  gluetun`, ale usługa gluetun (VPN) NIE jest jeszcze w tym pliku - świadomie,
-#  na razie (Maciej: "na razie jest bez gluetun"). Dopóki gluetun nie
-#  istnieje, `docker compose up` na CAŁYM pliku nie wstanie (błąd: service
-#  "gluetun" not found) - qbittorrenta trzeba będzie odpalać osobno
-#  (`docker compose up -d jellyfin jackett sonarr radarr`) albo dopisać
-#  blok gluetun przed pierwszym pełnym uruchomieniem. Też: gdy gluetun
-#  dojdzie, `ports:` pod qbittorrent trzeba będzie przenieść pod gluetun
-#  (Docker ignoruje/blokuje `ports:` razem z `network_mode: service:X`).
+#  ZAKRES VPN (decyzja Macieja 2026-09-07): TYLKO qbittorrent routuje ruch
+#  przez gluetun (`network_mode: service:gluetun`) — to jedyny kontener,
+#  który faktycznie rozmawia z peerami/trackerami i ujawnia adres IP.
+#  Jellyfin/Sonarr/Radarr/Jackett/flaresolverr zostają na zwykłej sieci
+#  Dockera z własnymi portami — dostają `depends_on: gluetun` WYŁĄCZNIE dla
+#  kolejności startu, nie routingu. Świadomie: routowanie Jellyfina przez VPN
+#  wymagałoby FIREWALL_OUTBOUND_SUBNETS w gluetun (inaczej LAN nie dobije do
+#  streamingu) i podniosłoby opóźnienie/obniżyło przepustowość bez żadnej
+#  korzyści (Jellyfin i tak jest tylko na sieci lokalnej).
+#
+#  Sekrety WireGuard: NIE hardkodowane w tym pliku (padły w plaintext na
+#  czacie 2026-09-07 — trzeba je zrotować w panelu AirVPN). Idą przez
+#  `.env` obok tego pliku (patrz .env.example) — ten sam wzorzec co reszta
+#  jarvis-infra (sops+age dla źródła prawdy, .env na maszynie).
+#
+#  Dane (media/downloads) na RAID1: /mnt/data/media/{movies,series,downloads,
+#  torrents/files} (dev/md0, 858 GB wolne 2026-09-07). appdata/ (configi
+#  kontenerów) zostaje na dysku systemowym pod ~/utorent/appdata — małe,
+#  nie wymaga redundancji RAID.
 #
 #  Homepage: fragment do wklejenia w services.yaml - patrz
 #  homepage-services.yaml obok tego pliku.
+#
+#  Indeksery Jackett (1337x, Internet Archive, LimeTorrents, Nyaa.si,
+#  RuTracker.RU, The Pirate Bay, TorrentDownload) dodawane RĘCZNIE przez UI
+#  Jackett (http://serwer:9117 → Add indexer) — nie da się tego bezpiecznie
+#  wstrzyknąć z zewnątrz bez ryzyka literówki w ID indeksera; RuTracker może
+#  wymagać loginu/hasła — wpisz je bezpośrednio w UI Jackett, nie na czacie.
 # =============================================================================
 services:
+  gluetun:
+    image: qmcgaw/gluetun
+    container_name: gluetun
+    restart: unless-stopped
+    cap_add:
+      - NET_ADMIN
+    devices:
+      - /dev/net/tun:/dev/net/tun
+    ports:
+      - 8888:8888/tcp   # HTTP proxy
+      - 8388:8388/tcp   # Shadowsocks
+      - 8388:8388/udp   # Shadowsocks
+      - 8080:8080/tcp   # qBittorrent WebUI (przeniesione tu z qbittorrent)
+      - 32551:32551/tcp # qBittorrent torrenting port
+      - 32551:32551/udp # qBittorrent torrenting port
+      - 8000:8000/tcp   # gluetun control server
+    volumes:
+      - ./appdata/gluetun:/gluetun
+    environment:
+      - HTTP_CONTROL_SERVER_ADDRESS=:8000
+      - VPN_SERVICE_PROVIDER=airvpn
+      - VPN_TYPE=wireguard
+      - WIREGUARD_ADDRESSES=${AIRVPN_WIREGUARD_ADDRESSES}
+      - SERVER_COUNTRIES=Netherlands
+      - TZ=Europe/Warsaw
+      - FIREWALL_VPN_INPUT_PORTS=32551
+      - WIREGUARD_PRIVATE_KEY=${AIRVPN_WIREGUARD_PRIVATE_KEY}
+      - WIREGUARD_PRESHARED_KEY=${AIRVPN_WIREGUARD_PRESHARED_KEY}
   jellyfin:
     image: lscr.io/linuxserver/jellyfin:latest
     container_name: jellyfin
@@ -31,13 +73,15 @@ services:
       - TZ=Europe/Warsaw
     volumes:
       - ./appdata/jellyfin:/config
-      - ./data/media/series:/data/tvshows
-      - ./data/media/movies:/data/movies
+      - /mnt/data/media/series:/data/tvshows
+      - /mnt/data/media/movies:/data/movies
     ports:
       - 8096:8096
     devices:
       - /dev/dri/renderD128:/dev/dri/renderD128
       - /dev/dri/card0:/dev/dri/card0
+    depends_on:
+      - gluetun
     restart: unless-stopped
   jackett:
     image: lscr.io/linuxserver/jackett:latest
@@ -49,9 +93,11 @@ services:
       - AUTO_UPDATE=true
     volumes:
       - ./appdata/jackett:/config
-      - ./data/torrents/files:/downloads
+      - /mnt/data/media/torrents/files:/downloads
     ports:
       - 9117:9117
+    depends_on:
+      - gluetun
     restart: unless-stopped
   flaresolverr:
     image: ghcr.io/flaresolverr/flaresolverr:latest
@@ -66,6 +112,8 @@ services:
       - "${PORT:-8191}:8191"
     volumes:
       - /var/lib/flaresolver:/config
+    depends_on:
+      - gluetun
     restart: unless-stopped
   sonarr:
     image: ghcr.io/hotio/sonarr:latest
@@ -77,9 +125,11 @@ services:
     volumes:
       - /etc/localtime:/etc/localtime:ro
       - ./appdata/sonarr:/config
-      - ./data:/data
+      - /mnt/data/media:/data
     ports:
       - 8989:8989
+    depends_on:
+      - gluetun
     restart: unless-stopped
   radarr:
     image: ghcr.io/hotio/radarr
@@ -91,9 +141,11 @@ services:
       - TZ=Europe/Warsaw
     volumes:
       - ./appdata/radarr:/config
-      - ./data:/data
+      - /mnt/data/media:/data
     ports:
       - 7878:7878
+    depends_on:
+      - gluetun
     restart: unless-stopped
   qbittorrent:
     image: linuxserver/qbittorrent
@@ -106,7 +158,7 @@ services:
       - TORRENTING_PORT=32551
     volumes:
       - ./appdata/qbit:/config
-      - ./data/downloads:/data/downloads
+      - /mnt/data/media/downloads:/data/downloads
     network_mode: service:gluetun
     depends_on:
       - gluetun
