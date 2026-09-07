@@ -45,9 +45,6 @@ services:
     devices:
       - /dev/net/tun:/dev/net/tun
     ports:
-      - 8888:8888/tcp   # HTTP proxy
-      - 8388:8388/tcp   # Shadowsocks
-      - 8388:8388/udp   # Shadowsocks
       - 8080:8080/tcp   # qBittorrent WebUI (przeniesione tu z qbittorrent)
       - 32551:32551/tcp # qBittorrent torrenting port
       - 32551:32551/udp # qBittorrent torrenting port
@@ -64,11 +61,6 @@ services:
       - FIREWALL_VPN_INPUT_PORTS=32551
       - WIREGUARD_PRIVATE_KEY=${AIRVPN_WIREGUARD_PRIVATE_KEY}
       - WIREGUARD_PRESHARED_KEY=${AIRVPN_WIREGUARD_PRESHARED_KEY}
-      - HTTPPROXY=on
-      - HTTPPROXY_USER=${GLUETUN_HTTPPROXY_USER}
-      - HTTPPROXY_PASSWORD=${GLUETUN_HTTPPROXY_PASSWORD}
-      - SHADOWSOCKS=on
-      - SHADOWSOCKS_PASSWORD=${GLUETUN_SHADOWSOCKS_PASSWORD}
   jellyfin:
     image: lscr.io/linuxserver/jellyfin:latest
     container_name: jellyfin
