@@ -69,11 +69,20 @@ for i in $(seq 1 24); do
   sleep 5
 done
 if ! ssh $SSH_OPTS "$REMOTE" ping 2>/dev/null | grep -q '^pong'; then
-  log "BLAD: brak SSH do serwera"
+  # Diagnostyka (2026-09-07): powyzsza petla celowo tlumi stderr (normalne
+  # bledy polaczenia podczas budzenia serwera), ale to ukrywalo realna
+  # przyczyne raz - serwer byl gore i SSH dzialalo, ale forced-command na
+  # koncie bkptrigger nie mial bitu +x (permission denied), wygladalo
+  # identycznie jak "serwer nie wstal". Ta jedna dodatkowa proba pokazuje
+  # realny stderr, zeby powiadomienie mowilo co NAPRAWDE poszlo nie tak.
+  DIAG=$(ssh $SSH_OPTS "$REMOTE" ping 2>&1 >/dev/null | tr '\n' ' ' | cut -c1-300)
+  log "BLAD: brak SSH do serwera (diagnostyka: ${DIAG:-brak outputu})"
   powiadom "JARVIS: nocny backup NIE WYSTARTOWAL" \
-    "Serwer nie obudzil sie / nie odpowiedzial po SSH w wyznaczonym czasie (WoL + ok. 5 min oczekiwania). Backup serwera dzis SIE NIE ODBYL." \
+    "Serwer nie obudzil sie / nie odpowiedzial po SSH w wyznaczonym czasie (WoL + ok. 5 min oczekiwania). Backup serwera dzis SIE NIE ODBYL.
+
+Ostatnia proba polaczenia (stderr): ${DIAG:-brak outputu (prawdopodobnie realny brak lacznosci, nie blad uprawnien)}" \
     err
-  kuma_push down "brak SSH do serwera po WoL"
+  kuma_push down "brak SSH: ${DIAG:-brak outputu}"
   exit 1
 fi
 
