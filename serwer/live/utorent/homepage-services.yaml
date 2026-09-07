@@ -1,0 +1,40 @@
+# =============================================================================
+#  Homepage — fragment do wklejenia w services.yaml
+# =============================================================================
+#  Nowa grupa "Media" (nie było jej wcześniej w configu Macieja - dopisz
+#  całą sekcję, tak jak przy grupie "Zarządzanie Infrastrukturą").
+#  Adresy na hoście `serwer` (nie `malinka`) - to tam stoi ~/utorent.
+#
+#  qbittorrent: link niżej zakłada port 8080 wprost na serwerze - to
+#  zadziała TYLKO dopóki qbittorrent nie ma jeszcze podpiętego gluetun
+#  (patrz UWAGA w docker-compose.yml obok). Gdy gluetun dojdzie, port
+#  qbittorrenta będzie wystawiony przez KONTENER gluetun, nie qbittorrent -
+#  trzeba będzie podmienić href na właściwy port stamtąd.
+# =============================================================================
+
+- Media:
+    - Jellyfin:
+        icon: jellyfin.png
+        href: http://serwer:8096/
+        description: Filmy i seriale (transkodowanie VAAPI na iGPU serwera)
+        siteMonitor: http://serwer:8096/health
+
+    - Sonarr:
+        icon: sonarr.png
+        href: http://serwer:8989/
+        description: Automatyczne seriale
+
+    - Radarr:
+        icon: radarr.png
+        href: http://serwer:7878/
+        description: Automatyczne filmy
+
+    - Jackett:
+        icon: jackett.png
+        href: http://serwer:9117/
+        description: Indeksery dla Sonarr/Radarr
+
+    - qBittorrent:
+        icon: qbittorrent.png
+        href: http://serwer:8080/
+        description: Klient torrent (na razie BEZ VPN - patrz uwaga w compose)

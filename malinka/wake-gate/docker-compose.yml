@@ -1,7 +1,7 @@
 # =============================================================================
 #  MALINKA — wake-gate (budzi serwer na zadanie przed Jellyfinem)
 # =============================================================================
-#  Problem: Jellyfin stoi na serwerze (NVENC), serwer spi (idle-shutdown).
+#  Problem: Jellyfin stoi na serwerze (VAAPI/iGPU do transkodowania), serwer spi (idle-shutdown).
 #  Bez tego kto-badz wchodzacy pod adres Jellyfina dostalby "connection
 #  refused" przez 3-5 minut budzenia bez zadnej informacji.
 #

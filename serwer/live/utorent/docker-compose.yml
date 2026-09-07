@@ -1,0 +1,99 @@
+# =============================================================================
+#  SERWER — ~/utorent (Jellyfin + automatyzacja pobierania mediów)
+# =============================================================================
+#  Realny compose Macieja (2026-09-07), ściągnięty z serwera do repo -
+#  zastępuje wcześniejszą propozycję serwer/jellyfin/ (ta zakładała NVENC na
+#  GTX 960 przez nvidia-container-toolkit; Maciej poszedł inną drogą -
+#  /dev/dri, czyli sprzętowe transkodowanie VAAPI przez iGPU procesora
+#  (i5-6500 ma Intel HD Graphics 530 z Quick Sync) - prostsze, nie wymaga
+#  nvidia-container-toolkit, i zostawia GTX 960 wyłącznie dla Ollamy.
+#
+#  UWAGA: qbittorrent ma `network_mode: service:gluetun` + `depends_on:
+#  gluetun`, ale usługa gluetun (VPN) NIE jest jeszcze w tym pliku - świadomie,
+#  na razie (Maciej: "na razie jest bez gluetun"). Dopóki gluetun nie
+#  istnieje, `docker compose up` na CAŁYM pliku nie wstanie (błąd: service
+#  "gluetun" not found) - qbittorrenta trzeba będzie odpalać osobno
+#  (`docker compose up -d jellyfin jackett sonarr radarr`) albo dopisać
+#  blok gluetun przed pierwszym pełnym uruchomieniem. Też: gdy gluetun
+#  dojdzie, `ports:` pod qbittorrent trzeba będzie przenieść pod gluetun
+#  (Docker ignoruje/blokuje `ports:` razem z `network_mode: service:X`).
+#
+#  Homepage: fragment do wklejenia w services.yaml - patrz
+#  homepage-services.yaml obok tego pliku.
+# =============================================================================
+services:
+  jellyfin:
+    image: lscr.io/linuxserver/jellyfin:latest
+    container_name: jellyfin
+    environment:
+      - PUID=1000
+      - PGID=1000
+      - TZ=Europe/Warsaw
+    volumes:
+      - ./appdata/jellyfin:/config
+      - ./data/media/series:/data/tvshows
+      - ./data/media/movies:/data/movies
+    ports:
+      - 8096:8096
+    devices:
+      - /dev/dri/renderD128:/dev/dri/renderD128
+      - /dev/dri/card0:/dev/dri/card0
+    restart: unless-stopped
+  jackett:
+    image: lscr.io/linuxserver/jackett:latest
+    container_name: jackett
+    environment:
+      - PUID=1000
+      - PGID=1000
+      - TZ=Etc/UTC
+      - AUTO_UPDATE=true
+    volumes:
+      - ./appdata/jackett:/config
+      - ./data/torrents/files:/downloads
+    ports:
+      - 9117:9117
+    restart: unless-stopped
+  sonarr:
+    image: ghcr.io/hotio/sonarr:latest
+    container_name: sonarr
+    environment:
+      - PUID=1000
+      - PGID=1000
+      - TZ=Europe/Warsaw
+    volumes:
+      - /etc/localtime:/etc/localtime:ro
+      - ./appdata/sonarr:/config
+      - ./data:/data
+    ports:
+      - 8989:8989
+    restart: unless-stopped
+  radarr:
+    image: ghcr.io/hotio/radarr
+    container_name: radarr
+    environment:
+      - PUID=1000
+      - PGID=1000
+      - UMASK=002
+      - TZ=Europe/Warsaw
+    volumes:
+      - ./appdata/radarr:/config
+      - ./data:/data
+    ports:
+      - 7878:7878
+    restart: unless-stopped
+  qbittorrent:
+    image: linuxserver/qbittorrent
+    container_name: qbittorrent
+    environment:
+      - PUID=1000
+      - PGID=1000
+      - TZ=Europe/Warsaw
+      - WEBUI_PORT=8080
+      - TORRENTING_PORT=32551
+    volumes:
+      - ./appdata/qbit:/config
+      - ./data/downloads:/data/downloads
+    network_mode: service:gluetun
+    depends_on:
+      - gluetun
+    restart: unless-stopped
