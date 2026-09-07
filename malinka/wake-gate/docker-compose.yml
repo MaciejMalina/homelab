@@ -1,0 +1,30 @@
+# =============================================================================
+#  MALINKA — wake-gate (budzi serwer na zadanie przed Jellyfinem)
+# =============================================================================
+#  Problem: Jellyfin stoi na serwerze (NVENC), serwer spi (idle-shutdown).
+#  Bez tego kto-badz wchodzacy pod adres Jellyfina dostalby "connection
+#  refused" przez 3-5 minut budzenia bez zadnej informacji.
+#
+#  Ten serwis stoi PRZED Jellyfinem w Tailscale Serve na malince:
+#     sudo tailscale serve --https=<PORT> http://localhost:8098
+#  (docelowy adres w TARGET_URL nizej to WLASCIWY tailscale serve Jellyfina
+#  NA SERWERZE, ktory trzeba osobno ustawic tam - patrz serwer/jellyfin/).
+#
+#  UZUPELNIC ponizej: TARGET_URL (prawdziwy tailnet hostname serwera).
+#
+#  Uruchomienie:
+#     cd ~/wake-gate && docker compose up -d --build
+# =============================================================================
+services:
+  wake-gate:
+    build: .
+    container_name: jellyfin-wake-gate
+    restart: unless-stopped
+    ports:
+      - "8098:8098"
+    environment:
+      - SERVER_IP=192.168.1.162
+      - SERVER_MAC=4c:cc:6a:4a:33:6d
+      - CHECK_PORT=8096
+      - TARGET_URL=https://serwer.CHANGE-ME.ts.net:8096
+      - WOL_COOLDOWN_SECONDS=30

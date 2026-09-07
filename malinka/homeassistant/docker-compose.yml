@@ -1,0 +1,33 @@
+# =============================================================================
+#  MALINKA — Home Assistant (panel automatyki domowej)
+# =============================================================================
+#  Świadomie na malince, NIE na serwerze: HA musi żyć cały czas (harmonogramy,
+#  automatyzacje, reagowanie na zdarzenia), a serwer śpi i budzi się przez WoL —
+#  zły host dla czegokolwiek co ma "zawsze odpowiadać".
+#
+#  Sieć: na razie bridge + publikacja portu 8123 (na razie brak fizycznych
+#  dongli Zigbee/Z-Wave/Bluetooth do przekazania). Jeśli/gdy dojdzie taki
+#  dongiel, przejść na `network_mode: host` (standard w dokumentacji HA — ułatwia
+#  wykrywanie mDNS/SSDP urządzeń w sieci) i dopisać `devices: - /dev/ttyUSBx`.
+#
+#  Ekspozycja: TYLKO Tailscale Serve (decyzja 2026-09-07, ten sam wzorzec co
+#  Kuma/Trot) — HA steruje realnymi urządzeniami w domu, bez publicznego NPM.
+#  Wolny port do `tailscale serve --https=<PORT> http://localhost:8123`
+#  sprawdź przez `tailscale serve status` (Trot ma 8443, Kuma 10000).
+#
+#  Uruchomienie:
+#     mkdir -p /home/macmal/homeassistant/config
+#     cd ~/homeassistant && docker compose up -d
+#     sprawdź `ss -tlnp | grep 8123` PRZED startem, na wypadek kolizji portu
+# =============================================================================
+services:
+  homeassistant:
+    image: ghcr.io/home-assistant/home-assistant:stable
+    container_name: homeassistant
+    restart: unless-stopped
+    ports:
+      - "8123:8123"
+    volumes:
+      - /home/macmal/homeassistant/config:/config
+    environment:
+      - TZ=Europe/Warsaw
