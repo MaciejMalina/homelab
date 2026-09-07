@@ -1,0 +1,12 @@
+services:
+  npm:
+    image: jc21/nginx-proxy-manager:latest
+    container_name: nginx_proxy_manager
+    restart: unless-stopped
+    ports:
+      - "80:80"      # HTTP (przekierowania + walidacja certów)
+      - "443:443"    # HTTPS
+      - "81:81"      # panel administracyjny NPM
+    volumes:
+      - ./data:/data
+      - ./letsencrypt:/etc/letsencrypt

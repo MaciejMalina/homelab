@@ -1,0 +1,21 @@
+services:
+  wakeword:
+    build: .
+    container_name: jarvis_wakeword
+    restart: unless-stopped
+    network_mode: host          # potrzebne do WoL (broadcast na LAN) i dostepu do Node 2
+    devices:
+      - "/dev/snd:/dev/snd"
+    volumes:
+      - /home/macmal/.asoundrc:/root/.asoundrc:ro
+    environment:
+      - PA_ALSA_PLUGHW=1
+      - PYTHONUNBUFFERED=1
+      - NODE2_IP=192.168.1.162
+      - NODE2_MAC=4c:cc:6a:4a:33:6d
+      - WHISPER_BASE=http://100.93.105.37:9000
+      - N8N_URL=http://100.93.105.37:5678/webhook/chat
+      - DISCORD_WEBHOOK=${DISCORD_WEBHOOK}
+      - USER_ID=340572098873393153
+      - THRESHOLD=0.6
+      - SILENCE_RMS=500

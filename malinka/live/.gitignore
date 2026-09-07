@@ -1,0 +1,11 @@
+# malinka/live/ — tu lądują ściągnięte z malinki compose+config; dane/wolumeny nigdy nie wchodzą do gita
+npm/data/
+npm/letsencrypt/
+mountain/server/data/
+mountain/server/uploads/
+homepage/config/images/
+homepage/config/logs/
+adguardhome/work/
+adguardhome/conf/
+__pycache__/
+*.pyc

@@ -1,0 +1,13 @@
+services:
+  homepage:
+    image: ghcr.io/gethomepage/homepage:latest
+    container_name: homepage
+    restart: unless-stopped
+    ports:
+      - "3000:3000"
+    environment:
+      - HOMEPAGE_ALLOWED_HOSTS=100.105.181.54,100.105.181.54:3000,192.168.1.169,192.168.1.169:3000,home.maciej-home.duckdns.org
+    volumes:
+      - /home/macmal/homepage/config:/app/config
+      - /home/macmal/homepage/config/images:/app/public/custom
+      - /var/run/docker.sock:/var/run/docker.sock:ro

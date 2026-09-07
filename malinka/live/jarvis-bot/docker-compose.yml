@@ -1,0 +1,12 @@
+services:
+  jarvis-bot:
+    build: .
+    container_name: jarvis_discord_bot
+    restart: unless-stopped
+    env_file:
+      - .env
+    environment:
+      - PYTHONUNBUFFERED=1
+    volumes:
+      - ./ssh_keys:/app/ssh:ro
+    network_mode: "host"

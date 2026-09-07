@@ -1,0 +1,11 @@
+services:
+  app:
+    build: .
+    container_name: jarvis_trot
+    ports:
+      - "3010:3000"
+    volumes:
+      - ./prisma:/app/prisma
+    environment:
+      - DATABASE_URL=file:/app/prisma/database.sqlite
+    restart: unless-stopped
