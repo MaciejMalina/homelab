@@ -45,6 +45,9 @@ services:
     devices:
       - /dev/net/tun:/dev/net/tun
     ports:
+      - 8888:8888/tcp   # HTTP proxy (port zadeklarowany, funkcja WYŁĄCZONA - brak HTTPPROXY=on/credentiali, patrz niżej)
+      - 8388:8388/tcp   # Shadowsocks (jw. - wyłączone)
+      - 8388:8388/udp   # Shadowsocks (jw. - wyłączone)
       - 8080:8080/tcp   # qBittorrent WebUI (przeniesione tu z qbittorrent)
       - 32551:32551/tcp # qBittorrent torrenting port
       - 32551:32551/udp # qBittorrent torrenting port
