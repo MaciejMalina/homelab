@@ -9,7 +9,8 @@ from openwakeword.model import Model
 
 # --- Konfiguracja (z env, z domyslnymi) ---
 WAKEWORD       = os.getenv("WAKEWORD", "hey_jarvis")
-THRESHOLD      = float(os.getenv("THRESHOLD", "0.6"))
+THRESHOLD      = float(os.getenv("THRESHOLD", "0.8"))
+CONFIRM_FRAMES = int(os.getenv("CONFIRM_FRAMES", "3"))     # ile ramek (80 ms) z rzedu > progu
 NODE2_IP       = os.getenv("NODE2_IP", "192.168.1.162")
 NODE2_MAC      = os.getenv("NODE2_MAC", "4c:cc:6a:4a:33:6d")
 WHISPER_BASE   = os.getenv("WHISPER_BASE", "http://100.93.105.37:9000")
@@ -74,14 +75,20 @@ def discord(msg):
         print("[discord] blad:", e)
 
 model = Model(wakeword_models=[WAKEWORD], inference_framework="onnx")
-print(f"Sluucham '{WAKEWORD}'... (prog {THRESHOLD})")
+print(f"Sluucham '{WAKEWORD}'... (prog {THRESHOLD}, ramek z rzedu {CONFIRM_FRAMES})")
 
+hits = 0
 with sd.InputStream(samplerate=RATE, channels=1, dtype="int16", blocksize=CHUNK) as stream:
     while True:
         audio, _ = stream.read(CHUNK)
         score = model.predict(audio.flatten()).get(WAKEWORD, 0.0)
         if score <= THRESHOLD:
+            hits = 0
             continue
+        hits += 1
+        if hits < CONFIRM_FRAMES:
+            continue
+        hits = 0
 
         print(f"[WAKE] {score:.2f} -> WoL Node 2 + nagrywam")
         send_wol(NODE2_MAC)

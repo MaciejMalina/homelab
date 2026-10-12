@@ -1,3 +1,11 @@
+# =============================================================================
+#  WYLACZONE (2026-10-12) — Maciej obecnie nie uzywa asystenta glosowego.
+#  Kontener zatrzymany (`docker compose down`), w katalogu na malince lezy
+#  znacznik .jarvis-disabled, wiec jarvis-restore.sh go nie uruchomi.
+#  Ponowne wlaczenie:
+#     cd ~/wakeword-docker && rm -f .jarvis-disabled && docker compose up -d --build
+#  (+ monitor kontenera w Uptime Kumie, jesli ma byc pilnowany)
+# =============================================================================
 services:
   wakeword:
     build: .
@@ -17,5 +25,6 @@ services:
       - N8N_URL=http://100.93.105.37:5678/webhook/chat
       - DISCORD_WEBHOOK=${DISCORD_WEBHOOK}
       - USER_ID=340572098873393153
-      - THRESHOLD=0.6
+      - THRESHOLD=0.8
+      - CONFIRM_FRAMES=3
       - SILENCE_RMS=500

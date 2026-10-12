@@ -1,7 +1,13 @@
 #!/bin/bash
-# ~/scripts/nightly-backup.sh  (uruchamiane na MALINCE z crona o 7:00)
-# Budzi serwer (WoL) i odpala backup PO STRONIE SERWERA (zrzut na RAID /mnt/data).
-# Kopie trzymane sa wylacznie na serwerze.
+# ~/scripts/nightly-backup.sh  (uruchamiane na MALINCE z crona o 7:30)
+# Budzi serwer (WoL), wywoluje przypomnienia CRM w n8n i odpala backup
+# konfiguracji OBU node'ow PO STRONIE SERWERA (/opt/jarvis/scripts/backup.sh,
+# wynik na /mnt/telemetry/backups/jarvis-config). Kopie trzymane sa na serwerze.
+#
+# ZMIANA (2026-10-10): 7:00 -> 7:30; to jedyne planowe budzenie serwera
+# (wpisy WoL 21:45 i 03:00 w crontabie roota usuniete, timery
+# jarvis-backup-malinka* na serwerze wylaczone). Przypomnienia CRM ida
+# zaraz po starcie n8n, PRZED backupem i niezaleznie od jego wyniku.
 #
 # ZMIANA (2026-08-27): logowanie jako root@serwer kluczem bota Discorda
 # przestalo dzialac po SSH hardeningu (PermitRootLogin no). Teraz laczymy sie
@@ -63,7 +69,16 @@ if ! ping -c1 -W2 "$SERVER_IP" >/dev/null 2>&1; then
   done
 fi
 
-# 2) Czekaj na SSH (agent odpowiada "pong ...")
+# 2) Przypomnienia CRM (n8n webhook /reminders) — gdy tylko n8n wstanie
+for i in $(seq 1 36); do           # do ~3 min na start n8n
+  curl -fsS -m 5 -o /dev/null "http://$SERVER_IP:5678/healthz" 2>/dev/null && break
+  sleep 5
+done
+log "Wywoluje przypomnienia (n8n webhook /reminders)"
+curl -fsS -m 60 -o /dev/null -X POST "http://$SERVER_IP:5678/webhook/reminders" 2>/dev/null \
+  || log "UWAGA: webhook /reminders nie odpowiedzial poprawnie"
+
+# 3) Czekaj na SSH (agent odpowiada "pong ...")
 for i in $(seq 1 24); do
   ssh $SSH_OPTS "$REMOTE" ping 2>/dev/null | grep -q '^pong' && break
   sleep 5
@@ -86,13 +101,9 @@ Ostatnia proba polaczenia (stderr): ${DIAG:-brak outputu (prawdopodobnie realny 
   exit 1
 fi
 
-# 3) Uruchom backup na serwerze (zrzut na RAID)
+# 4) Uruchom backup konfiguracji na serwerze (wynik i alerty: agent na serwerze)
 log "Uruchamiam backup na serwerze"
 ssh $SSH_OPTS "$REMOTE" run
-
-# 4) Po backupie: odpal przypomnienia CRM (serwer juz czuwa)
-log "Wywoluje przypomnienia (n8n webhook /reminders)"
-curl -s -m 60 -X POST "http://$SERVER_IP:5678/webhook/reminders" >/dev/null 2>&1 || true
 
 kuma_push up "obudzono serwer, backup zlecony"
 log "Gotowe. Serwer zostanie uspiony przez idle-shutdown gdy bezczynny."
