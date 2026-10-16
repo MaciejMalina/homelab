@@ -17,7 +17,7 @@
     - Jellyfin:
         icon: jellyfin.png
         href: http://serwer:8096/
-        description: Filmy i seriale (transkodowanie VAAPI na iGPU serwera)
+        description: Filmy i seriale (transkodowanie NVENC na GTX 960)
         siteMonitor: http://serwer:8096/health
 
     - Sonarr:
@@ -39,3 +39,8 @@
         icon: qbittorrent.png
         href: http://serwer:8080/
         description: Klient torrent (przez VPN AirVPN via gluetun)
+
+    - Bazarr:
+        icon: bazarr.png
+        href: http://serwer:6767/
+        description: Automatyczne napisy (PL/EN)

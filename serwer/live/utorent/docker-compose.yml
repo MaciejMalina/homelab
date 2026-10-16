@@ -6,6 +6,14 @@
 #  (wieczór) dodany gluetun (VPN, AirVPN/WireGuard) + dane przeniesione z
 #  dysku systemowego na macierz RAID1 (/mnt/data, /dev/md0).
 #
+#  ZMIANA 2026-10-15: transkodowanie Jellyfina przeniesione z VAAPI (iGPU) na
+#  NVENC (GTX 960). Powod: iGPU Intela jest WYLACZONE w BIOS-ie (w lspci widac
+#  tylko NVIDIE 01:00.0), a /dev/dri/renderD128 to karta NVIDII, nie Intel.
+#  Maciej zdecydowal uzyc GTX-a, bo Ollama prawie go nie uzywa. Uwaga: Ollama i
+#  Jellyfin dziela 4 GB VRAM. NVIDIA_DRIVER_CAPABILITIES=all jest konieczne -
+#  domyslnie kontener dostaje tylko compute, bez enkodera/dekodera wideo.
+#  Bazarr (napisy PL/EN) dodany tego samego dnia, bez VPN.
+#
 #  ZAKRES VPN (decyzja Macieja 2026-09-07): TYLKO qbittorrent routuje ruch
 #  przez gluetun (`network_mode: service:gluetun`) — to jedyny kontener,
 #  który faktycznie rozmawia z peerami/trackerami i ujawnia adres IP.
@@ -71,15 +79,21 @@ services:
       - PUID=1000
       - PGID=1000
       - TZ=Europe/Warsaw
+      - NVIDIA_VISIBLE_DEVICES=all
+      - NVIDIA_DRIVER_CAPABILITIES=all
     volumes:
       - ./appdata/jellyfin:/config
       - /mnt/data/media/series:/data/tvshows
       - /mnt/data/media/movies:/data/movies
     ports:
       - 8096:8096
-    devices:
-      - /dev/dri/renderD128:/dev/dri/renderD128
-      - /dev/dri/card0:/dev/dri/card0
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: all
+              capabilities: [gpu]
     depends_on:
       - gluetun
     restart: unless-stopped
@@ -162,4 +176,20 @@ services:
     network_mode: service:gluetun
     depends_on:
       - gluetun
+    restart: unless-stopped
+  bazarr:
+    image: lscr.io/linuxserver/bazarr:latest
+    container_name: bazarr
+    environment:
+      - PUID=1000
+      - PGID=1000
+      - TZ=Europe/Warsaw
+    volumes:
+      - ./appdata/bazarr:/config
+      - /mnt/data/media:/data
+    ports:
+      - 6767:6767
+    depends_on:
+      - sonarr
+      - radarr
     restart: unless-stopped
