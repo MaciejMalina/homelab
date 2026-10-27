@@ -1,0 +1,24 @@
+# JARVIS — szybka lista TO DO (malinka), kafelek na Homepage + źródło zadań do porannego briefu i /zadanie na Discordzie.
+# Dostęp tylko w tailnecie:  sudo tailscale serve --bg --https=8445 http://localhost:8083
+#   -> https://malinka.tail0524ca.ts.net:8445  (iframe na Homepage)
+#   -> http://100.105.181.54:8083/api/todos   (n8n na serwerze, bot na malince: http://127.0.0.1:8083)
+# Dane w ./data/todo.json — łapie je codzienny backup /home o 7:30.
+services:
+  todo:
+    build: .
+    image: jarvis-todo:local
+    container_name: jarvis_todo
+    ports:
+      - "8083:8080"
+    environment:
+      TZ: Europe/Warsaw
+    volumes:
+      - ./data:/data
+      - /etc/localtime:/etc/localtime:ro
+    restart: unless-stopped
+    mem_limit: 64m
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request;urllib.request.urlopen('http://127.0.0.1:8080/api/health',timeout=5)"]
+      interval: 60s
+      timeout: 10s
+      retries: 3

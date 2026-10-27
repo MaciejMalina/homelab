@@ -2,13 +2,18 @@ services:
   homepage:
     image: ghcr.io/gethomepage/homepage:latest
     container_name: homepage
+    # Host ma w resolv.conf tylko DNS Tailscale (100.100.100.100) — wewnętrzny DNS Dockera go nie używa
+    # (SERVFAIL dla api.open-meteo.com, 2026-10-27). Najpierw AdGuard na malince, potem Cloudflare.
+    dns:
+      - 192.168.254.10
+      - 1.1.1.1
     restart: unless-stopped
-    env_file:
-      - .env
     ports:
       - "3000:3000"
+    env_file:
+      - config/homepage.env
     environment:
-      - HOMEPAGE_ALLOWED_HOSTS=100.105.181.54,100.105.181.54:3000,192.168.1.169,192.168.1.169:3000,home.maciej-home.duckdns.org
+      - HOMEPAGE_ALLOWED_HOSTS=100.105.181.54,100.105.181.54:3000,192.168.254.10,192.168.254.10:3000,home.maciej-home.duckdns.org
     volumes:
       - /home/macmal/homepage/config:/app/config
       - /home/macmal/homepage/config/images:/app/public/custom

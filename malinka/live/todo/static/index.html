@@ -1,0 +1,173 @@
+<!doctype html>
+<html lang="pl">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Lista TO DO</title>
+<style>
+  :root {
+    --tekst: #e2e8f0; --przygaszony: #94a3b8; --tlo-pola: rgba(255,255,255,.06);
+    --ramka: rgba(255,255,255,.12); --akcent: #38bdf8; --czerwony: #f87171; --zolty: #fbbf24;
+  }
+  :root.jasny {
+    --tekst: #1e293b; --przygaszony: #64748b; --tlo-pola: rgba(0,0,0,.05); --ramka: rgba(0,0,0,.15);
+  }
+  * { box-sizing: border-box; }
+  html, body { margin: 0; background: transparent; color: var(--tekst);
+    font: 14px/1.35 ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto, sans-serif; }
+  body { padding: 2px 4px; }
+  form { display: flex; gap: 6px; flex-wrap: wrap; margin-bottom: 6px; }
+  input, button { font: inherit; color: inherit; background: var(--tlo-pola); border: 1px solid var(--ramka);
+    border-radius: 6px; padding: 5px 8px; min-height: 32px; }
+  input:focus, button:focus-visible { outline: 2px solid var(--akcent); outline-offset: -1px; }
+  #tytul { flex: 1 1 180px; min-width: 0; }
+  #data { width: 140px; } #godz { width: 92px; }
+  input[type=date]::-webkit-calendar-picker-indicator, input[type=time]::-webkit-calendar-picker-indicator { filter: invert(.7); }
+  button { cursor: pointer; }
+  button.glowny { background: var(--akcent); color: #0f172a; border-color: transparent; font-weight: 600; }
+  .szybkie { display: flex; gap: 4px; }
+  .szybkie button { padding: 2px 8px; min-height: 32px; font-size: 12px; color: var(--przygaszony); }
+  ul { list-style: none; margin: 0; padding: 0; }
+  li { display: flex; align-items: center; gap: 8px; padding: 4px 2px; border-bottom: 1px solid var(--ramka); }
+  li:last-child { border-bottom: 0; }
+  li input[type=checkbox] { width: 18px; height: 18px; min-height: 0; margin: 0; accent-color: var(--akcent); flex: none; }
+  .t { flex: 1; min-width: 0; overflow-wrap: anywhere; cursor: text; }
+  li.zrobione .t { text-decoration: line-through; color: var(--przygaszony); }
+  .termin { flex: none; font-size: 12px; color: var(--przygaszony); white-space: nowrap; }
+  .termin.po { color: var(--czerwony); font-weight: 600; } .termin.dzis { color: var(--zolty); font-weight: 600; }
+  .usun { flex: none; border: 0; background: none; color: var(--przygaszony); padding: 0 6px; min-height: 24px; font-size: 16px; }
+  .usun:hover { color: var(--czerwony); }
+  .stopka { display: flex; gap: 12px; justify-content: space-between; margin-top: 6px; font-size: 12px; color: var(--przygaszony); }
+  .stopka button { border: 0; background: none; padding: 0; min-height: 0; color: var(--przygaszony); text-decoration: underline; }
+  .pusto { color: var(--przygaszony); padding: 6px 2px; }
+  .blad { color: var(--czerwony); font-size: 12px; }
+  .edycja { flex: 1; min-width: 0; }
+</style>
+</head>
+<body>
+<form id="f" autocomplete="off">
+  <input id="tytul" placeholder="Nowe zadanie… (Enter)" maxlength="300" required>
+  <input id="data" type="date" title="Termin (opcjonalnie)">
+  <input id="godz" type="time" title="Godzina (opcjonalnie)">
+  <span class="szybkie"><button type="button" data-d="0">dziś</button><button type="button" data-d="1">jutro</button></span>
+  <button class="glowny" type="submit">Dodaj</button>
+</form>
+<div id="blad" class="blad" hidden></div>
+<ul id="lista"></ul>
+<div class="stopka">
+  <span id="licznik"></span>
+  <span><button id="pokaz" type="button"></button> <button id="czysc" type="button" hidden>wyczyść zrobione</button></span>
+</div>
+<script>
+(() => {
+  // ?jasny=1 w adresie — kolory pod jasny motyw (domyślnie ciemny, jak Homepage)
+  if (new URLSearchParams(location.search).get('jasny') === '1') document.documentElement.classList.add('jasny');
+  const $ = s => document.querySelector(s);
+  let zadania = [], pokazZrobione = false;
+  try { pokazZrobione = localStorage.getItem('todo-pokaz') === '1'; } catch (e) {}
+
+  const pad = n => String(n).padStart(2, '0');
+  const dzienISO = d => `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}`;
+  const DNI = ['nd', 'pn', 'wt', 'śr', 'cz', 'pt', 'sb'];
+
+  function opisTerminu(due) {
+    if (!due) return null;
+    const [d, g] = due.split('T');
+    const dzis = dzienISO(new Date()), jut = dzienISO(new Date(Date.now() + 864e5));
+    const teraz = new Date();
+    const koniec = g ? new Date(`${d}T${g}`) : new Date(`${d}T23:59:59`);
+    let txt = d === dzis ? 'dziś' : d === jut ? 'jutro' : (() => {
+      const x = new Date(`${d}T12:00`); return `${DNI[x.getDay()]} ${pad(x.getDate())}.${pad(x.getMonth() + 1)}`;
+    })();
+    if (g) txt += ' ' + g;
+    return { txt, klasa: koniec < teraz ? 'po' : d === dzis ? 'dzis' : '' };
+  }
+
+  async function api(metoda, sciezka, cialo) {
+    const r = await fetch(sciezka, { method: metoda, cache: 'no-store',
+      headers: cialo !== undefined ? { 'Content-Type': 'application/json' } : {},
+      body: cialo !== undefined ? JSON.stringify(cialo) : undefined });
+    if (!r.ok) { let m = r.statusText; try { m = (await r.json()).error || m; } catch (e) {} throw new Error(m); }
+    return r.status === 204 ? null : r.json();
+  }
+  function pokazBlad(e) { const b = $('#blad'); b.textContent = e ? 'Błąd: ' + e.message : ''; b.hidden = !e; }
+
+  async function odswiez() {
+    try { zadania = (await api('GET', 'api/todos')).tasks; pokazBlad(null); rysuj(); }
+    catch (e) { pokazBlad(e); }
+  }
+
+  function rysuj() {
+    const ul = $('#lista'); ul.textContent = '';
+    const otwarte = zadania.filter(t => !t.done), zrobione = zadania.filter(t => t.done);
+    const widoczne = pokazZrobione ? otwarte.concat(zrobione) : otwarte;
+    if (!widoczne.length) {
+      const li = document.createElement('li'); li.className = 'pusto';
+      li.textContent = otwarte.length ? '' : 'Nic do zrobienia 🎉'; ul.append(li);
+    }
+    for (const t of widoczne) {
+      const li = document.createElement('li'); if (t.done) li.className = 'zrobione';
+      const cb = document.createElement('input'); cb.type = 'checkbox'; cb.checked = t.done;
+      cb.title = t.done ? 'Przywróć' : 'Zrobione';
+      cb.onchange = () => zmien(t.id, { done: cb.checked });
+      const s = document.createElement('span'); s.className = 't'; s.textContent = t.title;
+      s.title = 'Kliknij dwa razy, żeby edytować'; s.ondblclick = () => edytuj(li, s, t);
+      li.append(cb, s);
+      const op = opisTerminu(t.due);
+      if (op) { const e = document.createElement('span'); e.className = 'termin ' + (t.done ? '' : op.klasa); e.textContent = op.txt; li.append(e); }
+      const x = document.createElement('button'); x.className = 'usun'; x.type = 'button'; x.textContent = '×'; x.title = 'Usuń';
+      x.onclick = async () => { try { await api('DELETE', `api/todos/${t.id}`); await odswiez(); } catch (e) { pokazBlad(e); } };
+      li.append(x); ul.append(li);
+    }
+    $('#licznik').textContent = `${otwarte.length} do zrobienia`;
+    $('#pokaz').textContent = zrobione.length ? (pokazZrobione ? 'ukryj zrobione' : `pokaż zrobione (${zrobione.length})`) : '';
+    $('#czysc').hidden = !(pokazZrobione && zrobione.length);
+  }
+
+  function edytuj(li, span, t) {
+    const inp = document.createElement('input'); inp.className = 'edycja'; inp.value = t.title; inp.maxLength = 300;
+    span.replaceWith(inp); inp.focus(); inp.select();
+    let koniec = false;
+    const zatwierdz = async zapisz => {
+      if (koniec) return; koniec = true;
+      const v = inp.value.trim();
+      if (zapisz && v && v !== t.title) await zmien(t.id, { title: v }); else rysuj();
+    };
+    inp.onkeydown = e => { if (e.key === 'Enter') zatwierdz(true); if (e.key === 'Escape') zatwierdz(false); };
+    inp.onblur = () => zatwierdz(true);
+  }
+
+  async function zmien(id, pola) {
+    try { await api('PATCH', `api/todos/${id}`, pola); } catch (e) { pokazBlad(e); }
+    await odswiez();
+  }
+
+  $('#f').onsubmit = async e => {
+    e.preventDefault();
+    const tytul = $('#tytul').value.trim(); if (!tytul) return;
+    const d = $('#data').value, g = $('#godz').value;
+    const due = d ? (g ? `${d}T${g}` : d) : (g ? `${dzienISO(new Date())}T${g}` : null);
+    try {
+      await api('POST', 'api/todos', { title: tytul, due });
+      $('#tytul').value = ''; $('#data').value = ''; $('#godz').value = '';
+      await odswiez(); $('#tytul').focus();
+    } catch (e) { pokazBlad(e); }
+  };
+  document.querySelectorAll('.szybkie button').forEach(b => b.onclick = () => {
+    $('#data').value = dzienISO(new Date(Date.now() + (+b.dataset.d) * 864e5)); $('#tytul').focus();
+  });
+  $('#pokaz').onclick = () => {
+    pokazZrobione = !pokazZrobione;
+    try { localStorage.setItem('todo-pokaz', pokazZrobione ? '1' : '0'); } catch (e) {}
+    rysuj();
+  };
+  $('#czysc').onclick = async () => { try { await api('POST', 'api/todos/clear-done', {}); await odswiez(); } catch (e) { pokazBlad(e); } };
+
+  // odświeżanie: co 30 s (zadania dodane z Discorda) i po powrocie do karty
+  setInterval(() => { if (!document.hidden && !document.querySelector('.edycja')) odswiez(); }, 30000);
+  document.addEventListener('visibilitychange', () => { if (!document.hidden) odswiez(); });
+  odswiez();
+})();
+</script>
+</body>
+</html>
