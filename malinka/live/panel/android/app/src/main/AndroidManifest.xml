@@ -1,0 +1,33 @@
+<?xml version="1.0" encoding="utf-8"?>
+<manifest xmlns:android="http://schemas.android.com/apk/res/android">
+
+    <uses-permission android:name="android.permission.INTERNET" />
+    <uses-permission android:name="android.permission.WAKE_LOCK" />
+
+    <!-- usesCleartextTraffic: panel jest na http://192.168.254.10:8084 w LAN-ie -->
+    <application
+        android:label="@string/app_name"
+        android:icon="@android:drawable/sym_def_app_icon"
+        android:allowBackup="false"
+        android:usesCleartextTraffic="true"
+        android:theme="@android:style/Theme.Black.NoTitleBar.Fullscreen">
+
+        <!-- HOME = appka może być ekranem głównym: startuje po restarcie telefonu i po każdym "Home" -->
+        <activity
+            android:name=".MainActivity"
+            android:exported="true"
+            android:launchMode="singleTask"
+            android:configChanges="orientation|screenSize|screenLayout|smallestScreenSize|keyboard|keyboardHidden|navigation|uiMode|density"
+            android:windowSoftInputMode="adjustResize">
+            <intent-filter>
+                <action android:name="android.intent.action.MAIN" />
+                <category android:name="android.intent.category.LAUNCHER" />
+            </intent-filter>
+            <intent-filter>
+                <action android:name="android.intent.action.MAIN" />
+                <category android:name="android.intent.category.HOME" />
+                <category android:name="android.intent.category.DEFAULT" />
+            </intent-filter>
+        </activity>
+    </application>
+</manifest>

@@ -1,0 +1,45 @@
+plugins {
+    id 'com.android.application'
+}
+
+android {
+    namespace 'pl.maciej.jarvispanel'
+    compileSdk 35
+
+    defaultConfig {
+        applicationId 'pl.maciej.jarvispanel'
+        minSdk 26
+        targetSdk 35
+        versionCode 1
+        versionName '1.0'
+    }
+
+    // Stały klucz podpisu (z sekretów GitHuba), żeby każda nowa wersja instalowała się NA starą
+    // bez odinstalowania. Bez zmiennych PANEL_KS* zostaje zwykły klucz debug.
+    signingConfigs {
+        stala {
+            def ks = System.getenv('PANEL_KS_FILE')
+            if (ks) {
+                storeFile file(ks)
+                storeType 'pkcs12'
+                storePassword System.getenv('PANEL_KS_PASS')
+                keyAlias 'panel'
+                keyPassword System.getenv('PANEL_KS_PASS')
+            }
+        }
+    }
+    buildTypes {
+        debug {
+            if (System.getenv('PANEL_KS_FILE')) signingConfig signingConfigs.stala
+        }
+    }
+
+    compileOptions {
+        sourceCompatibility JavaVersion.VERSION_17
+        targetCompatibility JavaVersion.VERSION_17
+    }
+    lint {
+        abortOnError false
+        checkReleaseBuilds false
+    }
+}

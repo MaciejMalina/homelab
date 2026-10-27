@@ -1,0 +1,446 @@
+<!doctype html>
+<html lang="pl">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no, viewport-fit=cover">
+<meta name="theme-color" content="#05070a">
+<title>JARVIS — panel</title>
+<style>
+  :root {
+    --tlo: #05070a; --karta: #0d1218; --ramka: #1b232e; --tekst: #e5e7eb; --przyg: #8b95a5;
+    --akcent: #38bdf8; --ok: #34d399; --uwaga: #fbbf24; --zle: #f87171;
+  }
+  * { box-sizing: border-box; -webkit-tap-highlight-color: transparent; }
+  html, body { margin: 0; height: 100%; background: var(--tlo); color: var(--tekst); overflow: hidden;
+    font: 15px/1.35 Roboto, ui-sans-serif, system-ui, sans-serif; user-select: none; -webkit-user-select: none; }
+  input { user-select: text; -webkit-user-select: text; }
+  #app { height: 100vh; height: 100dvh; padding: 8px; display: grid; gap: 8px;
+    grid-template-columns: 1.15fr 1fr 1fr; grid-template-rows: auto minmax(0, 1fr);
+    grid-template-areas: "czas todo jarvis" "trening todo jarvis"; }
+  @media (orientation: portrait) {
+    #app { grid-template-columns: 1fr; grid-template-rows: auto auto minmax(0, 1fr) auto;
+      grid-template-areas: "czas" "jarvis" "todo" "trening"; }
+    #trening { max-height: 28vh; }
+  }
+  .karta { background: var(--karta); border: 1px solid var(--ramka); border-radius: 14px; padding: 10px 12px;
+    min-height: 0; display: flex; flex-direction: column; }
+  .karta h2 { margin: 0 0 6px; font-size: 12px; font-weight: 600; letter-spacing: .08em; text-transform: uppercase;
+    color: var(--przyg); display: flex; justify-content: space-between; align-items: center; }
+  .przewijane { overflow-y: auto; min-height: 0; flex: 1; scrollbar-width: none; }
+  .przewijane::-webkit-scrollbar { display: none; }
+  .przyg { color: var(--przyg); }
+
+  /* zegar + pogoda */
+  #czas { grid-area: czas; }
+  #zegar { font-size: 64px; font-weight: 300; line-height: 1; letter-spacing: -.02em; font-variant-numeric: tabular-nums; }
+  #data { font-size: 16px; color: var(--przyg); margin: 2px 0 8px; }
+  .pogoda { display: flex; align-items: center; gap: 10px; }
+  .pogoda .ikona { font-size: 40px; line-height: 1; }
+  .pogoda .temp { font-size: 30px; font-weight: 500; }
+  .pogoda .opis { font-size: 13px; color: var(--przyg); }
+  .dni { display: flex; gap: 12px; margin-top: 6px; font-size: 13px; color: var(--przyg); flex-wrap: wrap; }
+  .dni b { color: var(--tekst); font-weight: 500; }
+
+  /* trening */
+  #trening { grid-area: trening; }
+  #trening .linia { padding: 3px 0; font-size: 14px; border-bottom: 1px solid var(--ramka); }
+  #trening .linia:last-child { border-bottom: 0; }
+  #trening b { font-weight: 600; }
+
+  /* TO DO */
+  #todo { grid-area: todo; }
+  #todo ul { list-style: none; margin: 0; padding: 0; }
+  #todo li { display: flex; align-items: flex-start; gap: 10px; padding: 7px 2px; border-bottom: 1px solid var(--ramka); }
+  #todo li:last-child { border-bottom: 0; }
+  .ptaszek { flex: none; width: 24px; height: 24px; border-radius: 7px; border: 2px solid var(--przyg); margin-top: 1px; }
+  li.zrobione .ptaszek { background: var(--ok); border-color: var(--ok); }
+  li.zrobione .t { text-decoration: line-through; color: var(--przyg); }
+  .t { flex: 1; min-width: 0; overflow-wrap: anywhere; }
+  .termin { flex: none; font-size: 12px; color: var(--przyg); white-space: nowrap; margin-top: 3px; }
+  .termin.po { color: var(--zle); font-weight: 600; } .termin.dzis { color: var(--uwaga); font-weight: 600; }
+  #nowe { display: flex; gap: 6px; margin-top: 8px; }
+  #nowe input { flex: 1; min-width: 0; font: inherit; color: inherit; background: #0a0e13; border: 1px solid var(--ramka);
+    border-radius: 10px; padding: 8px 10px; }
+  #nowe input:focus { outline: 2px solid var(--akcent); outline-offset: -1px; }
+
+  /* JARVIS */
+  #jarvis { grid-area: jarvis; }
+  .wiersz { display: flex; align-items: center; gap: 8px; padding: 5px 0; font-size: 14px; }
+  .wiersz .k { color: var(--przyg); width: 64px; flex: none; }
+  .wiersz .v { flex: 1; min-width: 0; overflow-wrap: anywhere; }
+  .kropka { width: 10px; height: 10px; border-radius: 50%; flex: none; background: var(--przyg); }
+  .kropka.ok { background: var(--ok); } .kropka.uwaga { background: var(--uwaga); } .kropka.zle { background: var(--zle); }
+  .kropka.miga { animation: miga 1s infinite alternate; }
+  @keyframes miga { to { opacity: .25; } }
+  .przyciski { display: grid; grid-template-columns: 1fr 1fr; gap: 6px; margin-top: auto; padding-top: 8px; }
+  button { font: inherit; color: var(--tekst); background: #16202b; border: 1px solid var(--ramka); border-radius: 10px;
+    padding: 10px 6px; min-height: 44px; font-size: 14px; }
+  button:active { background: #223143; }
+  button:disabled { opacity: .4; }
+  button.glowny { background: var(--akcent); color: #04131c; border-color: transparent; font-weight: 600; }
+  button.groznie { background: #3a1517; border-color: #5b1d21; }
+  button.potwierdz { background: var(--zle); color: #1a0505; font-weight: 700; }
+
+  /* baner alertu, toast, brak połączenia */
+  #alert { position: fixed; left: 8px; right: 8px; top: 8px; z-index: 20; border-radius: 12px; padding: 12px 44px 12px 14px;
+    font-size: 16px; font-weight: 500; background: #0c3a52; border: 1px solid var(--akcent); }
+  #alert.warn { background: #3d2e06; border-color: var(--uwaga); }
+  #alert.crit { background: #45100f; border-color: var(--zle); animation: puls 1.2s infinite alternate; }
+  @keyframes puls { to { box-shadow: 0 0 24px rgba(248,113,113,.6); } }
+  #alert .x { position: absolute; right: 6px; top: 6px; min-height: 0; padding: 4px 10px; background: none; border: 0; font-size: 20px; }
+  #toast { position: fixed; left: 50%; bottom: 14px; transform: translateX(-50%); z-index: 30; background: #1f2b38;
+    border: 1px solid var(--ramka); padding: 10px 16px; border-radius: 10px; font-size: 14px; max-width: 90vw;
+    opacity: 0; transition: opacity .2s; pointer-events: none; }
+  #toast.widoczny { opacity: 1; }
+  #toast.zle { border-color: var(--zle); }
+  #offline { position: fixed; left: 0; right: 0; bottom: 0; z-index: 25; background: #45100f; color: #fecaca;
+    text-align: center; font-size: 13px; padding: 4px; }
+
+  /* wygaszenie: czarna zasłona; dotyk ją zdejmuje (klik nie trafia w przyciski pod spodem) */
+  #sen { position: fixed; inset: 0; z-index: 100; background: #000; }
+  [hidden] { display: none !important; }
+</style>
+</head>
+<body>
+<div id="app">
+  <section id="czas" class="karta">
+    <div id="zegar">--:--</div>
+    <div id="data"></div>
+    <div id="pogoda" class="przyg">Pogoda…</div>
+  </section>
+
+  <section id="trening" class="karta">
+    <h2>Trening dziś</h2>
+    <div id="trening-tresc" class="przewijane przyg">…</div>
+  </section>
+
+  <section id="todo" class="karta">
+    <h2><span>TO DO</span><span id="todo-licznik"></span></h2>
+    <div class="przewijane"><ul id="lista"></ul></div>
+    <form id="nowe" autocomplete="off">
+      <input id="nowe-tytul" placeholder="Nowe zadanie…" maxlength="300" enterkeyhint="done">
+      <button class="glowny" type="submit" aria-label="Dodaj">＋</button>
+    </form>
+  </section>
+
+  <section id="jarvis" class="karta">
+    <h2><span>JARVIS</span><span id="odswiezone"></span></h2>
+    <div class="przewijane">
+      <div class="wiersz"><span class="kropka" id="k-serwer"></span><span class="k">Serwer</span><span class="v" id="v-serwer">…</span></div>
+      <div class="wiersz"><span class="kropka" id="k-malinka"></span><span class="k">Malinka</span><span class="v" id="v-malinka">…</span></div>
+      <div class="wiersz"><span class="kropka" id="k-kuma"></span><span class="k">Kuma</span><span class="v" id="v-kuma">…</span></div>
+      <div class="wiersz"><span class="kropka" id="k-panel"></span><span class="k">Panel</span><span class="v" id="v-panel">…</span></div>
+    </div>
+    <div class="przyciski">
+      <button id="b-wake" class="glowny">Obudź serwer</button>
+      <button id="b-sleep" class="groznie">Uśpij serwer</button>
+      <button id="b-sync">Synchronizuj treningi</button>
+      <button id="b-ekran">Wygaś ekran</button>
+    </div>
+  </section>
+</div>
+
+<div id="alert" hidden><span id="alert-tekst"></span><button class="x" id="alert-x" aria-label="Zamknij">✕</button></div>
+<div id="toast"></div>
+<div id="offline" hidden>Brak połączenia z malinką — ponawiam…</div>
+<div id="sen" hidden></div>
+
+<script>
+"use strict";
+// Mostek z appki na telefonie (WebView). W zwykłej przeglądarce go nie ma — strona działa bez niego.
+const B = window.JarvisPanel || null;
+const $ = (id) => document.getElementById(id);
+const esc = (s) => String(s ?? "").replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
+const lsGet = (k) => { try { return localStorage.getItem(k); } catch { return null; } };
+const lsSet = (k, v) => { try { localStorage.setItem(k, v); } catch { /* bez pamięci */ } };
+
+// Token (jeśli ustawiony PANEL_TOKEN): z appki, albo raz z adresu ?token=... (zapamiętany w przeglądarce)
+const qToken = new URLSearchParams(location.search).get("token");
+if (qToken) lsSet("panelToken", qToken);
+const TOKEN = (B && B.token && B.token()) || qToken || lsGet("panelToken") || "";
+
+async function api(path, method = "GET", body) {
+  const opt = { method, headers: {} };
+  if (method !== "GET") {
+    opt.headers["Content-Type"] = "application/json";
+    if (TOKEN) opt.headers["X-Panel-Token"] = TOKEN;
+    opt.body = JSON.stringify(body ?? {});
+  }
+  const ctrl = new AbortController();
+  const t = setTimeout(() => ctrl.abort(), method === "GET" ? 12000 : 130000);
+  opt.signal = ctrl.signal;
+  try {
+    const r = await fetch(path, opt);
+    const txt = await r.text();
+    const d = txt ? JSON.parse(txt) : null;
+    if (!r.ok) throw new Error((d && d.error) || `HTTP ${r.status}`);
+    return d;
+  } finally { clearTimeout(t); }
+}
+
+let toastT = 0;
+function toast(msg, zle = false) {
+  const el = $("toast");
+  el.textContent = msg; el.className = "widoczny" + (zle ? " zle" : "");
+  clearTimeout(toastT); toastT = setTimeout(() => { el.className = ""; }, 3500);
+}
+
+// ------------------------------------------------------------------ wygaszanie ekranu
+let wakeMin = 2;                 // nadpisywane z serwera (WAKE_MIN)
+let awakeUntil = Date.now() + wakeMin * 60e3;
+let forcedUntil = 0;             // JARVIS kazał świecić (ms; Infinity = do odwołania)
+let sleeping = false;
+let screenVer = null;
+
+function goSleep() {
+  if (sleeping) return;
+  sleeping = true;
+  document.activeElement && document.activeElement.blur && document.activeElement.blur();
+  $("sen").hidden = false;
+  if (B) try { B.setSleep(true); } catch (e) { /* stara wersja appki */ }
+}
+function wake(minuty) {
+  awakeUntil = Math.max(awakeUntil, Date.now() + minuty * 60e3);
+  if (!sleeping) return;
+  sleeping = false;
+  $("sen").hidden = true;
+  if (B) try { B.setSleep(false); } catch (e) { /* j.w. */ }
+  loadDash();
+}
+// tap w czarną zasłonę budzi na wakeMin minut; cały tap (down+up+click) ląduje na zasłonie
+$("sen").addEventListener("click", () => wake(wakeMin));
+// każdy dotyk przy włączonym ekranie przedłuża świecenie
+document.addEventListener("pointerdown", () => { if (!sleeping) wake(wakeMin); }, true);
+document.addEventListener("keydown", () => { if (!sleeping) wake(wakeMin); }, true);
+
+$("b-ekran").addEventListener("click", () => { forcedUntil = 0; awakeUntil = 0; goSleep(); });
+
+async function pollScreen() {
+  try {
+    const s = await api("/api/screen");
+    if (typeof s.wake_min === "number") wakeMin = s.wake_min;
+    if (s.ver !== screenVer) {
+      const pierwszy = screenVer === null;
+      screenVer = s.ver;
+      const untilMs = s.until ? Date.now() + (s.until - s.now) * 1000 : Infinity;
+      if (s.mode === "on" && untilMs > Date.now()) { forcedUntil = untilMs; wake(wakeMin); }
+      else if (s.mode === "sleep" && !pierwszy) { forcedUntil = 0; awakeUntil = 0; goSleep(); }
+      else if (s.mode !== "on") forcedUntil = 0;
+    }
+    pokazAlert(s.alert);
+  } catch (e) { /* offline pokazuje loadDash */ }
+}
+
+function pokazAlert(a) {
+  const el = $("alert");
+  if (!a) { el.hidden = true; return; }
+  $("alert-tekst").textContent = a.text;
+  el.className = a.level || "info";
+  el.hidden = false;
+}
+$("alert-x").addEventListener("click", async () => {
+  $("alert").hidden = true;
+  try { await api("/api/alert/clear", "POST"); } catch (e) { toast("Nie udało się zamknąć alertu: " + e.message, true); }
+});
+
+// ------------------------------------------------------------------ zegar
+const fmtData = new Intl.DateTimeFormat("pl-PL", { weekday: "long", day: "numeric", month: "long" });
+const dwa = (n) => String(n).padStart(2, "0");
+function tick() {
+  const d = new Date();
+  $("zegar").textContent = `${dwa(d.getHours())}:${dwa(d.getMinutes())}`;
+  const txt = fmtData.format(d);
+  $("data").textContent = txt.charAt(0).toUpperCase() + txt.slice(1);
+  if (!sleeping && Date.now() > Math.max(awakeUntil, forcedUntil)) goSleep();
+}
+
+// ------------------------------------------------------------------ renderowanie
+const WMO = {
+  0: ["☀️", "Bezchmurnie"], 1: ["🌤️", "Przeważnie pogodnie"], 2: ["⛅", "Częściowe zachmurzenie"], 3: ["☁️", "Pochmurno"],
+  45: ["🌫️", "Mgła"], 48: ["🌫️", "Mgła szronowa"], 51: ["🌦️", "Słaba mżawka"], 53: ["🌦️", "Mżawka"], 55: ["🌧️", "Gęsta mżawka"],
+  56: ["🌧️", "Marznąca mżawka"], 57: ["🌧️", "Marznąca mżawka"], 61: ["🌦️", "Słaby deszcz"], 63: ["🌧️", "Deszcz"],
+  65: ["🌧️", "Ulewa"], 66: ["🌧️", "Marznący deszcz"], 67: ["🌧️", "Marznący deszcz"], 71: ["🌨️", "Słaby śnieg"],
+  73: ["🌨️", "Śnieg"], 75: ["❄️", "Intensywny śnieg"], 77: ["🌨️", "Ziarna śniegu"], 80: ["🌦️", "Przelotny deszcz"],
+  81: ["🌧️", "Przelotne opady"], 82: ["⛈️", "Gwałtowne opady"], 85: ["🌨️", "Przelotny śnieg"], 86: ["❄️", "Śnieżyca"],
+  95: ["⛈️", "Burza"], 96: ["⛈️", "Burza z gradem"], 99: ["⛈️", "Burza z gradem"],
+};
+const st = (v) => (v === null || v === undefined ? "–" : `${Math.round(v)}°`);
+const DNI_KROTKO = ["nd", "pn", "wt", "śr", "cz", "pt", "sb"];
+
+function renderPogoda(p) {
+  const el = $("pogoda");
+  if (!p || !p.ok) { el.textContent = "Pogoda niedostępna"; el.className = "przyg"; return; }
+  const w = p.data, [ik, opis] = WMO[w.code] || ["🌡️", ""];
+  const ikona = w.code === 0 && w.is_day === 0 ? "🌙" : ik;
+  const dzis = (w.days || [])[0] || {};
+  const kolejne = (w.days || []).slice(1).map((d) => {
+    const dz = DNI_KROTKO[new Date(d.date + "T12:00").getDay()];
+    return `<span>${dz} ${(WMO[d.code] || ["", ""])[0]} <b>${st(d.max)}</b>/${st(d.min)}${d.pp ? ` · ${d.pp}%` : ""}</span>`;
+  }).join("");
+  el.className = "";
+  el.innerHTML = `
+    <div class="pogoda"><span class="ikona">${ikona}</span>
+      <div><div class="temp">${st(w.temp)}</div><div class="opis">${esc(opis)} · odczuw. ${st(w.feels)}</div></div></div>
+    <div class="dni"><span>dziś <b>${st(dzis.max)}</b>/${st(dzis.min)}${dzis.pp ? ` · opady ${dzis.pp}%` : ""}</span>
+      <span>wiatr ${w.wind != null ? Math.round(w.wind) : "–"} km/h</span>
+      <span>☀ ${esc(dzis.sunrise || "–")}–${esc(dzis.sunset || "–")}</span>${kolejne}</div>`;
+}
+
+function renderTrening(t) {
+  const el = $("trening-tresc");
+  if (!t || !t.ok) { el.innerHTML = `<span class="przyg">Appka trener nie odpowiada</span>`; return; }
+  const lines = t.data.lines || [];
+  el.className = "przewijane";
+  el.innerHTML = lines.length
+    ? lines.map((l) => `<div class="linia">${esc(l).replace(/\*\*(.+?)\*\*/g, "<b>$1</b>")}</div>`).join("")
+    : `<span class="przyg">Brak danych</span>`;
+}
+
+function fmtTermin(due) {
+  if (!due) return null;
+  const [dzien, godz] = due.split("T");
+  const d0 = new Date(); d0.setHours(0, 0, 0, 0);
+  const d = new Date(dzien + "T00:00");
+  const roznica = Math.round((d - d0) / 86400e3);
+  const kiedy = new Date(due.length > 10 ? due : dzien + "T23:59");
+  let tekst = roznica === 0 ? "dziś" : roznica === 1 ? "jutro" : roznica === -1 ? "wczoraj"
+    : roznica > 1 && roznica < 7 ? DNI_KROTKO[d.getDay()] : `${dwa(d.getDate())}.${dwa(d.getMonth() + 1)}`;
+  if (godz) tekst += " " + godz;
+  return { tekst, klasa: kiedy < new Date() ? "po" : roznica === 0 ? "dzis" : "" };
+}
+
+let ostatnieZadania = [];
+function renderTodo(t) {
+  const ul = $("lista");
+  if (!t || !t.ok) { ul.innerHTML = `<li class="przyg">Lista TO DO nie odpowiada</li>`; $("todo-licznik").textContent = ""; return; }
+  ostatnieZadania = t.data.tasks || [];
+  $("todo-licznik").textContent = ostatnieZadania.length ? String(ostatnieZadania.length) : "";
+  if (!ostatnieZadania.length) { ul.innerHTML = `<li class="przyg">Nic do zrobienia 🎉</li>`; return; }
+  ul.innerHTML = ostatnieZadania.map((z) => {
+    const tm = fmtTermin(z.due);
+    return `<li data-id="${z.id}"><span class="ptaszek"></span><span class="t">${esc(z.title)}</span>${tm ? `<span class="termin ${tm.klasa}">${esc(tm.tekst)}</span>` : ""}</li>`;
+  }).join("");
+}
+$("lista").addEventListener("click", async (e) => {
+  const li = e.target.closest("li[data-id]");
+  if (!li || li.classList.contains("zrobione")) return;
+  li.classList.add("zrobione");
+  try {
+    await api(`/api/todo/${li.dataset.id}`, "PATCH", { done: true });
+    setTimeout(loadDash, 1500);
+  } catch (err) { li.classList.remove("zrobione"); toast("Nie odhaczono: " + err.message, true); }
+});
+$("nowe").addEventListener("submit", async (e) => {
+  e.preventDefault();
+  const inp = $("nowe-tytul"), title = inp.value.trim();
+  if (!title) return;
+  inp.disabled = true;
+  try { await api("/api/todo", "POST", { title }); inp.value = ""; inp.blur(); toast("Dodano"); loadDash(); }
+  catch (err) { toast("Nie dodano: " + err.message, true); }
+  finally { inp.disabled = false; }
+});
+
+const godzMin = (ts) => { const d = new Date(ts * 1000); return `${dwa(d.getHours())}:${dwa(d.getMinutes())}`; };
+function ustaw(id, klasa, tekst) { $("k-" + id).className = "kropka " + klasa; $("v-" + id).textContent = tekst; }
+
+let serwerUp = null;
+function renderJarvis(d) {
+  // serwer
+  const s = d.serwer;
+  if (!s || !s.ok) ustaw("serwer", "zle", "błąd sprawdzania");
+  else if (s.data.disabled) ustaw("serwer", "", "brak SERVER_IP w .env");
+  else if (s.data.up) {
+    serwerUp = true;
+    ustaw("serwer", s.data.n8n === false ? "uwaga" : "ok",
+      `działa${s.data.since ? " od " + godzMin(s.data.since) : ""} · n8n ${s.data.n8n ? "OK" : "nie odpowiada"}`);
+  } else if (s.data.waking_since) {
+    serwerUp = false;
+    const sek = Math.max(0, Math.round(d.now - s.data.waking_since));
+    ustaw("serwer", "uwaga miga", `budzi się… ${Math.floor(sek / 60)}:${dwa(sek % 60)}`);
+  } else { serwerUp = false; ustaw("serwer", "", `śpi${s.data.since ? " od " + godzMin(s.data.since) : ""}`); }
+  $("b-wake").disabled = serwerUp === true;
+  $("b-sleep").disabled = serwerUp === false;
+
+  // malinka
+  const m = d.malinka && d.malinka.ok ? d.malinka.data : {};
+  const temp = m.temp;
+  ustaw("malinka", temp > 75 ? "zle" : temp > 65 ? "uwaga" : "ok",
+    [m.load != null ? `load ${m.load.toFixed(2)}` : null, temp != null ? `${temp}°C` : null,
+      m.mem_used_pct != null ? `RAM ${m.mem_used_pct}%` : null].filter(Boolean).join(" · ") || "działa");
+
+  // Kuma
+  const k = d.kuma;
+  if (!k || !k.ok) ustaw("kuma", "zle", "nie odpowiada");
+  else if (k.data.disabled) ustaw("kuma", "", "brak KUMA_API_KEY");
+  else if (k.data.down.length) ustaw("kuma", "zle", `leży: ${k.data.down.join(", ")}`);
+  else if (k.data.pending.length) ustaw("kuma", "uwaga", `oczekuje: ${k.data.pending.join(", ")}`);
+  else ustaw("kuma", "ok", `wszystko OK (${k.data.up}/${k.data.total})`);
+
+  $("odswiezone").textContent = godzMin(d.now);
+}
+
+const STATUS_BATERII = { 2: "ładuje", 3: "rozładowuje", 4: "nie ładuje", 5: "pełna" };
+function bateria() {
+  if (!B || !B.battery) return null;
+  try { return JSON.parse(B.battery()); } catch (e) { return null; }
+}
+function renderPanel() {
+  const b = bateria();
+  if (!b) { ustaw("panel", "", "przeglądarka (bez appki)"); return; }
+  const kl = b.temp > 42 ? "zle" : b.temp > 38 || (b.level < 20 && !b.plugged) ? "uwaga" : "ok";
+  ustaw("panel", kl, `🔋 ${b.level}% · ${Math.round(b.temp)}°C · ${STATUS_BATERII[b.status] || "?"}${b.plugged ? "" : " · bez zasilacza!"}`);
+}
+
+// ------------------------------------------------------------------ przyciski akcji
+async function akcja(btn, nazwa) {
+  btn.disabled = true;
+  try { const r = await api(`/api/action/${nazwa}`, "POST"); toast(r.msg || "OK"); }
+  catch (e) { toast(e.message, true); }
+  finally { btn.disabled = false; loadDash(); }
+}
+$("b-wake").addEventListener("click", (e) => akcja(e.currentTarget, "wake"));
+$("b-sync").addEventListener("click", (e) => akcja(e.currentTarget, "sync"));
+// uśpienie serwera: drugi tap w ciągu 4 s potwierdza
+let potwT = 0;
+$("b-sleep").addEventListener("click", (e) => {
+  const btn = e.currentTarget;
+  if (!btn.classList.contains("potwierdz")) {
+    btn.classList.add("potwierdz"); btn.textContent = "Na pewno?";
+    potwT = setTimeout(() => { btn.classList.remove("potwierdz"); btn.textContent = "Uśpij serwer"; }, 4000);
+    return;
+  }
+  clearTimeout(potwT); btn.classList.remove("potwierdz"); btn.textContent = "Uśpij serwer";
+  akcja(btn, "sleep");
+});
+
+// ------------------------------------------------------------------ pętle
+let dashTrwa = false;
+async function loadDash() {
+  if (dashTrwa) return;
+  dashTrwa = true;
+  try {
+    const d = await api("/api/dash");
+    $("offline").hidden = true;
+    if (d.config && typeof d.config.wake_min === "number") wakeMin = d.config.wake_min;
+    renderPogoda(d.pogoda); renderTrening(d.trening); renderTodo(d.todo); renderJarvis(d); renderPanel();
+  } catch (e) { $("offline").hidden = false; }
+  finally { dashTrwa = false; }
+}
+async function heartbeat() {
+  try { await api("/api/heartbeat", "POST", { battery: bateria(), sleeping }); } catch (e) { /* offline */ }
+}
+
+// Po przeładowaniu strony (np. co 6 h z appki) zostań w tym stanie, w jakim jest ekran telefonu
+const startowa = bateria();
+if (startowa && startowa.sleeping) goSleep();
+else if (B) try { B.setSleep(false); } catch (e) { /* j.w. */ }
+
+tick(); loadDash(); pollScreen(); heartbeat();
+setInterval(tick, 1000);
+setInterval(pollScreen, 3000);
+setInterval(heartbeat, 60000);
+let licznik = 0;
+setInterval(() => { licznik++; if (!sleeping || licznik % 10 === 0) loadDash(); }, 30000); // śpiąc: co 5 min
+</script>
+</body>
+</html>
