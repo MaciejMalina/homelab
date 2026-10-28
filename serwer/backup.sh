@@ -58,6 +58,17 @@ SRV_EXCLUDES=(
   --exclude=opt/jarvis/ollama          # 1,6 GB, stara kopia — Ollama czyta z /mnt/data/ollama
   --exclude=home/macmal/utorent/data   # stary katalog danych sprzed przeniesienia na RAID, nieużywany
   --exclude=.cache --exclude=node_modules
+  # ZMIANA (2026-10-17): appdata stacku utorent — tylko to, co odtwarza się samo
+  # (cache, transkody, logi, okładki, metadane Jellyfina, auto-backupy *arr).
+  # Bazy i ustawienia (jellyfin/data/*.db, sonarr.db, radarr.db, config.xml) zostają.
+  --exclude='home/macmal/utorent/appdata/jellyfin/cache'
+  --exclude='home/macmal/utorent/appdata/jellyfin/transcodes'
+  --exclude='home/macmal/utorent/appdata/jellyfin/data/transcodes'
+  --exclude='home/macmal/utorent/appdata/jellyfin/data/metadata'
+  --exclude='home/macmal/utorent/appdata/jellyfin/log'
+  --exclude='home/macmal/utorent/appdata/*/logs'
+  --exclude='home/macmal/utorent/appdata/*/MediaCover'
+  --exclude='home/macmal/utorent/appdata/*/Backups'
 )
 
 # --- malinka: co ciągniemy (tylko odczyt, rsync --sender przez agenta 'bkp') --
@@ -183,13 +194,15 @@ malinka() {
   pi_rsync "przebieg wstępny" || return
   # przebieg 2: na zapauzowanych kontenerach (SQLite Trota/Kumy/NPM spójne),
   # sama różnica — trwa sekundy, AdGuard stoi tylko przez ten czas
+  # ZMIANA (2026-10-28): PI_FROZEN=1 PRZED pauzą i unfreeze ZAWSZE — nawet gdy freeze zgłosi błąd,
+  # część kontenerów mogła zostać zapauzowana (28.10 tak zostały wszystkie, z AdGuardem = DNS tailnetu).
+  PI_FROZEN=1
   if pi freeze-docker >/dev/null 2>&1; then
-    PI_FROZEN=1
     pi_rsync "przebieg spójny (kontenery zapauzowane)"
-    pi unfreeze-docker >/dev/null 2>&1 && PI_FROZEN=0 || bad "odpauzowanie kontenerów na malince — sprawdź RĘCZNIE"
   else
     bad "pauza kontenerów na malince — kopia SQLite może być niespójna"
   fi
+  pi unfreeze-docker >/dev/null 2>&1 && PI_FROZEN=0 || bad "odpauzowanie kontenerów na malince — sprawdź RĘCZNIE (docker ps)"
 
   pi meta > "$DEST/malinka-meta.txt" 2>/dev/null && [ -s "$DEST/malinka-meta.txt" ] \
     && ok "malinka-meta.txt" || bad "metadane malinki"

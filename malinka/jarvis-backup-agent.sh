@@ -121,13 +121,24 @@ case "$CMD" in
     ;;
 
   freeze-docker)
-    # Alternatywa dla pełnego obrazu: pauza kontenerów na czas rsynca wolumenów
-    docker ps -q | xargs -r docker pause
-    echo "paused"
+    # Pauza kontenerów na czas rsynca wolumenów.
+    # ZMIANA (2026-10-28): pojedynczo i tylko "running". Wcześniej `docker ps -q | xargs docker pause`
+    # + set -e: jeden kontener, którego nie dało się zapauzować (np. w trakcie restartu), przerywał
+    # skrypt kodem błędu PO zapauzowaniu reszty -> backup.sh uznawał, że pauzy nie było, i nie
+    # odpauzowywał. Efekt 28.10: wszystkie kontenery (z AdGuardem) stały do ręcznego unpause.
+    BLEDY=0
+    for c in $(docker ps -q --filter status=running); do
+      docker pause "$c" >/dev/null 2>&1 || { BLEDY=$((BLEDY + 1)); log "freeze: nie zapauzowano $(docker inspect -f '{{.Name}}' "$c" 2>/dev/null)"; }
+    done
+    echo "paused (bledy: $BLEDY)"
     ;;
 
   unfreeze-docker)
-    docker ps -q --filter status=paused | xargs -r docker unpause
+    BLEDY=0
+    for c in $(docker ps -q --filter status=paused); do
+      docker unpause "$c" >/dev/null 2>&1 || { BLEDY=$((BLEDY + 1)); log "unfreeze: nie odpauzowano $(docker inspect -f '{{.Name}}' "$c" 2>/dev/null)"; }
+    done
+    [ "$BLEDY" -eq 0 ] || { echo "unpaused (bledy: $BLEDY)"; exit 1; }
     echo "unpaused"
     ;;
 

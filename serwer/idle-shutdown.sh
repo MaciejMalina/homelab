@@ -17,6 +17,8 @@
 #  aktywnosci; wylaczenia: `journalctl -t jarvis-idle-shutdown`.
 #  Wymaga: apt install conntrack
 
+export PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin  # cron ma tylko /usr/bin:/bin, a conntrack jest w /usr/sbin
+
 IDLE_MIN=15
 LOCK=/run/jarvis-no-shutdown                # zakladany przez backup.sh i inne dlugie zadania
 KILLSWITCH=/etc/jarvis-no-autoshutdown      # utworz ten plik, by calkowicie wylaczyc auto-off
@@ -26,9 +28,11 @@ STAMP=/run/jarvis-last-activity             # /run = tmpfs, znika przy kazdym st
 #  2375 docker-socket-proxy (Uptime Kuma), 8000 sterowanie gluetun,
 #  8888/8388 proxy gluetun (wylaczone), 32551 port torrentow, 61208 Glances (widget Homepage)
 IGNORE_PORTS="2375 8000 8888 8388 32551 61208"
-# Zrodla, ktore nie sa uzytkownikiem: sieci Dockera (np. Sonarr -> Jackett, n8n -> Ollama).
+# Zrodla, ktore nie sa uzytkownikiem: sieci Dockera (np. Sonarr -> Jackett, n8n -> Ollama)
+# oraz LAN-owy adres malinki 192.168.254.10 (od 2026-10-27, wczesniej 192.168.1.169) — tedy chodzi monitoring Uptime Kumy.
+# NPM na malince laczy sie przez Tailscale (100.105.181.54), wiec ruch uzytkownika dalej sie liczy.
 # 127.x CELOWO liczymy — tak wchodzi ruch z `tailscale serve` na serwerze.
-IGNORE_SRC_REGEX='^172\.(1[6-9]|2[0-9]|3[01])\.'
+IGNORE_SRC_REGEX='^(172\.(1[6-9]|2[0-9]|3[01])\.|192\.168\.254\.10$)'
 
 GLUETUN=gluetun
 DL_MIN_KB=512                               # >0,5 MB pobrane przez VPN od ostatniego sprawdzenia = pobieranie
