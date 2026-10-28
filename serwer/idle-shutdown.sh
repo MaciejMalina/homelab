@@ -44,7 +44,12 @@ NOW=$(date +%s)
 BOOT=$(( NOW - $(awk '{print int($1)}' /proc/uptime) ))
 [ -f "$STAMP" ] || { echo "start systemu" > "$STAMP"; touch -d "@$BOOT" "$STAMP"; }
 
-aktywny() { echo "$(date '+%F %T') $1" > "$STAMP"; exit 0; }
+# (2026-10-28) kazda ZMIANA powodu trafia do journala (journalctl -t jarvis-idle-shutdown),
+# zeby dalo sie sprawdzic, co trzymalo serwer, bez logowania sie w danej chwili
+# (samo zalogowanie nadpisuje znacznik powodem "sesja logowania").
+REASON=/run/jarvis-idle-reason
+powod() { [ "$(cat "$REASON" 2>/dev/null)" = "$1" ] && return; echo "$1" > "$REASON"; logger -t jarvis-idle-shutdown "trzyma: $1"; }
+aktywny() { echo "$(date '+%F %T') $1" > "$STAMP"; powod "$1"; exit 0; }
 
 # --- 1) Aktywnosc "na zywo" --------------------------------------------------
 [ -f "$LOCK" ]       && aktywny "trwajace zadanie ($LOCK)"
@@ -72,6 +77,11 @@ if command -v conntrack >/dev/null; then
           if (dport=="" && $i ~ /^dport=/) dport=substr($i,7)
         }
         if (src ~ ign) next
+        # (2026-10-28) ESTABLISHED bez ruchu: conntrack trzyma taki wpis do 5 dni (432000 s),
+        # a licznik wraca do 432000 przy KAZDYM pakiecie. Polaczenie zerwane bez FIN (np. po
+        # pauzie kontenerow na malince) wisialo jako "aktywnosc" i trzymalo serwer w nieskonczonosc.
+        # Liczymy tylko ESTABLISHED z ruchem w ostatnich ~3 min; TIME_WAIT itp. jak dotad.
+        if ($4 == "ESTABLISHED" && $3 + 0 < 431820) next
         if (index(porty, " " dport " ")) { print dport " z " src; exit }
       }')
     [ -n "$HIT" ] && aktywny "polaczenie z usluga: port $HIT"
@@ -95,14 +105,17 @@ fi
 LAST_N8N=$(docker exec backend_postgres psql -U jarvis -d jarvis_db -tAc \
   "SELECT COALESCE(EXTRACT(EPOCH FROM (now() - max(\"startedAt\")))::int, 999999) FROM execution_entity;" \
   2>/dev/null | tr -d '[:space:]')
-[ -z "$LAST_N8N" ] && exit 0
+[ -z "$LAST_N8N" ] && { powod "brak odczytu n8n z Postgresa (backend_postgres) - dla bezpieczenstwa nie wylaczam"; exit 0; }
 
 # --- 5) Bezczynnosc = czas od najpozniejszej aktywnosci (znacznik albo n8n) --
 OSTATNIA=$(stat -c %Y "$STAMP")
 N8N_TS=$(( NOW - LAST_N8N ))
 [ "$N8N_TS" -gt "$OSTATNIA" ] && OSTATNIA=$N8N_TS
 BEZCZYNNY=$(( NOW - OSTATNIA ))
-[ "$BEZCZYNNY" -lt $(( IDLE_MIN * 60 )) ] && exit 0
+if [ "$BEZCZYNNY" -lt $(( IDLE_MIN * 60 )) ]; then
+  [ "$N8N_TS" -ge "$(stat -c %Y "$STAMP")" ] && powod "wykonanie workflow n8n" || powod "nic - odliczanie do wylaczenia (${IDLE_MIN} min)"
+  exit 0
+fi
 
 logger -t jarvis-idle-shutdown "bezczynny $((BEZCZYNNY / 60)) min (prog ${IDLE_MIN} min, ostatnio: $(cat "$STAMP")) -> poweroff"
 /sbin/poweroff
