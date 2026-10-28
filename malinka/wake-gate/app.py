@@ -8,7 +8,7 @@ malince (zawsze wlaczona), sluchamy na porcie z konfiguracji, i:
   - jesli nie -> wysylamy magic packet (WoL, z cooldownem zeby nie zalewac
     sieci) i pokazujemy strone z auto-odswiezaniem co 5s.
 
-Ten sam SERVER_IP/SERVER_MAC co malinka/nightly-backup.sh (192.168.1.162,
+Ten sam SERVER_IP/SERVER_MAC co malinka/nightly-backup.sh (192.168.254.11,
 4c:cc:6a:4a:33:6d) - jesli te wartosci sie kiedys zmienia, zaktualizuj w OBU
 miejscach (nie ma wspolnego pliku configu, to swiadomy uproszczony wybor).
 """
@@ -19,7 +19,7 @@ from flask import Flask, redirect, Response
 
 app = Flask(__name__)
 
-SERVER_IP = os.environ.get("SERVER_IP", "192.168.1.162")
+SERVER_IP = os.environ.get("SERVER_IP", "192.168.254.11")
 SERVER_MAC = os.environ.get("SERVER_MAC", "4c:cc:6a:4a:33:6d")
 CHECK_PORT = int(os.environ.get("CHECK_PORT", "8096"))
 TARGET_URL = os.environ.get("TARGET_URL", "https://serwer.CHANGE-ME.ts.net:8096")

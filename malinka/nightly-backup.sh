@@ -23,7 +23,7 @@
 # w Uptime Kumie, np. "Backup: budzenie serwera", bo to inny etap niz
 # istniejace 3 monitory).
 
-SERVER_IP=192.168.1.162
+SERVER_IP=192.168.254.11
 SERVER_MAC=4c:cc:6a:4a:33:6d
 SSH_KEY=/home/macmal/.ssh/jarvis-server-backup-trigger    # dedykowany klucz, TYLKO do tego
 SSH_OPTS="-o StrictHostKeyChecking=no -o ConnectTimeout=10 -i $SSH_KEY"
@@ -60,13 +60,29 @@ kuma_push() { # kuma_push <up|down> <komunikat> — dead man's switch w Uptime K
 }
 
 # 1) Obudz serwer jesli spi
+# ZMIANA (2026-10-18): jeden pakiet WoL potrafil przepasc (18.10 serwer nie wstal,
+# a skrypt i tak czekal na n8n i SSH). Teraz pakiet idzie co ~15 s przez 4 min,
+# na broadcast ogolny i podsieci, a brak pingu konczy skrypt od razu z alertem.
+wol() {
+  wakeonlan "$SERVER_MAC" >/dev/null 2>&1
+  wakeonlan -i 192.168.254.255 "$SERVER_MAC" >/dev/null 2>&1
+  command -v etherwake >/dev/null && sudo -n etherwake -b "$SERVER_MAC" 2>/dev/null
+  return 0
+}
 if ! ping -c1 -W2 "$SERVER_IP" >/dev/null 2>&1; then
   log "Serwer spi - wysylam WoL"
-  wakeonlan "$SERVER_MAC" >/dev/null 2>&1 || etherwake "$SERVER_MAC" 2>/dev/null
-  for i in $(seq 1 36); do          # czekaj do ~3 min na ping
-    ping -c1 -W2 "$SERVER_IP" >/dev/null 2>&1 && break
-    sleep 5
+  for i in $(seq 1 48); do          # do ~4 min, pakiet WoL co 3. obieg (~15 s)
+    [ $(( (i - 1) % 3 )) -eq 0 ] && wol
+    ping -c1 -W2 "$SERVER_IP" >/dev/null 2>&1 && { log "Serwer odpowiada na ping (po ~$(( i * 5 )) s)"; break; }
+    sleep 3
   done
+  if ! ping -c1 -W2 "$SERVER_IP" >/dev/null 2>&1; then
+    log "BLAD: serwer nie wstal po WoL (brak pingu przez ~4 min)"
+    powiadom "JARVIS: serwer NIE WSTAL (WoL)" \
+      "Malinka wysylala Wake-on-LAN przez ~4 min, serwer nie odpowiedzial na ping. Poranny brief i backup dzis SIE NIE ODBYLY. Sprawdz zasilanie serwera / wlacz go recznie." err
+    kuma_push down "serwer nie wstal po WoL"
+    exit 1
+  fi
 fi
 
 # 2) Przypomnienia CRM (n8n webhook /reminders) — gdy tylko n8n wstanie
@@ -74,9 +90,19 @@ for i in $(seq 1 36); do           # do ~3 min na start n8n
   curl -fsS -m 5 -o /dev/null "http://$SERVER_IP:5678/healthz" 2>/dev/null && break
   sleep 5
 done
+# ZMIANA (2026-10-17): /healthz moze odpowiedziec, zanim n8n zarejestruje webhooki aktywnych
+# workflow (mozliwe 404), a pojedynczy POST z bledem przepadal po cichu.
+# Teraz: do 6 prob co 20 s, kod HTTP w logu, a po porazce alert na Discord.
 log "Wywoluje przypomnienia (n8n webhook /reminders)"
-curl -fsS -m 60 -o /dev/null -X POST "http://$SERVER_IP:5678/webhook/reminders" 2>/dev/null \
-  || log "UWAGA: webhook /reminders nie odpowiedzial poprawnie"
+BRIEF_OK=0
+for i in $(seq 1 6); do
+  KOD=$(curl -sS -m 60 -o /dev/null -w '%{http_code}' -X POST "http://$SERVER_IP:5678/webhook/reminders" 2>/dev/null)
+  if [ "$KOD" = "200" ]; then BRIEF_OK=1; log "Brief: HTTP 200 (proba $i)"; break; fi
+  log "Brief: HTTP ${KOD:-brak} (proba $i/6) - ponawiam za 20 s"
+  sleep 20
+done
+[ "$BRIEF_OK" = 1 ] || powiadom "JARVIS: poranny brief NIE WYSTARTOWAL" \
+  "Webhook /reminders w n8n nie odpowiedzial HTTP 200 po 6 probach (ostatni kod: ${KOD:-brak}). Sprawdz, czy workflow 'JARVIS - Poranny brief' jest opublikowany (aktywny)." err
 
 # 3) Czekaj na SSH (agent odpowiada "pong ...")
 for i in $(seq 1 24); do
