@@ -1,0 +1,163 @@
+/* JARVIS panel — telefon poziomo (Redmi Note 9 Pro: 2400×1080, ~873×393 px CSS) */
+:root {
+  --tlo: #05070a; --karta: #0c1117; --karta2: #111821; --ramka: #1a232e; --tekst: #e6e9ee; --przyg: #8a95a5;
+  --akcent: #38bdf8; --ok: #34d399; --uwaga: #fbbf24; --zle: #f87171; --pom: #ff7a45; --fiolet: #a78bfa; --morski: #2dd4bf;
+  --rail: 58px;
+}
+* { box-sizing: border-box; -webkit-tap-highlight-color: transparent; }
+html, body { margin: 0; height: 100%; background: var(--tlo); color: var(--tekst); overflow: hidden;
+  font: 14px/1.35 Roboto, ui-sans-serif, system-ui, sans-serif; user-select: none; -webkit-user-select: none; }
+input { user-select: text; -webkit-user-select: text; }
+[hidden] { display: none !important; }
+.przyg { color: var(--przyg); }
+.mala { font-size: 12px; }
+.ok-t { color: var(--ok); } .uwaga-t { color: var(--uwaga); } .zle-t { color: var(--zle); }
+
+/* ---------------------------------------------------------------- szkielet: pasek zakładek + treść */
+#szkielet { height: 100vh; height: 100dvh; display: flex; gap: 8px; padding: 6px 8px 6px 6px; }
+#rail { width: var(--rail); flex: none; display: flex; flex-direction: column; gap: 4px; overflow-y: auto; scrollbar-width: none;
+  padding: 2px; border-right: 1px solid var(--ramka); padding-right: 6px; }
+#rail::-webkit-scrollbar { display: none; }
+#rail button { width: 46px; height: 34px; min-height: 0; flex: none; padding: 0; border-radius: 10px; display: grid; place-items: center;
+  background: #0f151c; border: 1px solid var(--ramka); color: #b9c3d0; position: relative; }
+#rail button svg { width: 19px; height: 19px; }
+#rail button.aktywna { color: var(--pom); border-color: var(--pom); box-shadow: 0 0 12px rgba(255,122,69,.45), inset 0 0 8px rgba(255,122,69,.15); }
+#rail button .znacznik { position: absolute; top: 3px; right: 4px; width: 7px; height: 7px; border-radius: 50%; background: var(--zle); }
+#tresc { flex: 1; min-width: 0; display: flex; flex-direction: column; min-height: 0; }
+#naglowek { height: 30px; flex: none; display: flex; align-items: center; gap: 10px; padding: 0 2px 4px; }
+#naglowek h1 { margin: 0; font-size: 16px; font-weight: 700; letter-spacing: .02em; }
+#naglowek .info { flex: 1; min-width: 0; display: flex; gap: 6px; align-items: center; overflow: hidden; }
+#zegarek { font-size: 15px; font-weight: 600; font-variant-numeric: tabular-nums; color: var(--przyg); }
+.zakladka { flex: 1; min-height: 0; }
+
+/* ---------------------------------------------------------------- karty, kafelki, listy */
+.siatka { height: 100%; display: grid; gap: 8px; min-height: 0; }
+.karta { background: var(--karta); border: 1px solid var(--ramka); border-radius: 14px; padding: 9px 11px; min-height: 0;
+  display: flex; flex-direction: column; }
+.karta h2 { margin: 0 0 6px; font-size: 11px; font-weight: 700; letter-spacing: .09em; text-transform: uppercase; color: var(--przyg);
+  display: flex; justify-content: space-between; align-items: center; gap: 6px; }
+.karta h2 .prawo { text-transform: none; letter-spacing: 0; font-weight: 500; }
+.przewijane { overflow-y: auto; min-height: 0; flex: 1; scrollbar-width: none; }
+.przewijane::-webkit-scrollbar { display: none; }
+.kafle { display: grid; gap: 7px; }
+.kafel { border: 2px solid var(--kolor, var(--ramka)); border-radius: 13px; padding: 5px 8px 6px; text-align: center; min-width: 0;
+  box-shadow: 0 0 10px color-mix(in srgb, var(--kolor, transparent) 28%, transparent); background: #0a0f14; }
+.kafel .et { font-size: 10px; font-weight: 700; letter-spacing: .08em; text-transform: uppercase; color: #c9d1dc; }
+.kafel .wa { font-size: 21px; font-weight: 700; line-height: 1.15; font-variant-numeric: tabular-nums; white-space: nowrap; }
+.kafel .wa small { font-size: 12px; font-weight: 600; color: var(--przyg); margin-left: 2px; }
+.kafel .pod { font-size: 10px; color: var(--przyg); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.wiersz { display: flex; align-items: center; gap: 8px; padding: 5px 0; border-bottom: 1px solid var(--ramka); min-width: 0; }
+.wiersz:last-child { border-bottom: 0; }
+.wiersz .v { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.wiersz .v.zawijaj { white-space: normal; overflow-wrap: anywhere; }
+.wiersz .k { color: var(--przyg); flex: none; }
+.kropka { width: 9px; height: 9px; border-radius: 50%; flex: none; background: var(--przyg); }
+.kropka.ok { background: var(--ok); box-shadow: 0 0 6px var(--ok); } .kropka.uwaga { background: var(--uwaga); }
+.kropka.zle { background: var(--zle); box-shadow: 0 0 6px var(--zle); }
+.kropka.miga { animation: miga 1s infinite alternate; }
+@keyframes miga { to { opacity: .25; } }
+.pasek { height: 6px; border-radius: 3px; background: #1b2430; overflow: hidden; margin-top: 3px; }
+.pasek > i { display: block; height: 100%; background: var(--kolor, var(--akcent)); border-radius: 3px; }
+.pusto { color: var(--przyg); padding: 8px 2px; }
+.etykieta { font-size: 10px; padding: 1px 6px; border-radius: 6px; background: #1b2430; color: #c9d1dc; white-space: nowrap; flex: none; }
+.etykieta.zielona { background: rgba(52,211,153,.15); color: var(--ok); } .etykieta.czerwona { background: rgba(248,113,113,.15); color: var(--zle); }
+.etykieta.zolta { background: rgba(251,191,36,.15); color: var(--uwaga); }
+.dzien-naglowek { font-size: 11px; font-weight: 700; color: var(--akcent); text-transform: uppercase; letter-spacing: .06em; margin: 6px 0 2px; }
+.dzien-naglowek:first-child { margin-top: 0; }
+
+/* ---------------------------------------------------------------- przyciski, suwaki, chipy */
+button { font: inherit; color: var(--tekst); background: #16202b; border: 1px solid var(--ramka); border-radius: 11px;
+  padding: 8px 6px; min-height: 40px; font-size: 13px; }
+button:active { background: #223143; }
+button:disabled { opacity: .4; }
+button.glowny { background: var(--akcent); color: #04131c; border-color: transparent; font-weight: 700; }
+button.groznie { background: #2c1214; border-color: #5b1d21; color: #fecaca; }
+button.potwierdz { background: var(--zle); color: #1a0505; font-weight: 700; }
+button.wlaczony { border-color: var(--ok); color: var(--ok); }
+button.maly { min-height: 30px; padding: 3px 9px; font-size: 12px; border-radius: 9px; }
+.przyciski { display: grid; grid-template-columns: 1fr 1fr; gap: 6px; }
+.chipy { display: flex; gap: 5px; flex-wrap: wrap; }
+.chip { min-height: 28px; padding: 3px 10px; border-radius: 14px; font-size: 12px; display: inline-flex; align-items: center; gap: 6px; }
+.chip.aktywny { border-color: var(--pom); color: var(--pom); }
+input[type=range] { -webkit-appearance: none; appearance: none; width: 100%; height: 26px; background: transparent; margin: 0; }
+input[type=range]::-webkit-slider-runnable-track { height: 6px; border-radius: 3px; background: linear-gradient(90deg, var(--akcent) var(--w, 50%), #1f2a37 var(--w, 50%)); }
+input[type=range]::-webkit-slider-thumb { -webkit-appearance: none; width: 20px; height: 20px; border-radius: 50%; background: #e6e9ee; margin-top: -7px; box-shadow: 0 0 8px rgba(56,189,248,.6); }
+.suwak { display: flex; align-items: center; gap: 8px; }
+.suwak .nazwa { width: 92px; flex: none; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 12px; }
+.suwak .proc { width: 34px; text-align: right; font-size: 12px; color: var(--przyg); font-variant-numeric: tabular-nums; }
+.suwak button { min-height: 28px; width: 32px; padding: 0; flex: none; }
+
+/* ---------------------------------------------------------------- Przegląd */
+#t-przeglad .siatka { grid-template-columns: 1.15fr 1fr 1fr; grid-template-rows: auto minmax(0, 1fr);
+  grid-template-areas: "czas todo jarvis" "trening todo jarvis"; }
+#czas { grid-area: czas; } #trening-skrot { grid-area: trening; } #todo { grid-area: todo; } #jarvis { grid-area: jarvis; }
+#zegar { font-size: 54px; font-weight: 300; line-height: 1; letter-spacing: -.02em; font-variant-numeric: tabular-nums; }
+#data { font-size: 15px; color: var(--przyg); margin: 2px 0 6px; }
+.pogoda { display: flex; align-items: center; gap: 10px; }
+.pogoda .ikona { font-size: 36px; line-height: 1; }
+.pogoda .temp { font-size: 26px; font-weight: 600; }
+.pogoda .opis { font-size: 12px; color: var(--przyg); }
+.dni { display: flex; gap: 10px; margin-top: 4px; font-size: 12px; color: var(--przyg); flex-wrap: wrap; }
+.dni b { color: var(--tekst); font-weight: 500; }
+#trening-tresc .linia { padding: 3px 0; font-size: 13px; border-bottom: 1px solid var(--ramka); }
+#trening-tresc .linia:last-child { border-bottom: 0; }
+#todo ul { list-style: none; margin: 0; padding: 0; }
+#todo li { display: flex; align-items: flex-start; gap: 9px; padding: 6px 2px; border-bottom: 1px solid var(--ramka); }
+#todo li:last-child { border-bottom: 0; }
+.ptaszek { flex: none; width: 22px; height: 22px; border-radius: 7px; border: 2px solid var(--przyg); margin-top: 1px; }
+li.zrobione .ptaszek { background: var(--ok); border-color: var(--ok); }
+li.zrobione .t { text-decoration: line-through; color: var(--przyg); }
+.t { flex: 1; min-width: 0; overflow-wrap: anywhere; }
+.termin { flex: none; font-size: 12px; color: var(--przyg); white-space: nowrap; margin-top: 2px; }
+.termin.po { color: var(--zle); font-weight: 600; } .termin.dzis { color: var(--uwaga); font-weight: 600; }
+#nowe { display: flex; gap: 6px; margin-top: 6px; }
+#nowe input { flex: 1; min-width: 0; font: inherit; color: inherit; background: #080c10; border: 1px solid var(--ramka); border-radius: 10px; padding: 7px 10px; }
+#nowe input:focus { outline: 2px solid var(--akcent); outline-offset: -1px; }
+#jarvis .wiersz .k { width: 58px; }
+
+/* ---------------------------------------------------------------- PC / Muzyka / Discord */
+.pc-uklad { grid-template-columns: 1.15fr 1fr; }
+.okladka { width: 150px; height: 150px; border-radius: 14px; object-fit: cover; flex: none; background: #121a23;
+  display: grid; place-items: center; font-size: 44px; box-shadow: 0 6px 24px rgba(0,0,0,.5); }
+.utwor { font-size: 19px; font-weight: 700; line-height: 1.2; overflow-wrap: anywhere; }
+.wykonawca { font-size: 14px; color: #c9d1dc; margin-top: 2px; }
+.sterowanie { display: flex; gap: 10px; justify-content: center; margin-top: 8px; }
+.sterowanie button { width: 56px; height: 48px; font-size: 20px; border-radius: 14px; }
+.sterowanie button.duzy { width: 72px; background: var(--akcent); color: #04131c; border-color: transparent; }
+.czas-utworu { display: flex; justify-content: space-between; font-size: 11px; color: var(--przyg); font-variant-numeric: tabular-nums; }
+.osoba { display: flex; align-items: center; gap: 10px; padding: 7px 10px; margin-bottom: 6px; border-radius: 12px; background: var(--karta2); border: 1px solid var(--ramka); }
+.osoba img, .osoba .awatar { width: 34px; height: 34px; border-radius: 50%; flex: none; background: #22303f; object-fit: cover; }
+.osoba .v { flex: 1; font-weight: 600; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.osoba .ikony { display: flex; gap: 5px; font-size: 14px; color: var(--zle); }
+.duze-przyciski { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; }
+.duze-przyciski button { min-height: 64px; font-size: 24px; border-radius: 16px; }
+.duze-przyciski button.wylaczony { border-color: var(--zle); color: var(--zle); }
+
+/* ---------------------------------------------------------------- Trening */
+.tydzien { display: grid; grid-template-columns: repeat(7, 1fr); gap: 5px; flex: none; }
+.tydzien .dzien { background: var(--karta); border: 1px solid var(--ramka); border-radius: 11px; padding: 4px 5px; min-height: 58px; text-align: center; }
+.tydzien .dzien.dzis { border-color: var(--pom); box-shadow: 0 0 10px rgba(255,122,69,.3); }
+.tydzien .dzien .d { font-size: 10px; font-weight: 700; color: var(--przyg); text-transform: uppercase; }
+.tydzien .dzien .p { font-size: 17px; line-height: 1.2; }
+.tydzien .dzien .z { font-size: 10px; color: var(--ok); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.minutnik { font-size: 52px; font-weight: 300; text-align: center; font-variant-numeric: tabular-nums; line-height: 1.1; }
+.minutnik.koniec { color: var(--pom); animation: miga .5s infinite alternate; }
+
+/* ---------------------------------------------------------------- Światło */
+.kolory { display: grid; grid-template-columns: repeat(5, 1fr); gap: 8px; }
+.kolory button { height: 44px; border-radius: 12px; border: 2px solid transparent; }
+.kolory button.aktywny { border-color: #fff; }
+
+/* ---------------------------------------------------------------- warstwy: alert, toast, offline, sen */
+#alert { position: fixed; left: 70px; right: 8px; top: 6px; z-index: 20; border-radius: 12px; padding: 11px 44px 11px 14px;
+  font-size: 15px; font-weight: 500; background: #0c3a52; border: 1px solid var(--akcent); }
+#alert.warn { background: #3d2e06; border-color: var(--uwaga); }
+#alert.crit { background: #45100f; border-color: var(--zle); animation: puls 1.2s infinite alternate; }
+@keyframes puls { to { box-shadow: 0 0 24px rgba(248,113,113,.6); } }
+#alert .x { position: absolute; right: 6px; top: 4px; min-height: 0; padding: 4px 10px; background: none; border: 0; font-size: 20px; }
+#toast { position: fixed; left: 50%; bottom: 12px; transform: translateX(-50%); z-index: 30; background: #1f2b38;
+  border: 1px solid var(--ramka); padding: 9px 16px; border-radius: 10px; font-size: 13px; max-width: 80vw;
+  opacity: 0; transition: opacity .2s; pointer-events: none; }
+#toast.widoczny { opacity: 1; } #toast.zle { border-color: var(--zle); }
+#offline { position: fixed; left: 0; right: 0; bottom: 0; z-index: 25; background: #45100f; color: #fecaca; text-align: center; font-size: 12px; padding: 3px; }
+#sen { position: fixed; inset: 0; z-index: 100; background: #000; }

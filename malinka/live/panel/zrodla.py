@@ -1,0 +1,594 @@
+"""JARVIS panel — źródła danych dla zakładek (sama biblioteka standardowa).
+
+Wszystko, co stoi na serwerze (media, Glances, Paperless, kalendarz), pytamy po LAN-ie
+(192.168.254.11): idle-shutdown.sh ignoruje połączenia z 192.168.254.10 (malinka), więc
+panel nie trzyma serwera przy życiu. Po IP Tailscale pytać NIE wolno — to by go budziło na stałe.
+"""
+import base64
+import hashlib
+import http.cookiejar
+import json
+import os
+import re
+import tempfile
+import threading
+import time
+import urllib.error
+import urllib.parse
+import urllib.request
+import xml.etree.ElementTree as ET
+from concurrent.futures import ThreadPoolExecutor
+from datetime import date, datetime, timedelta, timezone
+from zoneinfo import ZoneInfo
+
+E = os.environ.get
+TZ = ZoneInfo("Europe/Warsaw")
+DATA_DIR = E("DATA_DIR", "/data")
+HTTP_TIMEOUT = 6
+pula = ThreadPoolExecutor(max_workers=8)
+
+
+# --------------------------------------------------------------------------- HTTP
+def zadanie(url, method="GET", body=None, headers=None, timeout=HTTP_TIMEOUT, opener=None, form=False, surowe=False):
+    """JSON (albo bajty przy surowe=True). body: dict -> JSON, albo form-urlencoded gdy form=True."""
+    h = {"Accept": "application/json", **(headers or {})}
+    data = None
+    if body is not None:
+        if form:
+            data = urllib.parse.urlencode(body).encode()
+            h["Content-Type"] = "application/x-www-form-urlencoded"
+        elif isinstance(body, (bytes, str)):
+            data = body.encode() if isinstance(body, str) else body
+        else:
+            data = json.dumps(body).encode()
+            h.setdefault("Content-Type", "application/json")
+    req = urllib.request.Request(url, data=data, method=method, headers=h)
+    with (opener.open(req, timeout=timeout) if opener else urllib.request.urlopen(req, timeout=timeout)) as r:
+        raw = r.read()
+        if surowe:
+            return raw, r.headers.get("Content-Type", "application/octet-stream")
+        if not raw:
+            return None
+        try:
+            return json.loads(raw)
+        except json.JSONDecodeError:
+            return raw.decode("utf-8", "replace")
+
+
+def basic(user, haslo):
+    return {"Authorization": "Basic " + base64.b64encode(f"{user}:{haslo}".encode()).decode()}
+
+
+def rownolegle(zadania):
+    """{klucz: funkcja} -> {klucz: {"ok", "data"|"error"}} — wszystko naraz, błąd jednego nie psuje reszty."""
+    fut = {k: pula.submit(f) for k, f in zadania.items()}
+    out = {}
+    for k, f in fut.items():
+        try:
+            out[k] = {"ok": True, "data": f.result()}
+        except Exception as e:  # noqa: BLE001
+            out[k] = {"ok": False, "error": f"{type(e).__name__}: {e}"[:300]}
+    return out
+
+
+# --------------------------------------------------------------------------- pamięć na dysku
+_pam_lock = threading.Lock()
+_PAM = os.path.join(DATA_DIR, "pamiec.json")
+
+
+def pamiec_get(klucz, domyslnie=None):
+    with _pam_lock:
+        try:
+            with open(_PAM, encoding="utf-8") as f:
+                return json.load(f).get(klucz, domyslnie)
+        except (FileNotFoundError, json.JSONDecodeError):
+            return domyslnie
+
+
+def pamiec_set(klucz, wartosc):
+    with _pam_lock:
+        try:
+            with open(_PAM, encoding="utf-8") as f:
+                d = json.load(f)
+        except (FileNotFoundError, json.JSONDecodeError):
+            d = {}
+        d[klucz] = wartosc
+        os.makedirs(DATA_DIR, exist_ok=True)
+        fd, tmp = tempfile.mkstemp(dir=DATA_DIR, prefix=".pam-")
+        with os.fdopen(fd, "w", encoding="utf-8") as f:
+            json.dump(d, f, ensure_ascii=False)
+        os.replace(tmp, _PAM)
+
+
+# --------------------------------------------------------------------------- komputery z agentem (C#)
+AGENT_TOKEN = E("AGENT_TOKEN", "")
+
+
+def lista_pc():
+    """PCS=gaming|http://192.168.254.73:8765|AA:BB:CC:DD:EE:FF;laptop|http://100.x.y.z:8765|"""
+    out = []
+    for wpis in (E("PCS", "") or "").split(";"):
+        cz = [c.strip() for c in wpis.split("|")]
+        if len(cz) >= 2 and cz[0] and cz[1]:
+            pid = re.sub(r"[^a-z0-9]+", "-", cz[0].lower()).strip("-")
+            out.append({"id": pid, "nazwa": cz[0], "url": cz[1].rstrip("/"), "mac": cz[2] if len(cz) > 2 else ""})
+    return out
+
+
+def pc_po_id(pid):
+    for p in lista_pc():
+        if p["id"] == pid:
+            return p
+    raise ValueError(f"nie ma komputera {pid}")
+
+
+def agent(pc, sciezka, method="GET", body=None, timeout=2.5, surowe=False):
+    return zadanie(pc["url"] + sciezka, method=method, body=body, timeout=timeout, surowe=surowe,
+                   headers={"X-Agent-Token": AGENT_TOKEN})
+
+
+def pc_stan(czesci=("stan", "audio")):
+    """Dla każdego komputera: online + wybrane części (/api/stan, /api/audio, /api/media)."""
+    pcs = lista_pc()
+
+    def jeden(pc):
+        wynik = {"id": pc["id"], "nazwa": pc["nazwa"], "wol": bool(pc["mac"])}
+        try:
+            for c in czesci:
+                wynik[c] = agent(pc, f"/api/{c}")
+            wynik["online"] = True
+        except Exception as e:  # noqa: BLE001
+            wynik["online"] = False
+            wynik["error"] = f"{type(e).__name__}: {e}"[:200]
+        return wynik
+
+    return list(pula.map(jeden, pcs)) if pcs else []
+
+
+# --------------------------------------------------------------------------- Discord (stan wypychany przez bota)
+DISCORD = {"ts": None, "kanaly": []}
+
+
+def discord_zapisz(b):
+    kanaly = b.get("kanaly")
+    if not isinstance(kanaly, list):
+        raise ValueError("kanaly: lista")
+    DISCORD.update(ts=time.time(), kanaly=kanaly[:20])
+
+
+# --------------------------------------------------------------------------- serwer: Glances
+GLANCES_URL = E("GLANCES_URL", "").rstrip("/")
+
+
+def glances():
+    if not GLANCES_URL:
+        return {"disabled": True}
+    g = lambda s: zadanie(f"{GLANCES_URL}/api/4/{s}", timeout=4)  # noqa: E731
+    r = rownolegle({k: (lambda k=k: g(k)) for k in ("quicklook", "mem", "load", "sensors", "fs", "gpu", "containers", "uptime")})
+    d = {k: (v["data"] if v["ok"] else None) for k, v in r.items()}
+    ql, mem, load = d["quicklook"] or {}, d["mem"] or {}, d["load"] or {}
+    temps = [s for s in (d["sensors"] or []) if isinstance(s, dict) and s.get("type") == "temperature_core"]
+    cpu_temp = max((s.get("value") or 0 for s in temps), default=None) if temps else None
+    dyski = [{"mnt": f.get("mnt_point"), "proc": f.get("percent"), "uzyte": f.get("used"), "razem": f.get("size")}
+             for f in (d["fs"] or []) if isinstance(f, dict) and not str(f.get("mnt_point", "")).startswith(("/boot", "/snap"))]
+    gpu = [{"nazwa": x.get("name"), "proc": x.get("proc"), "mem": x.get("mem"), "temp": x.get("temperature")}
+           for x in (d["gpu"] or []) if isinstance(x, dict)]
+    kont = []
+    for c in d["containers"] or []:
+        if not isinstance(c, dict):
+            continue
+        cpu = c.get("cpu_percent")
+        if cpu is None and isinstance(c.get("cpu"), dict):
+            cpu = c["cpu"].get("total")
+        ram = c.get("memory_usage")
+        if ram is None and isinstance(c.get("memory"), dict):
+            ram = c["memory"].get("usage")
+        kont.append({"nazwa": c.get("name"), "status": c.get("status"), "cpu": cpu, "ram": ram})
+    kont.sort(key=lambda c: (str(c["status"]).lower() not in ("running", "healthy"), str(c["nazwa"])))
+    return {"cpu": ql.get("cpu"), "cpu_nazwa": ql.get("cpu_name"), "ram": mem.get("percent"), "ram_razem": mem.get("total"),
+            "load": load.get("min1"), "rdzenie": load.get("cpucore"), "cpu_temp": cpu_temp, "dyski": dyski, "gpu": gpu,
+            "kontenery": kont, "uptime": d["uptime"] if isinstance(d["uptime"], str) else None}
+
+
+# --------------------------------------------------------------------------- media: qBittorrent / Sonarr / Radarr / Jellyfin
+QBIT_URL, QBIT_USER, QBIT_PASS = E("QBIT_URL", "").rstrip("/"), E("QBIT_USER", ""), E("QBIT_PASS", "")
+SONARR_URL, SONARR_KEY = E("SONARR_URL", "").rstrip("/"), E("SONARR_KEY", "")
+RADARR_URL, RADARR_KEY = E("RADARR_URL", "").rstrip("/"), E("RADARR_KEY", "")
+JELLYFIN_URL, JELLYFIN_KEY = E("JELLYFIN_URL", "").rstrip("/"), E("JELLYFIN_KEY", "")
+
+_qbit = {"jar": http.cookiejar.CookieJar()}
+_qbit["op"] = urllib.request.build_opener(urllib.request.HTTPCookieProcessor(_qbit["jar"]))
+_qbit_lock = threading.Lock()
+
+
+def qbit_req(sciezka, method="GET", body=None):
+    def raz():
+        return zadanie(QBIT_URL + sciezka, method=method, body=body, form=body is not None, opener=_qbit["op"],
+                       headers={"Referer": QBIT_URL + "/"})
+    with _qbit_lock:
+        try:
+            return raz()
+        except urllib.error.HTTPError as e:
+            if e.code not in (401, 403) or not QBIT_USER:
+                raise
+            odp = zadanie(QBIT_URL + "/api/v2/auth/login", method="POST", form=True, opener=_qbit["op"],
+                          body={"username": QBIT_USER, "password": QBIT_PASS}, headers={"Referer": QBIT_URL + "/"})
+            if str(odp).strip() != "Ok.":
+                raise RuntimeError("qBittorrent: złe logowanie") from None
+            return raz()
+
+
+STANY_QBIT = {"downloading": "pobiera", "forcedDL": "pobiera", "metaDL": "metadane", "stalledDL": "czeka",
+              "queuedDL": "w kolejce", "uploading": "wysyła", "forcedUP": "wysyła", "stalledUP": "gotowe",
+              "pausedDL": "pauza", "pausedUP": "gotowe", "stoppedDL": "pauza", "stoppedUP": "gotowe",
+              "checkingDL": "sprawdza", "checkingUP": "sprawdza", "error": "błąd", "missingFiles": "brak plików",
+              "moving": "przenosi", "queuedUP": "gotowe", "checkingResumeData": "sprawdza"}
+
+
+def qbit():
+    if not QBIT_URL:
+        return {"disabled": True}
+    lista = qbit_req("/api/v2/torrents/info?sort=added_on&reverse=true&limit=15") or []
+    tr = qbit_req("/api/v2/transfer/info") or {}
+    return {"dl": tr.get("dl_info_speed"), "ul": tr.get("up_info_speed"),
+            "torrenty": [{"hash": t.get("hash"), "nazwa": t.get("name"), "postep": t.get("progress"),
+                          "dl": t.get("dlspeed"), "ul": t.get("upspeed"), "eta": t.get("eta"), "rozmiar": t.get("size"),
+                          "stan": STANY_QBIT.get(t.get("state"), t.get("state")),
+                          "pauza": str(t.get("state", "")).startswith(("paused", "stopped"))} for t in lista]}
+
+
+def qbit_akcja(hsh, akcja):
+    if not re.fullmatch(r"[0-9a-fA-F]{40}|[0-9a-fA-F]{64}", hsh or ""):
+        raise ValueError("zły hash")
+    if akcja not in ("start", "stop"):
+        raise ValueError("akcja: start | stop")
+    try:  # qBittorrent 5.x
+        qbit_req(f"/api/v2/torrents/{akcja}", method="POST", body={"hashes": hsh})
+    except urllib.error.HTTPError as e:
+        if e.code != 404:
+            raise
+        qbit_req(f"/api/v2/torrents/{'resume' if akcja == 'start' else 'pause'}", method="POST", body={"hashes": hsh})
+
+
+def _arr(url, key, sciezka):
+    return zadanie(f"{url}{sciezka}", headers={"X-Api-Key": key})
+
+
+def sonarr():
+    if not (SONARR_URL and SONARR_KEY):
+        return {"disabled": True}
+    dzis = date.today()
+    q = _arr(SONARR_URL, SONARR_KEY, "/api/v3/queue?pageSize=20&includeSeries=true&includeEpisode=true") or {}
+    kal = _arr(SONARR_URL, SONARR_KEY, f"/api/v3/calendar?start={dzis}&end={dzis + timedelta(days=7)}&includeSeries=true") or []
+    kolejka = [{"tytul": ((r.get("series") or {}).get("title") or r.get("title")),
+                "odc": _odc(r.get("episode") or {}), "postep": _postep(r), "eta": r.get("timeleft"), "stan": r.get("trackedDownloadState") or r.get("status")}
+               for r in q.get("records", [])]
+    nadch = [{"tytul": (e.get("series") or {}).get("title"), "odc": _odc(e), "kiedy": e.get("airDateUtc"), "jest": e.get("hasFile")}
+             for e in kal]
+    return {"kolejka": kolejka, "nadchodzace": nadch}
+
+
+def radarr():
+    if not (RADARR_URL and RADARR_KEY):
+        return {"disabled": True}
+    dzis = date.today()
+    q = _arr(RADARR_URL, RADARR_KEY, "/api/v3/queue?pageSize=20&includeMovie=true") or {}
+    kal = _arr(RADARR_URL, RADARR_KEY, f"/api/v3/calendar?start={dzis}&end={dzis + timedelta(days=30)}") or []
+    kolejka = [{"tytul": (r.get("movie") or {}).get("title") or r.get("title"), "postep": _postep(r), "eta": r.get("timeleft"),
+                "stan": r.get("trackedDownloadState") or r.get("status")} for r in q.get("records", [])]
+    nadch = [{"tytul": m.get("title"), "rok": m.get("year"), "kiedy": m.get("digitalRelease") or m.get("physicalRelease") or m.get("inCinemas"),
+              "jest": m.get("hasFile")} for m in kal]
+    return {"kolejka": kolejka, "nadchodzace": nadch}
+
+
+def _odc(e):
+    if e.get("seasonNumber") is None:
+        return ""
+    return f"S{int(e['seasonNumber']):02d}E{int(e.get('episodeNumber') or 0):02d}"
+
+
+def _postep(r):
+    size, left = r.get("size") or 0, r.get("sizeleft") or 0
+    return round(1 - left / size, 3) if size else None
+
+
+def jellyfin():
+    if not (JELLYFIN_URL and JELLYFIN_KEY):
+        return {"disabled": True}
+    h = {"Authorization": f'MediaBrowser Token="{JELLYFIN_KEY}"'}
+    sesje = zadanie(f"{JELLYFIN_URL}/Sessions?activeWithinSeconds=900", headers=h) or []
+    teraz = []
+    for s in sesje:
+        it = s.get("NowPlayingItem")
+        if not it:
+            continue
+        ps = s.get("PlayState") or {}
+        rt = it.get("RunTimeTicks") or 0
+        teraz.append({"kto": s.get("UserName"), "urzadzenie": s.get("DeviceName") or s.get("Client"),
+                      "tytul": it.get("Name"), "serial": it.get("SeriesName"), "pauza": ps.get("IsPaused"),
+                      "postep": round((ps.get("PositionTicks") or 0) / rt, 3) if rt else None})
+    nowe = zadanie(f"{JELLYFIN_URL}/Items?SortBy=DateCreated&SortOrder=Descending&Recursive=true"
+                   f"&IncludeItemTypes=Movie,Episode&Limit=8", headers=h) or {}
+    ostatnie = [{"tytul": i.get("Name"), "serial": i.get("SeriesName"), "rok": i.get("ProductionYear"), "typ": i.get("Type")}
+                for i in nowe.get("Items", [])]
+    return {"teraz": teraz, "ostatnie": ostatnie}
+
+
+def media():
+    return rownolegle({"qbit": qbit, "sonarr": sonarr, "radarr": radarr, "jellyfin": jellyfin})
+
+
+# --------------------------------------------------------------------------- sieć: ZTE MC889A Pro, AdGuard, speedtest
+ZTE_URL, ZTE_PASS = E("ZTE_URL", "http://192.168.254.1").rstrip("/"), E("ZTE_PASS", "")
+ZTE_POLA = ("network_type,network_provider,signalbar,wan_active_band,nr5g_action_band,wan_ipaddr,"
+            "Z5g_rsrp,Z5g_rsrq,Z5g_SINR,nr5g_pci,lte_rsrp,lte_rsrq,lte_snr,lte_rssi,lte_ca_pcell_band,"
+            "realtime_rx_thrpt,realtime_tx_thrpt,monthly_rx_bytes,monthly_tx_bytes,realtime_time,"
+            "pm_sensor_mdm,pm_modem_5g,pm_sensor_ambient,loginfo")
+_zte = {"jar": http.cookiejar.CookieJar(), "zalogowany": 0.0}
+_zte["op"] = urllib.request.build_opener(urllib.request.HTTPCookieProcessor(_zte["jar"]))
+_zte_lock = threading.Lock()
+
+
+def _zte_get(cmd, multi=True):
+    q = urllib.parse.urlencode({"isTest": "false", "cmd": cmd, **({"multi_data": "1"} if multi else {}), "_": int(time.time() * 1000)})
+    return zadanie(f"{ZTE_URL}/goform/goform_get_cmd_process?{q}", opener=_zte["op"],
+                   headers={"Referer": f"{ZTE_URL}/index.html", "X-Requested-With": "XMLHttpRequest"}) or {}
+
+
+def _zte_login():
+    ld = str(_zte_get("LD", multi=False).get("LD", "")).upper()
+    if not ld:
+        raise RuntimeError("ZTE: brak LD")
+    sha = lambda s: hashlib.sha256(s.encode()).hexdigest().upper()  # noqa: E731
+    odp = zadanie(f"{ZTE_URL}/goform/goform_set_cmd_process", method="POST", form=True, opener=_zte["op"],
+                  body={"isTest": "false", "goformId": "LOGIN", "password": sha(sha(ZTE_PASS) + ld)},
+                  headers={"Referer": f"{ZTE_URL}/index.html", "X-Requested-With": "XMLHttpRequest"}) or {}
+    wynik = str(odp.get("result")) if isinstance(odp, dict) else str(odp)
+    if wynik != "0":
+        _zte["zalogowany"] = 0.0
+        raise RuntimeError({"3": "ZTE: złe hasło", "1": "ZTE: za dużo prób, odczekaj"}.get(wynik, f"ZTE: logowanie {wynik}"))
+    _zte["zalogowany"] = time.time()
+
+
+def zte(surowe=False):
+    if not ZTE_PASS:
+        return {"disabled": True}
+    with _zte_lock:
+        d = _zte_get(ZTE_POLA)
+        if d.get("loginfo") != "ok" and time.time() - _zte["zalogowany"] > 30:
+            _zte_login()  # nie częściej niż co 30 s — router blokuje po kilku nieudanych próbach
+            d = _zte_get(ZTE_POLA)
+    if surowe:
+        return d
+    f = lambda k: _liczba(d.get(k))  # noqa: E731
+    nr = d.get("network_type", "")
+    return {"siec": nr, "operator": d.get("network_provider"), "kreski": f("signalbar"),
+            "pasmo": d.get("nr5g_action_band") or d.get("wan_active_band") or d.get("lte_ca_pcell_band"),
+            "pasmo_lte": d.get("wan_active_band") or d.get("lte_ca_pcell_band"),
+            "nr": {"rsrp": f("Z5g_rsrp"), "rsrq": f("Z5g_rsrq"), "sinr": f("Z5g_SINR"), "pci": d.get("nr5g_pci")},
+            "lte": {"rsrp": f("lte_rsrp"), "rsrq": f("lte_rsrq"), "sinr": f("lte_snr"), "rssi": f("lte_rssi")},
+            "rx": f("realtime_rx_thrpt"), "tx": f("realtime_tx_thrpt"),
+            "miesiac_rx": f("monthly_rx_bytes"), "miesiac_tx": f("monthly_tx_bytes"),
+            "temp": {"modem": f("pm_sensor_mdm"), "5g": f("pm_modem_5g"), "otoczenie": f("pm_sensor_ambient")},
+            "ip": d.get("wan_ipaddr"), "zalogowany": d.get("loginfo") == "ok"}
+
+
+def _liczba(v):
+    try:
+        return float(str(v).split(",")[0]) if v not in (None, "") else None
+    except ValueError:
+        return None
+
+
+ADGUARD_URL, ADGUARD_USER, ADGUARD_PASS = E("ADGUARD_URL", "http://127.0.0.1:3030").rstrip("/"), E("ADGUARD_USER", ""), E("ADGUARD_PASS", "")
+
+
+def adguard():
+    if not ADGUARD_USER:
+        return {"disabled": True}
+    h = basic(ADGUARD_USER, ADGUARD_PASS)
+    s = zadanie(f"{ADGUARD_URL}/control/stats", headers=h) or {}
+    zap, blok = s.get("num_dns_queries") or 0, s.get("num_blocked_filtering") or 0
+    klienci = []
+    for wpis in (s.get("top_clients") or [])[:8]:
+        for ip, n in wpis.items():
+            klienci.append({"ip": ip, "n": n})
+    nazwy = {}
+    try:  # nazwy klientów (ręczne + wykryte przez rDNS/ARP)
+        c = zadanie(f"{ADGUARD_URL}/control/clients", headers=h) or {}
+        for k in c.get("clients") or []:
+            for i in k.get("ids") or []:
+                nazwy[i] = k.get("name")
+        for k in c.get("auto_clients") or []:
+            if k.get("name"):
+                nazwy.setdefault(k.get("ip"), k.get("name"))
+    except Exception:  # noqa: BLE001
+        pass
+    for k in klienci:
+        k["nazwa"] = nazwy.get(k["ip"])
+    domeny = [{"domena": d, "n": n} for wpis in (s.get("top_blocked_domains") or [])[:5] for d, n in wpis.items()]
+    return {"zapytania": zap, "zablokowane": blok, "proc": round(100 * blok / zap, 1) if zap else 0,
+            "czas_ms": round((s.get("avg_processing_time") or 0) * 1000, 1), "klienci": klienci, "blokowane": domeny}
+
+
+_speed_lock = threading.Lock()
+
+
+def speedtest():
+    if not _speed_lock.acquire(blocking=False):
+        raise RuntimeError("test już trwa")
+    try:
+        t0 = time.time()
+        zadanie("https://speed.cloudflare.com/__down?bytes=0", surowe=True, timeout=10)
+        ping = (time.time() - t0) * 1000
+        t0 = time.time()
+        dane, _ = zadanie("https://speed.cloudflare.com/__down?bytes=25000000", surowe=True, timeout=90)
+        dol = len(dane) * 8 / (time.time() - t0) / 1e6
+        t0 = time.time()
+        zadanie("https://speed.cloudflare.com/__up", method="POST", body=b"\0" * 10_000_000, surowe=True, timeout=90,
+                headers={"Content-Type": "application/octet-stream"})
+        gora = 80 / (time.time() - t0)
+        wynik = {"ts": time.time(), "ping": round(ping), "dol": round(dol, 1), "gora": round(gora, 1)}
+        pamiec_set("speedtest", wynik)
+        return wynik
+    finally:
+        _speed_lock.release()
+
+
+# --------------------------------------------------------------------------- trening / LED
+TRENER_URL = E("TRENER_URL", "http://127.0.0.1:8082").rstrip("/")
+WLED_URL = E("WLED_URL", "").rstrip("/")
+
+
+def trening():
+    return zadanie(f"{TRENER_URL}/api/panel", timeout=10)
+
+
+def wled():
+    if not WLED_URL:
+        return {"disabled": True}
+    r = rownolegle({"state": lambda: zadanie(f"{WLED_URL}/json/state", timeout=3),
+                    "info": lambda: zadanie(f"{WLED_URL}/json/info", timeout=3),
+                    "presets": lambda: zadanie(f"{WLED_URL}/presets.json", timeout=3)})
+    if not r["state"]["ok"]:
+        raise RuntimeError(r["state"]["error"])
+    st, info = r["state"]["data"] or {}, (r["info"]["data"] if r["info"]["ok"] else None) or {}
+    pres = (r["presets"]["data"] if r["presets"]["ok"] else None) or {}
+    seg = (st.get("seg") or [{}])[0]
+    kol = (seg.get("col") or [[255, 255, 255]])[0]
+    return {"on": st.get("on"), "bri": st.get("bri"), "ps": st.get("ps"), "kolor": kol[:3],
+            "nazwa": info.get("name"), "wersja": info.get("ver"),
+            "presety": [{"id": int(k), "nazwa": v.get("n") or f"Preset {k}"} for k, v in pres.items()
+                        if k.isdigit() and int(k) > 0 and isinstance(v, dict)]}
+
+
+def wled_ustaw(b):
+    if not WLED_URL:
+        raise ValueError("brak WLED_URL w .env")
+    st = {}
+    if "on" in b:
+        st["on"] = bool(b["on"]) if b["on"] != "t" else "t"
+    if "bri" in b:
+        st["bri"] = max(1, min(255, int(b["bri"])))
+    if "ps" in b:
+        st["ps"] = int(b["ps"])
+    if "kolor" in b:
+        k = [max(0, min(255, int(x))) for x in b["kolor"][:3]]
+        if len(k) != 3:
+            raise ValueError("kolor: [r, g, b]")
+        st["seg"] = [{"col": [k]}]
+        st.setdefault("on", True)
+    if not st:
+        raise ValueError("nic do zmiany")
+    return zadanie(f"{WLED_URL}/json/state", method="POST", body=st, timeout=3)
+
+
+# --------------------------------------------------------------------------- dzień: kalendarz, Paperless, poczta
+NC_CAL_URLS = [u.strip() for u in E("NEXTCLOUD_CAL_URLS", "").split(",") if u.strip()]
+NC_USER, NC_PASS = E("NEXTCLOUD_USER", ""), E("NEXTCLOUD_PASS", "")
+PAPERLESS_URL, PAPERLESS_TOKEN = E("PAPERLESS_URL", "").rstrip("/"), E("PAPERLESS_TOKEN", "")
+MAIL_STAN = E("MAIL_STAN", "/mail/stan.json")
+DNI_KAL = 7
+
+
+def _ics_data(wartosc, params):
+    m = re.match(r"^(\d{4})(\d{2})(\d{2})(?:T(\d{2})(\d{2})(\d{2})?(Z)?)?", wartosc)
+    if not m:
+        return None, False
+    y, mo, d, h, mi, s, z = m.groups()
+    if h is None or "VALUE=DATE" in params.upper() and "DATE-TIME" not in params.upper():
+        return datetime(int(y), int(mo), int(d), tzinfo=TZ), True
+    tzm = re.search(r"TZID=\"?([^;:\"]+)", params)
+    try:
+        strefa = timezone.utc if z else (ZoneInfo(tzm.group(1)) if tzm else TZ)
+    except Exception:  # noqa: BLE001  nieznana strefa w ICS
+        strefa = TZ
+    return datetime(int(y), int(mo), int(d), int(h), int(mi), int(s or 0), tzinfo=strefa).astimezone(TZ), False
+
+
+def _parsuj_ics(tekst):
+    tekst = re.sub(r"\r?\n[ \t]", "", tekst)
+    out = []
+    for blok in re.findall(r"BEGIN:VEVENT(.*?)END:VEVENT", tekst, flags=re.S):
+        pola = {}
+        for linia in blok.splitlines():
+            m = re.match(r"^([A-Z-]+)((?:;[^:]*)?):(.*)$", linia)
+            if m and m.group(1) not in pola:
+                pola[m.group(1)] = (m.group(2), m.group(3))
+        if "DTSTART" not in pola:
+            continue
+        start, cd = _ics_data(pola["DTSTART"][1], pola["DTSTART"][0])
+        koniec = _ics_data(pola["DTEND"][1], pola["DTEND"][0])[0] if "DTEND" in pola else None
+        if not start:
+            continue
+        tyt = re.sub(r"\\([,;\\])", r"\1", pola.get("SUMMARY", ("", "(bez tytułu)"))[1]).replace("\\n", " ")
+        miejsce = re.sub(r"\\([,;\\])", r"\1", pola.get("LOCATION", ("", ""))[1]).replace("\\n", " ")
+        out.append({"start": start.isoformat(), "koniec": koniec.isoformat() if koniec else None, "caly_dzien": cd,
+                    "tytul": tyt.strip(), "miejsce": miejsce.strip() or None})
+    return out
+
+
+def kalendarz_pobierz():
+    """CalDAV REPORT z <expand> — Nextcloud sam rozwija powtarzające się wydarzenia."""
+    if not NC_CAL_URLS:
+        return None
+    od = datetime.now(TZ).replace(hour=0, minute=0, second=0, microsecond=0).astimezone(timezone.utc)
+    do = od + timedelta(days=DNI_KAL)
+    f = lambda t: t.strftime("%Y%m%dT%H%M%SZ")  # noqa: E731
+    xml = (f'<?xml version="1.0" encoding="utf-8"?><c:calendar-query xmlns:d="DAV:" xmlns:c="urn:ietf:params:xml:ns:caldav">'
+           f'<d:prop><c:calendar-data><c:expand start="{f(od)}" end="{f(do)}"/></c:calendar-data></d:prop>'
+           f'<c:filter><c:comp-filter name="VCALENDAR"><c:comp-filter name="VEVENT">'
+           f'<c:time-range start="{f(od)}" end="{f(do)}"/></c:comp-filter></c:comp-filter></c:filter></c:calendar-query>')
+    wydarzenia = []
+    for url in NC_CAL_URLS:
+        raw, _ = zadanie(url, method="REPORT", body=xml, surowe=True, timeout=10,
+                         headers={**basic(NC_USER, NC_PASS), "Depth": "1", "Content-Type": "application/xml; charset=utf-8"})
+        for el in ET.fromstring(raw).iter("{urn:ietf:params:xml:ns:caldav}calendar-data"):
+            wydarzenia += _parsuj_ics(el.text or "")
+    wydarzenia.sort(key=lambda w: w["start"])
+    wynik = {"ts": time.time(), "wydarzenia": wydarzenia[:60]}
+    pamiec_set("kalendarz", wynik)
+    return wynik
+
+
+def paperless_pobierz():
+    if not (PAPERLESS_URL and PAPERLESS_TOKEN):
+        return None
+    h = {"Authorization": f"Token {PAPERLESS_TOKEN}"}
+    pola = {str(p.get("name", "")).lower(): p.get("id")
+            for p in (zadanie(f"{PAPERLESS_URL}/api/custom_fields/?page_size=100", headers=h) or {}).get("results", [])}
+    termin, zapl, kwota = pola.get("termin płatności"), pola.get("zapłacone"), pola.get("kwota")
+    faktury = []
+    if termin:
+        docs = zadanie(f"{PAPERLESS_URL}/api/documents/?custom_fields__id__in={termin}&page_size=300", headers=h, timeout=15) or {}
+        dzis = date.today()
+        for d in docs.get("results", []):
+            w = {cf.get("field"): cf.get("value") for cf in d.get("custom_fields") or []}
+            if not w.get(termin) or w.get(zapl) is True:
+                continue
+            try:
+                t = date.fromisoformat(str(w[termin])[:10])
+            except ValueError:
+                continue
+            if t > dzis + timedelta(days=30):
+                continue
+            kw = w.get(kwota)
+            faktury.append({"id": d.get("id"), "tytul": d.get("title"), "termin": t.isoformat(), "dni": (t - dzis).days,
+                            "kwota": re.sub(r"^([A-Z]{3})(.+)$", r"\2 \1", str(kw)) if kw else None})
+    faktury.sort(key=lambda f: f["termin"])
+    wynik = {"ts": time.time(), "faktury": faktury, "url": PAPERLESS_URL}
+    pamiec_set("paperless", wynik)
+    return wynik
+
+
+def poczta():
+    try:
+        with open(MAIL_STAN, encoding="utf-8") as f:
+            s = json.load(f)
+    except FileNotFoundError:
+        return {"disabled": True}
+    przyp = sorted(s.get("przypomnienia") or [], key=lambda m: -(m.get("ts") or 0))
+    return {"wazne": [{"od": m.get("od"), "temat": m.get("temat"), "konto": str(m.get("konto", "")).split("@")[0], "ts": m.get("ts")}
+                      for m in przyp[:12]],
+            "zalegle": [{"od": m.get("od"), "temat": m.get("temat")} for m in (s.get("zalegle") or [])[:8]],
+            "pominiete": len(s.get("pominiete") or [])}

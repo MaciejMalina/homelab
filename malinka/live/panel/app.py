@@ -1,26 +1,31 @@
 #!/usr/bin/env python3
 """JARVIS — panel na starym telefonie (malinka).
 
-Strona (static/index.html) + małe API, z którego ją zasilamy. Sama biblioteka
-standardowa, jak jarvis_todo. Kontener chodzi w network_mode: host (WoL musi
-wyjść broadcastem do LAN-u), więc todo/trener/Kuma są pod 127.0.0.1.
+Strona (static/) + API, z którego ją zasilamy. Sama biblioteka standardowa, jak jarvis_todo.
+Kontener chodzi w network_mode: host (WoL musi wyjść broadcastem do LAN-u), więc
+todo/trener/Kuma/AdGuard są pod 127.0.0.1. Źródła danych zakładek: zrodla.py.
 
 API (JSON):
-  GET  /api/dash               wszystko do wyświetlenia (cache po stronie serwera)
-  GET  /api/screen             stan ekranu: {ver, mode, until, alert, now} — telefon pyta co 3 s
-  POST /api/screen             {"mode": "on"|"sleep"|"auto", "minutes"?: N}   <- JARVIS / bot / n8n
-  POST /api/alert              {"text", "level"?: info|warn|crit, "minutes"?: N}  budzi ekran + baner
+  GET  /api/dash                       zakładka Przegląd
+  GET  /api/tab/<nazwa>                dzien | pc | muzyka | discord | media | serwery | siec | trening | swiatlo
+  GET  /api/screen                     stan ekranu: {ver, mode, until, alert, now} — telefon pyta co 3 s
+  POST /api/screen                     {"mode": "on"|"sleep"|"auto", "minutes"?: N}   <- JARVIS / bot / n8n
+  POST /api/alert                      {"text", "level"?: info|warn|crit, "minutes"?: N}  budzi ekran + baner
   POST /api/alert/clear
-  POST /api/heartbeat          {"battery": {...}, "sleeping": bool}           <- telefon co 60 s
-  POST /api/action/wake        WoL do serwera
-  POST /api/action/sleep       poweroff przez jpower (forced command jarvis-power-agent.sh)
-  POST /api/action/sync        synchronizacja treningów (trener /api/sync)
-  POST /api/todo               {"title", "due"?}  -> jarvis_todo
-  PATCH /api/todo/<id>         {"done"?, ...}     -> jarvis_todo
+  POST /api/heartbeat                  {"battery": {...}, "sleeping": bool}           <- telefon co 60 s
+  POST /api/serwer/<wake|sleep|reboot> (stare: /api/action/wake|sleep|sync)
+  POST /api/pc/<id>/wol                WoL komputera z PCS
+  POST /api/pc/<id>/<polecenie>        przekazane do agenta C# (audio/…, media/…, zasilanie/…, discord/…, speedtest)
+  GET  /api/pc/<id>/okladka/<oid>      okładka z agenta
+  POST /api/discord                    {"kanaly": [...]}  <- cog panel.py w bocie (tylko z 127.0.0.1)
+  POST /api/media/qbit/<hash>/<start|stop>
+  POST /api/siec/speedtest
+  POST /api/swiatlo                    {"on"?, "bri"?, "kolor"?: [r,g,b], "ps"?}  -> WLED
+  POST /api/todo, PATCH /api/todo/<id> -> jarvis_todo
   GET  /api/health
 
-Zapisy wymagają Content-Type: application/json (jak w jarvis_todo — ochrona przed
-CSRF), a jeśli ustawisz PANEL_TOKEN, także nagłówka X-Panel-Token.
+Zapisy wymagają Content-Type: application/json (ochrona przed CSRF), a jeśli ustawisz
+PANEL_TOKEN, także nagłówka X-Panel-Token.
 """
 import base64
 import hmac
@@ -36,6 +41,8 @@ import urllib.parse
 import urllib.request
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
+import zrodla as Z
+
 E = os.environ.get
 PORT = int(E("PORT", "8084"))
 STATIC = os.path.join(os.path.dirname(os.path.abspath(__file__)), "static")
@@ -45,6 +52,7 @@ TODO_URL = E("TODO_URL", "http://127.0.0.1:8083").rstrip("/")
 TRENER_URL = E("TRENER_URL", "http://127.0.0.1:8082").rstrip("/")
 KUMA_URL = E("KUMA_URL", "http://127.0.0.1:3001").rstrip("/")
 KUMA_API_KEY = E("KUMA_API_KEY", "")
+KUMA_STATUS_SLUG = E("KUMA_STATUS_SLUG", "")
 KUMA_PUSH_PANEL = E("KUMA_PUSH_PANEL", "")  # opcjonalny push-monitor "panel żyje"
 
 SERVER_IP = E("SERVER_IP", "")
@@ -112,15 +120,16 @@ class Cache:
             self.d[key] = (teraz() if val.get("ok") and not val.get("stale") else teraz() - ttl + min(ttl, 15), val)
         return val
 
-    def drop(self, key):
+    def drop(self, *keys):
         with self.lock:
-            self.d.pop(key, None)
+            for k in keys:
+                self.d.pop(k, None)
 
 
 cache = Cache()
 
 
-# --------------------------------------------------------------------------- źródła danych
+# --------------------------------------------------------------------------- źródła: Przegląd
 def pogoda():
     q = urllib.parse.urlencode({
         "latitude": LAT, "longitude": LON, "timezone": "Europe/Warsaw", "forecast_days": 3,
@@ -144,30 +153,43 @@ def pogoda():
 
 ETYKIETA_RE = re.compile(r'(\w+)="((?:[^"\\]|\\.)*)"')
 METRYKA_RE = re.compile(r"^monitor_status\{(.*)\}\s+(\S+)$")
+KUMA_STAN = {1: "up", 0: "down", 2: "pending", 3: "maintenance"}
 
 
 def kuma():
-    if not KUMA_API_KEY:
+    """Wszystkie monitory: z /metrics (klucz API) albo ze strony statusu (KUMA_STATUS_SLUG, bez klucza)."""
+    monitory = []
+    if KUMA_API_KEY:
+        auth = base64.b64encode(f":{KUMA_API_KEY}".encode()).decode()
+        req = urllib.request.Request(f"{KUMA_URL}/metrics", headers={"Authorization": f"Basic {auth}"})
+        with urllib.request.urlopen(req, timeout=HTTP_TIMEOUT) as r:
+            tekst = r.read().decode("utf-8", "replace")
+        for linia in tekst.splitlines():
+            m = METRYKA_RE.match(linia.strip())
+            if not m:
+                continue
+            et = dict(ETYKIETA_RE.findall(m.group(1)))
+            try:
+                st = int(float(m.group(2)))
+            except ValueError:
+                continue
+            monitory.append({"nazwa": et.get("monitor_name", "?").replace('\\"', '"'), "typ": et.get("monitor_type"),
+                             "stan": KUMA_STAN.get(st, "pending")})
+    elif KUMA_STATUS_SLUG:
+        _, strona = http_json(f"{KUMA_URL}/api/status-page/{KUMA_STATUS_SLUG}")
+        _, bicie = http_json(f"{KUMA_URL}/api/status-page/heartbeat/{KUMA_STATUS_SLUG}")
+        hb = (bicie or {}).get("heartbeatList") or {}
+        for g in (strona or {}).get("publicGroupList") or []:
+            for mon in g.get("monitorList") or []:
+                lista = hb.get(str(mon.get("id"))) or []
+                st = lista[-1].get("status") if lista else 2
+                monitory.append({"nazwa": mon.get("name"), "typ": mon.get("type"), "grupa": g.get("name"),
+                                 "stan": KUMA_STAN.get(st, "pending")})
+    else:
         return {"disabled": True}
-    auth = base64.b64encode(f":{KUMA_API_KEY}".encode()).decode()
-    req = urllib.request.Request(f"{KUMA_URL}/metrics", headers={"Authorization": f"Basic {auth}"})
-    with urllib.request.urlopen(req, timeout=HTTP_TIMEOUT) as r:
-        tekst = r.read().decode("utf-8", "replace")
-    up, down, pending, maint = [], [], [], []
-    for linia in tekst.splitlines():
-        m = METRYKA_RE.match(linia.strip())
-        if not m:
-            continue
-        et = dict(ETYKIETA_RE.findall(m.group(1)))
-        nazwa = et.get("monitor_name", "?").replace('\\"', '"')
-        try:
-            st = int(float(m.group(2)))
-        except ValueError:
-            continue
-        # Uptime Kuma: 1 = UP, 0 = DOWN, 2 = PENDING, 3 = MAINTENANCE
-        {1: up, 0: down, 2: pending, 3: maint}.get(st, pending).append(nazwa)
-    return {"total": len(up) + len(down) + len(pending) + len(maint), "up": len(up),
-            "down": sorted(down), "pending": sorted(pending), "maintenance": len(maint)}
+    po = lambda s: sorted(m["nazwa"] for m in monitory if m["stan"] == s)  # noqa: E731
+    return {"total": len(monitory), "up": len(po("up")), "down": po("down"), "pending": po("pending"),
+            "maintenance": len(po("maintenance")), "monitory": sorted(monitory, key=lambda m: (m["stan"] == "up", m["nazwa"]))}
 
 
 _serwer_stan = {"up": None, "since": None}
@@ -194,6 +216,11 @@ def serwer():
             "waking_since": _budzenie["ts"] if waking else None}
 
 
+def serwer_up():
+    s = cache.get("serwer", 10, serwer)
+    return bool(s.get("ok") and s["data"].get("up"))
+
+
 def malinka():
     out = {}
     try:
@@ -213,7 +240,18 @@ def malinka():
                 k, v = linia.split(":", 1)
                 mem[k] = int(v.split()[0])
         out["mem_used_pct"] = round(100 * (1 - mem["MemAvailable"] / mem["MemTotal"]))
+        out["mem_total_gb"] = round(mem["MemTotal"] / 1024 / 1024, 1)
     except (OSError, KeyError, ValueError, ZeroDivisionError):
+        pass
+    try:
+        with open("/proc/uptime") as f:
+            out["uptime_s"] = int(float(f.read().split()[0]))
+    except (OSError, ValueError):
+        pass
+    try:  # / kontenera = overlay na dysku malinki (SSD), więc to zajętość jej dysku
+        sv = os.statvfs("/")
+        out["dysk_pct"] = round(100 * (1 - sv.f_bavail / sv.f_blocks)) if sv.f_blocks else None
+    except OSError:
         pass
     return out
 
@@ -223,7 +261,7 @@ def todo():
     return {"tasks": (d or {}).get("tasks", [])}
 
 
-def trening():
+def trening_brief():
     _, d = http_json(f"{TRENER_URL}/api/brief", timeout=10)
     return {"lines": (d or {}).get("lines", [])}
 
@@ -282,51 +320,67 @@ def heartbeat(b):
 
 
 # --------------------------------------------------------------------------- akcje
-def akcja_wake():
-    if not SERVER_MAC:
-        raise ValueError("brak SERVER_MAC w .env")
-    mac = bytes.fromhex(re.sub(r"[^0-9a-fA-F]", "", SERVER_MAC))
+def wol(mac_txt):
+    mac = bytes.fromhex(re.sub(r"[^0-9a-fA-F]", "", mac_txt or ""))
     if len(mac) != 6:
-        raise ValueError("SERVER_MAC: zły format")
+        raise ValueError("MAC: zły format albo brak")
     pakiet = b"\xff" * 6 + mac * 16
     with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as s:
         s.setsockopt(socket.SOL_SOCKET, socket.SO_BROADCAST, 1)
         for port in (9, 7):
             s.sendto(pakiet, (WOL_BROADCAST, port))
+
+
+def akcja_wake():
+    if not SERVER_MAC:
+        raise ValueError("brak SERVER_MAC w .env")
+    wol(SERVER_MAC)
     _budzenie["ts"] = teraz()
     cache.drop("serwer")
     return {"msg": "Wysłano WoL — serwer wstaje (zwykle 1–3 min)"}
 
 
-def akcja_sleep():
+def _ssh_serwer(polecenie):
     if not SERVER_IP:
         raise ValueError("brak SERVER_IP w .env")
     if not os.path.exists(SSH_KEY):
         raise ValueError(f"brak klucza SSH {SSH_KEY} (zamontuj klucz bota z ssh_keys/)")
     cmd = ["ssh", "-i", SSH_KEY, "-o", "BatchMode=yes", "-o", "ConnectTimeout=5",
            "-o", "StrictHostKeyChecking=accept-new", "-o", f"UserKnownHostsFile={KNOWN_HOSTS}",
-           f"{SSH_USER}@{SERVER_IP}", "poweroff"]
+           f"{SSH_USER}@{SERVER_IP}", polecenie]
     r = subprocess.run(cmd, capture_output=True, text=True, timeout=25)
     err = (r.stderr or "").strip()
-    # przy poweroff serwer potrafi zerwać połączenie zanim ssh dostanie kod wyjścia (255)
+    # przy poweroff/reboot serwer potrafi zerwać połączenie zanim ssh dostanie kod wyjścia (255)
     zerwane = r.returncode == 255 and re.search(r"closed by remote host|Connection reset|closed\.?$", err)
     if r.returncode != 0 and not zerwane:
         raise RuntimeError(err.splitlines()[-1] if err else f"ssh: kod {r.returncode}")
     cache.drop("serwer")
+
+
+def akcja_sleep():
+    _ssh_serwer("poweroff")
     return {"msg": "Serwer się wyłącza"}
+
+
+def akcja_reboot():
+    _ssh_serwer("reboot")
+    return {"msg": "Serwer się restartuje"}
 
 
 def akcja_sync():
     st, d = http_json(f"{TRENER_URL}/api/sync", method="POST", body={}, timeout=120)
-    cache.drop("trening")
+    cache.drop("trening", "tab-trening")
     d = d or {}
     return {"msg": f"Treningi: nowe {d.get('nowe', 0)}, zaktualizowane {d.get('zaktualizowane', 0)}"
                    + (f", błędy {len(d.get('bledy') or [])}" if d.get("bledy") else "")}
 
 
-AKCJE = {"wake": akcja_wake, "sleep": akcja_sleep, "sync": akcja_sync}
+AKCJE = {"wake": akcja_wake, "sleep": akcja_sleep, "reboot": akcja_reboot, "sync": akcja_sync}
+POLECENIA_PC = re.compile(r"audio/(glosnosc|wycisz|wyjscie|aplikacja)|media/(toggle|nastepny|poprzedni)"
+                          r"|zasilanie/(uspij|wylacz|restart|zablokuj)|discord/(mikrofon|sluchawki)|speedtest")
 
 
+# --------------------------------------------------------------------------- zakładki
 def dash():
     with stan_lock:
         panel = dict(PANEL)
@@ -338,9 +392,61 @@ def dash():
         "serwer": cache.get("serwer", 10, serwer),
         "malinka": cache.get("malinka", 30, malinka),
         "todo": cache.get("todo", 20, todo),
-        "trening": cache.get("trening", 300, trening),
+        "trening": cache.get("trening", 300, trening_brief),
         "panel": panel,
     }
+
+
+def _z_pamieci(klucz, pobierz, co_ile=600):
+    """Kalendarz/Paperless są na serwerze: odświeżamy, gdy działa; gdy śpi — ostatni zapisany stan."""
+    zapis = Z.pamiec_get(klucz)
+    if serwer_up() and (not zapis or teraz() - zapis.get("ts", 0) > co_ile):
+        w = cache.get(f"dzien-{klucz}", 60, pobierz)
+        if w.get("ok") and w["data"] is not None:
+            return {**w, "data": {**w["data"], "aktualne": True}}
+        if not zapis:
+            return w
+        return {"ok": True, "data": {**zapis, "aktualne": False}, "error": w.get("error")}
+    if zapis is None:
+        return {"ok": True, "data": None}
+    return {"ok": True, "data": {**zapis, "aktualne": serwer_up()}}
+
+
+def tab_dzien():
+    return {"kalendarz": _z_pamieci("kalendarz", Z.kalendarz_pobierz),
+            "paperless": _z_pamieci("paperless", Z.paperless_pobierz),
+            "poczta": cache.get("poczta", 30, Z.poczta),
+            "todo": cache.get("todo", 20, todo), "serwer": cache.get("serwer", 10, serwer)}
+
+
+def tab_media():
+    s = cache.get("serwer", 10, serwer)
+    if not serwer_up():
+        return {"serwer": s, "media": None}
+    return {"serwer": s, "media": cache.get("media", 8, Z.media)}
+
+
+def tab_serwery():
+    with stan_lock:
+        panel = dict(PANEL)
+    return {"serwer": cache.get("serwer", 10, serwer),
+            "glances": cache.get("glances", 5, Z.glances) if serwer_up() else None,
+            "malinka": cache.get("malinka-pelna", 10, malinka),
+            "kuma": cache.get("kuma", 30, kuma), "panel": panel}
+
+
+TABS = {
+    "dzien": tab_dzien,
+    "pc": lambda: {"pcs": cache.get("pc", 2, lambda: Z.pc_stan(("stan", "audio")))},
+    "muzyka": lambda: {"pcs": cache.get("muzyka", 2, lambda: Z.pc_stan(("media", "audio")))},
+    "discord": lambda: {"discord": dict(Z.DISCORD), "pcs": cache.get("pc-online", 10, lambda: Z.pc_stan(("health",)))},
+    "media": tab_media,
+    "serwery": tab_serwery,
+    "siec": lambda: {"zte": cache.get("zte", 15, Z.zte), "adguard": cache.get("adguard", 60, Z.adguard),
+                     "speedtest": Z.pamiec_get("speedtest")},
+    "trening": lambda: {"trening": cache.get("tab-trening", 60, Z.trening)},
+    "swiatlo": lambda: {"wled": cache.get("wled", 3, Z.wled)},
+}
 
 
 # --------------------------------------------------------------------------- HTTP
@@ -350,19 +456,19 @@ TYPY = {".html": "text/html; charset=utf-8", ".js": "text/javascript; charset=ut
 
 
 class H(BaseHTTPRequestHandler):
-    server_version = "jarvis-panel/1.0"
+    server_version = "jarvis-panel/2.0"
 
     def log_message(self, fmt, *args):  # ciszej w `docker logs` — tylko błędy
         if len(args) > 1 and str(args[1]).startswith(("4", "5")):
             super().log_message(fmt, *args)
 
-    def odpowiedz(self, kod, obj=None, typ="application/json; charset=utf-8", body=None):
+    def odpowiedz(self, kod, obj=None, typ="application/json; charset=utf-8", body=None, cache_s=0):
         if body is None:
             body = b"" if obj is None else json.dumps(obj, ensure_ascii=False).encode("utf-8")
         self.send_response(kod)
         self.send_header("Content-Type", typ)
         self.send_header("Content-Length", str(len(body)))
-        self.send_header("Cache-Control", "no-store")
+        self.send_header("Cache-Control", f"max-age={cache_s}" if cache_s else "no-store")
         self.end_headers()
         if self.command != "HEAD":
             self.wfile.write(body)
@@ -376,7 +482,7 @@ class H(BaseHTTPRequestHandler):
         if PANEL_TOKEN and not hmac.compare_digest(self.headers.get("X-Panel-Token") or "", PANEL_TOKEN):
             raise LookupError("zły albo brak X-Panel-Token")
         n = int(self.headers.get("Content-Length") or 0)
-        if n > 16384:
+        if n > 65536:
             raise ValueError("za duże żądanie")
         d = json.loads(self.rfile.read(n) or b"{}")
         if not isinstance(d, dict):
@@ -400,7 +506,7 @@ class H(BaseHTTPRequestHandler):
                 tresc = json.loads(e.read() or b"{}").get("error")
             except Exception:  # noqa: BLE001
                 tresc = None
-            # 4xx z jarvis_todo/trenera (np. puste zadanie) oddajemy jak jest, reszta = 502
+            # 4xx z usług (np. puste zadanie, agent: zła akcja) oddajemy jak jest, reszta = 502
             self.blad(e.code if 400 <= e.code < 500 else 502, tresc or f"usługa odpowiedziała {e.code}")
         except (urllib.error.URLError, OSError, subprocess.TimeoutExpired) as e:
             self.blad(502, f"{type(e).__name__}: {e}")
@@ -421,10 +527,18 @@ class H(BaseHTTPRequestHandler):
             return self.odpowiedz(200, {"ok": True})
         if sc == "/api/dash":
             return self.odpowiedz(200, dash())
+        if m := re.fullmatch(r"/api/tab/(\w+)", sc):
+            fn = TABS.get(m.group(1))
+            if not fn:
+                return self.blad(404, "nie ma takiej zakładki")
+            return self.odpowiedz(200, {"now": teraz(), **fn()})
         if sc in ("/api/screen", "/api/state"):
             with stan_lock:
                 s = dict(EKRAN)
             return self.odpowiedz(200, {**s, "now": teraz(), "wake_min": WAKE_MIN})
+        if m := re.fullmatch(r"/api/pc/([\w-]+)/okladka/([0-9A-Fa-f]{1,64})", sc):
+            dane, typ = Z.agent(Z.pc_po_id(m.group(1)), f"/api/media/okladka/{m.group(2)}", surowe=True, timeout=4)
+            return self.odpowiedz(200, typ=typ, body=dane, cache_s=3600)
         if sc == "/":
             sc = "/index.html"
         plik = os.path.normpath(os.path.join(STATIC, sc.lstrip("/")))
@@ -450,11 +564,36 @@ class H(BaseHTTPRequestHandler):
         if sc == "/api/heartbeat":
             heartbeat(b)
             return self.odpowiedz(204)
-        if m := re.fullmatch(r"/api/action/(\w+)", sc):
+        if m := re.fullmatch(r"/api/(?:action|serwer)/(\w+)", sc):
             fn = AKCJE.get(m.group(1))
             if not fn:
                 return self.blad(404, "nie ma takiej akcji")
             return self.odpowiedz(200, {"ok": True, **fn()})
+        if m := re.fullmatch(r"/api/pc/([\w-]+)/(.+)", sc):
+            pc = Z.pc_po_id(m.group(1))
+            if m.group(2) == "wol":
+                wol(pc["mac"])
+                return self.odpowiedz(200, {"ok": True, "msg": f"Wysłano WoL do {pc['nazwa']}"})
+            if not POLECENIA_PC.fullmatch(m.group(2)):
+                return self.blad(404, "nie ma takiego polecenia")
+            d = Z.agent(pc, f"/api/{m.group(2)}", method="POST", body=b, timeout=90 if m.group(2) == "speedtest" else 6)
+            cache.drop("pc", "muzyka")
+            return self.odpowiedz(200, d if isinstance(d, dict) else {"ok": True})
+        if sc == "/api/discord":
+            if self.client_address[0] not in ("127.0.0.1", "::1"):
+                return self.blad(403, "tylko bot na malince")
+            Z.discord_zapisz(b)
+            return self.odpowiedz(204)
+        if m := re.fullmatch(r"/api/media/qbit/(\w+)/(start|stop)", sc):
+            Z.qbit_akcja(m.group(1), m.group(2))
+            cache.drop("media")
+            return self.odpowiedz(200, {"ok": True})
+        if sc == "/api/siec/speedtest":
+            return self.odpowiedz(200, {"ok": True, **Z.speedtest()})
+        if sc == "/api/swiatlo":
+            Z.wled_ustaw(b)
+            cache.drop("wled")
+            return self.odpowiedz(200, {"ok": True})
         if sc == "/api/todo":
             st, d = http_json(f"{TODO_URL}/api/todos", method="POST",
                               body={"title": b.get("title"), "due": b.get("due")})
@@ -480,5 +619,6 @@ class H(BaseHTTPRequestHandler):
 if __name__ == "__main__":
     os.makedirs(DATA_DIR, exist_ok=True)
     print(f"jarvis-panel: port {PORT}, serwer {SERVER_IP or '(brak SERVER_IP)'}, "
-          f"Kuma {'tak' if KUMA_API_KEY else 'nie'}, token {'tak' if PANEL_TOKEN else 'nie'}", flush=True)
+          f"Kuma {'klucz' if KUMA_API_KEY else KUMA_STATUS_SLUG or 'nie'}, komputery {len(Z.lista_pc())}, "
+          f"token {'tak' if PANEL_TOKEN else 'nie'}", flush=True)
     ThreadingHTTPServer(("0.0.0.0", PORT), H).serve_forever()

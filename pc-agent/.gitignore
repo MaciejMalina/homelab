@@ -1,0 +1,6 @@
+bin/
+obj/
+agent.json
+agent.log
+*.user
+.vs/

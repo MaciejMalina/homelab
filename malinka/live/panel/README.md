@@ -1,81 +1,98 @@
 # JARVIS Panel — dashboard na starym telefonie (Redmi Note 9 Pro)
 
 ```
-telefon (appka JARVIS Panel = WebView, ekran główny)
-   │  http://192.168.254.10:8084        co 3 s: /api/screen   co 30 s: /api/dash   co 60 s: /api/heartbeat
+telefon (appka JARVIS Panel = WebView, ekran główny, poziomo)
+   │  http://192.168.254.10:8084        co 3 s /api/screen · zakładka co 2–60 s /api/tab/<nazwa> · co 60 s /api/heartbeat
    ▼
 malinka: jarvis_panel (ten folder, network_mode: host, port 8084)
-   ├─ 127.0.0.1:8083  jarvis_todo      (lista TO DO, odhaczanie, dodawanie)
-   ├─ 127.0.0.1:8082  jarvis_trener    (/api/brief, /api/sync)
-   ├─ 127.0.0.1:3001  Uptime Kuma      (/metrics, klucz API)
-   ├─ SERVER_IP:22 / :5678             (serwer działa? n8n żyje?)
-   ├─ WoL broadcast                    ("Obudź serwer")
-   ├─ ssh jpower@serwer poweroff       ("Uśpij serwer", ten sam forced command co bot)
-   └─ api.open-meteo.com               (pogoda w Sułkowicach, bez klucza)
+   ├─ Przegląd   todo :8083, trener :8082, Kuma :3001, Open-Meteo
+   ├─ Dzień      kalendarz Nextcloud (CalDAV) + Paperless (serwer, po LAN-ie), mail-notifier/state/stan.json
+   ├─ Komputer   agent C# na gaming PC / laptopie (pc-agent/): temperatury, W, RAM/VRAM, ping, audio, zasilanie
+   ├─ Muzyka     agent: co gra (Spotify/przeglądarka), play/pauza, mikser aplikacji
+   ├─ Discord    bot (cogs/panel.py) wypycha kanały głosowe; mute/deafen = skróty klawiszowe przez agenta
+   ├─ Media      qBittorrent / Sonarr / Radarr / Jellyfin na serwerze
+   ├─ Serwery    Glances na serwerze, malinka (/proc), Uptime Kuma, obudź/uśpij/restart serwera
+   ├─ Sieć       ZTE MC889A Pro (goform API), AdGuard, speedtest z malinki
+   ├─ Trening    trener GET /api/panel (plan tygodnia, dziś, cele) + minutnik przerw
+   └─ Światło    WLED na płytce ESP8266 (gdy wgrasz firmware)
 ```
 
-Ekran: strona po 2 min bez dotyku zasłania się na czarno, a appka ściemnia podświetlenie do minimum
-(ekran logicznie dalej włączony, więc **dotyk go budzi** na `WAKE_MIN` minut). JARVIS steruje nim przez API.
+**Serwer pytamy wyłącznie po LAN-ie (192.168.254.11).** `idle-shutdown.sh` ignoruje ruch z 192.168.254.10,
+więc panel nie trzyma serwera przy życiu. Gdy serwer śpi, Media/Glances pokazują „Obudź”, a Dzień — ostatni zapisany
+kalendarz i faktury (`data/pamiec.json`).
 
 ## 1. Malinka
 
 ```bash
-# z PC (folder home/jarvis):
-scp -r malinka/live/panel macmal@malinka:~/
-
+scp -r malinka/live/panel macmal@malinka:~/          # z PC, folder home/jarvis
 # na malince:
 cd ~/panel
-ss -tlnp | grep 8084                       # ma być pusto
-cp .env.example .env && nano .env          # SERVER_IP (= NODE2_IP z .env bota), KUMA_API_KEY
-ls -l ../jarvis-bot/ssh_keys/id_rsa        # klucz bota do jpower — MUSI istnieć, inaczej docker zrobi z niego katalog
+ss -tlnp | grep 8084                                 # ma być pusto
+cp .env.example .env && nano .env                    # opis każdej zmiennej w pliku
+ls -l ../jarvis-bot/ssh_keys/id_rsa ../mail-notifier/state/stan.json   # oba MUSZĄ istnieć (inaczej docker zrobi z nich katalogi)
 docker compose up -d --build
-curl -s localhost:8084/api/dash | head -c 600; echo
+curl -s localhost:8084/api/tab/serwery | head -c 400; echo
 ```
 
-Klucz do Kumy: Uptime Kuma → Settings → API Keys → Add (bez daty wygaśnięcia).
-Opcjonalnie w Kumie nowy monitor **Push** „Panel (telefon)” (interwał 120 s), jego URL do `KUMA_PUSH_PANEL`:
-gdy telefon padnie albo straci Wi-Fi, dostaniesz alert jak przy innych monitorach.
+Klucze do `.env`: Kuma → Settings → API Keys (albo zostaw `KUMA_STATUS_SLUG=brief`), Sonarr/Radarr → Settings → General → API Key,
+Jellyfin → Panel sterowania → Klucze API, Paperless → profil → token API, Nextcloud → Ustawienia → Bezpieczeństwo → hasło aplikacji,
+AdGuard i ZTE → te same loginy co do ich paneli WWW.
 
-Tailnet (opcjonalnie, np. żeby otworzyć panel z S25 poza domem):
-`sudo tailscale serve --bg --https=8446 http://localhost:8084` (8443 Trot, 8444 trener, 8445 todo, 10000 Kuma).
+Trener: nowy plik `src/app/api/panel/route.ts` → `cd ~/trener && docker compose up -d --build`.
 
-## 2. Sterowanie z JARVIS-a
+## 2. Agent na Windowsie (gaming PC + laptop)
+
+`pc-agent/README.md`: `dotnet publish -c Release` na laptopie, potem `install.ps1` na każdym komputerze.
+Token z instalatora → `AGENT_TOKEN` w `.env` panelu; `PCS=gaming|http://192.168.254.73:8765|<MAC>;laptop|http://<IP Tailscale laptopa>:8765|`.
+W Discordzie ustaw skróty: Przełącz wyciszenie = `Ctrl+Shift+Alt+F9`, Przełącz ogłuszenie = `Ctrl+Shift+Alt+F10`.
+
+## 3. Bot Discord
+
+`cogs/panel.py` → `~/jarvis-bot/cogs/`, w `main.py`: `await self.load_extension("cogs.panel")`, przebuduj bota.
+Daje `/ekran`, `/panel_alert` i wysyła do panelu, kto siedzi na kanałach głosowych.
+
+## 4. Sterowanie ekranem z JARVIS-a
 
 ```bash
-# ekran: on (na N minut, 0 = do odwołania) | sleep | auto
 curl -s -X POST -H 'Content-Type: application/json' -d '{"mode":"on","minutes":10}' http://127.0.0.1:8084/api/screen
-# komunikat + zapalenie ekranu (level: info | warn | crit; domyślnie świeci ALERT_MIN minut)
 curl -s -X POST -H 'Content-Type: application/json' -d '{"text":"Backup serwera nie przeszedł","level":"crit"}' http://127.0.0.1:8084/api/alert
-# z n8n na serwerze: http://100.105.181.54:8084/... (IP malinki w tailnecie) albo http://192.168.254.10:8084/...
 ```
+Z `PANEL_TOKEN` dodaj `-H 'X-Panel-Token: …'`.
 
-Jeśli ustawisz `PANEL_TOKEN`, dodaj nagłówek `-H 'X-Panel-Token: …'`.
+## 5. Appka (`android/`)
 
-Bot Discord: skopiuj `cogs/panel.py` do `~/jarvis-bot/cogs/`, w `main.py` dopisz
-`await self.load_extension("cogs.panel")`, przebuduj bota → komendy `/ekran` i `/panel_alert`.
+Czysty Java + WebView. APK buduje GitHub Actions (`.github/workflows/panel-apk.yml`, sekrety `PANEL_KEYSTORE_B64` /
+`PANEL_KEYSTORE_PASS` z `home/panel-podpis/`) albo Android Studio. Na telefonie: zainstaluj, ustaw jako **ekran główny → Zawsze**,
+blokada ekranu **Brak**. Ustawienia appki: przytrzymaj 3 s lewy górny róg.
 
-## 3. Appka na telefon (`android/`)
+## 6. Root (Magisk na MIUI) i bateria — Redmi Note 9 Pro **M2003J6B2G** (joyeuse)
 
-Czysty Java + WebView, bez bibliotek. APK buduje GitHub Actions (`.github/workflows/panel-apk.yml`):
-`git push` → GitHub → Actions → **Panel APK** → artefakt `jarvis-panel-apk` → `app-debug.apk` na telefon.
-(Albo Android Studio: Open → `malinka/live/panel/android` → Build → Build APK.)
+> Odblokowanie bootloadera **kasuje wszystko na telefonie**. Wersja ROM-u do boot.img musi być **dokładnie** ta sama co na telefonie.
 
-Stały podpis (żeby aktualizacje instalowały się na poprzednią wersję): w repo na GitHubie
-Settings → Secrets and variables → Actions → dwa sekrety z folderu `home/panel-podpis/` (poza gitem):
-`PANEL_KEYSTORE_B64` = zawartość `PANEL_KEYSTORE_B64.txt`, `PANEL_KEYSTORE_PASS` = zawartość `PANEL_KEYSTORE_PASS.txt`.
-
-Na telefonie:
-1. Zainstaluj APK, uruchom, przy pytaniu o ekran główny wybierz **JARVIS Panel → Zawsze**.
-   Odtąd startuje sam po restarcie telefonu.
-2. Blokada ekranu: **Brak** (inaczej po restarcie zostanie na ekranie blokady).
-3. Ustawienia appki: **przytrzymaj 3 s lewy górny róg** → adres (domyślnie `http://192.168.254.10:8084/`),
-   token, jasność po wybudzeniu. Stamtąd też przycisk „Ustawienia Androida”.
-4. Wyjście z kiosku: Ustawienia Androida → Aplikacje → Aplikacje domyślne → Ekran główny.
-
-## 4. Bateria (do zrobienia po ustaleniu dokładnego modelu)
-
-Redmi Note 9 Pro = rodzina **miatoll** (LineageOS ją wspiera). Sam system baterii nie odłączy:
-potrzebny root (Magisk) + **ACC** (Advanced Charging Controller):
-- `su -c acc -t` — test przełączników ładowania; jeśli któryś obsługuje **idle mode**, telefon chodzi z zasilacza, a bateria stoi;
-- jeśli nie — tryb emulowany: `acc 60 55` (ładowanie trzymane między 55 a 60%).
-Panel pokazuje temperaturę i status baterii („nie ładuje” = ACC trzyma ładowanie) i ostrzega powyżej 38/42°C.
+1. **Wersja:** Ustawienia → O telefonie → Wersja MIUI, np. `MIUI Global 14.0.3.0 (SJZMIXM)` albo europejska `SJZEUXM`.
+   Ostatnie wydania: Global 14.0.3.0.SJZMIXM, EEA 14.0.5.0.SJZEUXM (Android 12, telefon nie dostaje już aktualizacji).
+2. **Bootloader:** Opcje programisty (7× tap w „Wersja MIUI”) → Stan Mi Unlock → powiąż konto Mi (karta SIM i **dane komórkowe**
+   włączone, nie Wi-Fi). Odczekaj blokadę (zwykle 168 h), potem na laptopie oficjalny **Mi Unlock** → telefon w fastboot
+   (Power + Vol−) → Unlock.
+3. **boot.img:** pobierz **Fastboot ROM** dokładnie Twojej wersji (xmfirmwareupdater.com → joyeuse), rozpakuj `.tgz`
+   → `images/boot.img`. Zachowaj kopię oryginału.
+4. **Łatka:** na telefon `Magisk-vXX.apk` (github.com/topjohnwu/Magisk/releases) + `boot.img` → Magisk → Instaluj →
+   „Wybierz i załataj plik” → w Pobranych powstaje `magisk_patched-XXXXX.img`.
+5. **Flash** (laptop, Google platform-tools):
+   ```powershell
+   adb pull /sdcard/Download/magisk_patched-XXXXX.img
+   adb reboot bootloader
+   fastboot flash boot magisk_patched-XXXXX.img
+   fastboot reboot
+   # coś nie tak -> fastboot flash boot boot.img (oryginał)
+   ```
+6. **Bez aktualizacji MIUI:** Ustawienia → O telefonie → Wersja MIUI → ⋮ → Ustawienia → wyłącz automatyczne pobieranie
+   (OTA nadpisze boot i zdejmie root).
+7. **Bateria — ACC:** Magisk → Moduły → Zainstaluj z pamięci → `acc_*.zip` (github.com/VR-25/acc/releases) → restart. Potem:
+   ```sh
+   su -c acc -t                         # test przełączników; "Idle" = telefon może chodzić z samego zasilacza
+   su -c acc -s pc=60 rc=55             # trzymaj 55–60% (z natywnym idle bateria po prostu stoi na 60%)
+   su -c acc -i                         # stan: prąd ładowania ~0 mA = działa jak "bez baterii"
+   ```
+   Panel pokazuje status baterii: „nie ładuje” przy 55–60% = ACC działa.
+8. **MIUI:** JARVIS Panel → Uprawnienia → Autostart: włącz; Bateria → Bez ograniczeń.

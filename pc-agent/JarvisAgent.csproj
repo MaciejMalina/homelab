@@ -1,0 +1,31 @@
+<Project Sdk="Microsoft.NET.Sdk.Web">
+  <!--
+    JARVIS Agent — mały serwer HTTP na Windowsie dla panelu JARVIS-a (malinka).
+    Build (laptop, .NET 8 SDK):
+      dotnet publish -c Release
+    Wynik: bin\Release\net8.0-windows10.0.19041.0\win-x64\publish\JarvisAgent.exe (jeden plik, bez instalacji .NET)
+  -->
+  <PropertyGroup>
+    <OutputType>WinExe</OutputType>
+    <TargetFramework>net8.0-windows10.0.19041.0</TargetFramework>
+    <SupportedOSPlatformVersion>10.0.19041.0</SupportedOSPlatformVersion>
+    <Nullable>enable</Nullable>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <RootNamespace>JarvisAgent</RootNamespace>
+    <AssemblyName>JarvisAgent</AssemblyName>
+    <Version>1.0.0</Version>
+    <RuntimeIdentifier>win-x64</RuntimeIdentifier>
+    <SelfContained>true</SelfContained>
+    <PublishSingleFile>true</PublishSingleFile>
+    <IncludeNativeLibrariesForSelfExtract>true</IncludeNativeLibrariesForSelfExtract>
+    <ApplicationManifest>app.manifest</ApplicationManifest>
+    <InvariantGlobalization>false</InvariantGlobalization>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <!-- temperatury/obciążenie/pobór CPU i GPU; potrzebuje uprawnień administratora -->
+    <PackageReference Include="LibreHardwareMonitorLib" Version="0.9.*" />
+    <!-- Core Audio: urządzenia wyjściowe, głośność, mikser aplikacji -->
+    <PackageReference Include="NAudio.Wasapi" Version="2.2.1" />
+  </ItemGroup>
+</Project>

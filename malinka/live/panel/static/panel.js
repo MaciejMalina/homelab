@@ -1,0 +1,863 @@
+"use strict";
+/* JARVIS panel — zakładki na telefonie (poziomo). Dane: /api/dash (Przegląd) i /api/tab/<nazwa>. */
+
+// ================================================================== podstawy
+// Mostek z appki (WebView). W zwykłej przeglądarce go nie ma — strona działa bez niego.
+const B = window.JarvisPanel || null;
+const $ = (id) => document.getElementById(id);
+const esc = (s) => String(s ?? "").replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
+const lsGet = (k) => { try { return localStorage.getItem(k); } catch { return null; } };
+const lsSet = (k, v) => { try { localStorage.setItem(k, v); } catch { /* bez pamięci */ } };
+const dwa = (n) => String(n).padStart(2, "0");
+
+const qToken = new URLSearchParams(location.search).get("token");
+if (qToken) lsSet("panelToken", qToken);
+const TOKEN = (B && B.token && B.token()) || qToken || lsGet("panelToken") || "";
+
+async function api(path, method = "GET", body) {
+  const opt = { method, headers: {} };
+  if (method !== "GET") {
+    opt.headers["Content-Type"] = "application/json";
+    if (TOKEN) opt.headers["X-Panel-Token"] = TOKEN;
+    opt.body = JSON.stringify(body ?? {});
+  }
+  const ctrl = new AbortController();
+  const t = setTimeout(() => ctrl.abort(), method === "GET" ? 15000 : 130000);
+  opt.signal = ctrl.signal;
+  try {
+    const r = await fetch(path, opt);
+    const txt = await r.text();
+    let d = null;
+    try { d = txt ? JSON.parse(txt) : null; } catch { d = null; }
+    if (!r.ok) throw new Error((d && d.error) || `HTTP ${r.status}`);
+    return d;
+  } finally { clearTimeout(t); }
+}
+
+let toastT = 0;
+function toast(msg, zle = false) {
+  const el = $("toast");
+  el.textContent = msg; el.className = "widoczny" + (zle ? " zle" : "");
+  clearTimeout(toastT); toastT = setTimeout(() => { el.className = ""; }, 3500);
+}
+
+function bateria() {
+  if (!B || !B.battery) return null;
+  try { return JSON.parse(B.battery()); } catch (e) { return null; }
+}
+
+// ================================================================== formatowanie
+const st = (v) => (v === null || v === undefined ? "–" : `${Math.round(v)}°`);
+const DNI_KROTKO = ["nd", "pn", "wt", "śr", "cz", "pt", "sb"];
+const godzMin = (ts) => { const d = new Date(ts * 1000); return `${dwa(d.getHours())}:${dwa(d.getMinutes())}`; };
+function bajty(b) {
+  if (b === null || b === undefined) return "–";
+  const j = ["B", "KB", "MB", "GB", "TB"]; let i = 0; let v = b;
+  while (v >= 1024 && i < j.length - 1) { v /= 1024; i++; }
+  return `${v >= 100 || i === 0 ? Math.round(v) : v.toFixed(1)} ${j[i]}`;
+}
+const predk = (b) => (b ? `${bajty(b)}/s` : "0");
+function czasTrwania(s) {
+  if (s === null || s === undefined || !isFinite(s)) return "–";
+  s = Math.max(0, Math.round(s));
+  const h = Math.floor(s / 3600), m = Math.floor((s % 3600) / 60), sek = s % 60;
+  return h ? `${h}:${dwa(m)}:${dwa(sek)}` : `${m}:${dwa(sek)}`;
+}
+function eta(s) {
+  if (s === null || s === undefined || s < 0 || s >= 8640000) return "∞";
+  if (s < 60) return `${s} s`;
+  if (s < 3600) return `${Math.round(s / 60)} min`;
+  if (s < 86400) return `${Math.floor(s / 3600)} h ${Math.round((s % 3600) / 60)} min`;
+  return `${Math.round(s / 86400)} d`;
+}
+function temuOd(ts) {
+  if (!ts) return "";
+  const s = Math.max(0, Date.now() / 1000 - ts);
+  if (s < 90) return "przed chwilą";
+  if (s < 3600) return `${Math.round(s / 60)} min temu`;
+  if (s < 86400) return `${Math.round(s / 3600)} h temu`;
+  return `${Math.round(s / 86400)} d temu`;
+}
+function dataKrotko(iso) {
+  const d = new Date(iso);
+  const d0 = new Date(); d0.setHours(0, 0, 0, 0);
+  const d1 = new Date(d); d1.setHours(0, 0, 0, 0);
+  const r = Math.round((d1 - d0) / 86400e3);
+  return r === 0 ? "dziś" : r === 1 ? "jutro" : r === -1 ? "wczoraj" : `${DNI_KROTKO[d.getDay()]} ${dwa(d.getDate())}.${dwa(d.getMonth() + 1)}`;
+}
+const KOL = { ok: "var(--ok)", uwaga: "var(--uwaga)", zle: "var(--zle)", pom: "var(--pom)", morski: "var(--morski)", akcent: "var(--akcent)", fiolet: "var(--fiolet)", brak: "var(--ramka)" };
+const kolTemp = (t) => (t == null ? KOL.brak : t < 60 ? KOL.morski : t < 75 ? KOL.uwaga : KOL.pom);
+const kolProc = (p) => (p == null ? KOL.brak : p < 60 ? KOL.morski : p < 85 ? KOL.uwaga : KOL.zle);
+function kafel(et, wa, jedn = "", kolor = KOL.brak, pod = "", atrybuty = "") {
+  return `<div class="kafel" style="--kolor:${kolor}" ${atrybuty}><div class="et">${esc(et)}</div>` +
+    `<div class="wa">${esc(wa)}${jedn ? `<small>${esc(jedn)}</small>` : ""}</div>${pod ? `<div class="pod">${esc(pod)}</div>` : ""}</div>`;
+}
+const pasek = (proc, kolor = KOL.akcent) => `<div class="pasek" style="--kolor:${kolor}"><i style="width:${Math.max(0, Math.min(100, proc || 0))}%"></i></div>`;
+const pustoHtml = (t) => `<div class="pusto">${esc(t)}</div>`;
+function zrodlo(z, nazwa) {
+  // {ok, data|error} -> [dane, html_bledu]
+  if (!z) return [null, pustoHtml(`${nazwa}: brak danych`)];
+  if (!z.ok) return [null, `<div class="pusto zle-t mala">${esc(nazwa)}: ${esc(z.error)}</div>`];
+  if (z.data && z.data.disabled) return [null, pustoHtml(`${nazwa}: nie skonfigurowano w .env panelu`)];
+  return [z.data, ""];
+}
+const bodyAttr = (o) => `data-body="${esc(JSON.stringify(o))}"`;
+
+// ================================================================== wygaszanie ekranu
+let wakeMin = 2;
+let awakeUntil = Date.now() + wakeMin * 60e3;
+let forcedUntil = 0;
+let sleeping = false;
+let screenVer = null;
+
+function goSleep() {
+  if (sleeping) return;
+  sleeping = true;
+  if (document.activeElement && document.activeElement.blur) document.activeElement.blur();
+  $("sen").hidden = false;
+  if (B) try { B.setSleep(true); } catch (e) { /* stara appka */ }
+  if (aktywna !== "przeglad") przelacz("przeglad", false);
+}
+function wake(minuty) {
+  awakeUntil = Math.max(awakeUntil, Date.now() + minuty * 60e3);
+  if (!sleeping) return;
+  sleeping = false;
+  $("sen").hidden = true;
+  if (B) try { B.setSleep(false); } catch (e) { /* j.w. */ }
+  odswiezTeraz();
+}
+$("sen").addEventListener("click", () => wake(wakeMin));
+document.addEventListener("pointerdown", () => { if (!sleeping) wake(wakeMin); }, true);
+document.addEventListener("keydown", () => { if (!sleeping) wake(wakeMin); }, true);
+
+async function pollScreen() {
+  try {
+    const s = await api("/api/screen");
+    if (typeof s.wake_min === "number") wakeMin = s.wake_min;
+    if (s.ver !== screenVer) {
+      const pierwszy = screenVer === null;
+      screenVer = s.ver;
+      const untilMs = s.until ? Date.now() + (s.until - s.now) * 1000 : Infinity;
+      if (s.mode === "on" && untilMs > Date.now()) { forcedUntil = untilMs; wake(wakeMin); }
+      else if (s.mode === "sleep" && !pierwszy) { forcedUntil = 0; awakeUntil = 0; goSleep(); }
+      else if (s.mode !== "on") forcedUntil = 0;
+    }
+    pokazAlert(s.alert);
+  } catch (e) { /* offline pokazuje loadDash */ }
+}
+function pokazAlert(a) {
+  const el = $("alert");
+  if (!a) { el.hidden = true; return; }
+  $("alert-tekst").textContent = a.text;
+  el.className = a.level || "info";
+  el.hidden = false;
+}
+$("alert-x").addEventListener("click", async () => {
+  $("alert").hidden = true;
+  try { await api("/api/alert/clear", "POST"); } catch (e) { toast("Nie udało się zamknąć alertu: " + e.message, true); }
+});
+
+// ================================================================== zakładki
+const IK = (p) => `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">${p}</svg>`;
+const TABS = {
+  przeglad: { tytul: "Przegląd", co: 30000, ikona: IK('<rect x="3" y="3" width="7" height="7" rx="1.5"/><rect x="14" y="3" width="7" height="7" rx="1.5"/><rect x="3" y="14" width="7" height="7" rx="1.5"/><rect x="14" y="14" width="7" height="7" rx="1.5"/>') },
+  dzien: { tytul: "Dzień", co: 60000, ikona: IK('<rect x="3" y="4" width="18" height="17" rx="2"/><path d="M3 9h18M8 2v4M16 2v4"/>') },
+  pc: { tytul: "Komputer", co: 3000, ikona: IK('<rect x="2" y="3" width="20" height="13" rx="2"/><path d="M8 21h8M12 16v5"/>') },
+  muzyka: { tytul: "Muzyka", co: 2500, ikona: IK('<path d="M9 18V5l12-2v13"/><circle cx="6" cy="18" r="3"/><circle cx="18" cy="16" r="3"/>') },
+  discord: { tytul: "Discord", co: 5000, ikona: IK('<path d="M3 14v-2a9 9 0 0 1 18 0v2"/><rect x="2" y="14" width="5" height="7" rx="1.5"/><rect x="17" y="14" width="5" height="7" rx="1.5"/>') },
+  media: { tytul: "Media", co: 5000, ikona: IK('<path d="M12 3v12M7 10l5 5 5-5M4 21h16"/>') },
+  serwery: { tytul: "Serwery", co: 5000, ikona: IK('<rect x="3" y="3" width="18" height="7" rx="2"/><rect x="3" y="14" width="18" height="7" rx="2"/><path d="M7 6.5h.01M7 17.5h.01"/>') },
+  siec: { tytul: "Sieć", co: 15000, ikona: IK('<path d="M2 9a15 15 0 0 1 20 0M5 12.5a10 10 0 0 1 14 0M8.5 16a5 5 0 0 1 7 0"/><circle cx="12" cy="19.5" r="1"/>') },
+  trening: { tytul: "Trening", co: 60000, ikona: IK('<path d="M6 7v10M18 7v10M3 10v4M21 10v4M6 12h12"/>') },
+  swiatlo: { tytul: "Światło", co: 5000, ikona: IK('<path d="M9 18h6M10 21h4"/><path d="M12 3a6 6 0 0 0-3.5 10.9c.6.5 1 1.2 1 2.1h5c0-.9.4-1.6 1-2.1A6 6 0 0 0 12 3z"/>') },
+};
+let aktywna = "przeglad";
+const ostatnio = {};
+const dane = {};
+let blokadaRenderu = 0;   // podczas przesuwania suwaka nie przerysowujemy zakładki
+let wczytywanie = {};
+
+$("rail").innerHTML = Object.entries(TABS).map(([id, t]) =>
+  `<button data-akcja="zakladka" data-tab="${id}" aria-label="${esc(t.tytul)}" class="${id === aktywna ? "aktywna" : ""}">${t.ikona}</button>`).join("");
+
+function przelacz(id, odswiez = true) {
+  if (!TABS[id]) return;
+  aktywna = id;
+  document.querySelectorAll("#rail button").forEach((b) => b.classList.toggle("aktywna", b.dataset.tab === id));
+  $("tytul").textContent = TABS[id].tytul;
+  $("naglowek-info").innerHTML = "";
+  $("t-przeglad").hidden = id !== "przeglad";
+  $("t-inne").hidden = id === "przeglad";
+  if (id !== "przeglad") {
+    $("t-inne").innerHTML = dane[id] ? "" : `<div class="pusto">Wczytuję…</div>`;
+    if (dane[id]) renderuj(id, dane[id], true);
+  }
+  if (odswiez) odswiezTeraz();
+}
+
+function odswiezTeraz() { ostatnio[aktywna] = 0; petla(); }
+
+async function wczytaj(id) {
+  if (wczytywanie[id]) return;
+  wczytywanie[id] = true;
+  ostatnio[id] = Date.now();
+  try {
+    if (id === "przeglad") { await loadDash(); return; }
+    const d = await api(`/api/tab/${id}`);
+    $("offline").hidden = true;
+    dane[id] = d;
+    if (id === aktywna) renderuj(id, d);
+  } catch (e) {
+    $("offline").hidden = false;
+  } finally { wczytywanie[id] = false; }
+}
+
+function renderuj(id, d, wymus = false) {
+  if (!wymus && Date.now() < blokadaRenderu) return;
+  const kont = $("t-inne");
+  const przewiniecia = {};
+  kont.querySelectorAll("[data-scroll]").forEach((el) => { przewiniecia[el.dataset.scroll] = el.scrollTop; });
+  try {
+    kont.innerHTML = RENDER[id](d);
+  } catch (e) {
+    kont.innerHTML = `<div class="pusto zle-t">Błąd rysowania zakładki: ${esc(e.message)}</div>`;
+  }
+  kont.querySelectorAll("[data-scroll]").forEach((el) => { if (przewiniecia[el.dataset.scroll]) el.scrollTop = przewiniecia[el.dataset.scroll]; });
+  kont.querySelectorAll("input[type=range]").forEach(ustawTlo);
+}
+
+function petla() {
+  if (sleeping) return;
+  const t = TABS[aktywna];
+  if (!ostatnio[aktywna] || Date.now() - ostatnio[aktywna] >= t.co) wczytaj(aktywna);
+}
+
+// ================================================================== Przegląd
+const fmtData = new Intl.DateTimeFormat("pl-PL", { weekday: "long", day: "numeric", month: "long" });
+function tick() {
+  const d = new Date();
+  const hm = `${dwa(d.getHours())}:${dwa(d.getMinutes())}`;
+  $("zegar").textContent = hm;
+  $("zegarek").textContent = hm;
+  const txt = fmtData.format(d);
+  $("data").textContent = txt.charAt(0).toUpperCase() + txt.slice(1);
+  if (!sleeping && Date.now() > Math.max(awakeUntil, forcedUntil, minutnik.koniec ? minutnik.koniec + 60e3 : 0)) goSleep();
+  tickMuzyka();
+  tickMinutnik();
+}
+
+const WMO = {
+  0: ["☀️", "Bezchmurnie"], 1: ["🌤️", "Przeważnie pogodnie"], 2: ["⛅", "Częściowe zachmurzenie"], 3: ["☁️", "Pochmurno"],
+  45: ["🌫️", "Mgła"], 48: ["🌫️", "Mgła szronowa"], 51: ["🌦️", "Słaba mżawka"], 53: ["🌦️", "Mżawka"], 55: ["🌧️", "Gęsta mżawka"],
+  56: ["🌧️", "Marznąca mżawka"], 57: ["🌧️", "Marznąca mżawka"], 61: ["🌦️", "Słaby deszcz"], 63: ["🌧️", "Deszcz"],
+  65: ["🌧️", "Ulewa"], 66: ["🌧️", "Marznący deszcz"], 67: ["🌧️", "Marznący deszcz"], 71: ["🌨️", "Słaby śnieg"],
+  73: ["🌨️", "Śnieg"], 75: ["❄️", "Intensywny śnieg"], 77: ["🌨️", "Ziarna śniegu"], 80: ["🌦️", "Przelotny deszcz"],
+  81: ["🌧️", "Przelotne opady"], 82: ["⛈️", "Gwałtowne opady"], 85: ["🌨️", "Przelotny śnieg"], 86: ["❄️", "Śnieżyca"],
+  95: ["⛈️", "Burza"], 96: ["⛈️", "Burza z gradem"], 99: ["⛈️", "Burza z gradem"],
+};
+
+function renderPogoda(p) {
+  const el = $("pogoda");
+  if (!p || !p.ok) { el.textContent = "Pogoda niedostępna"; el.className = "przyg"; return; }
+  const w = p.data, [ik, opis] = WMO[w.code] || ["🌡️", ""];
+  const ikona = w.code === 0 && w.is_day === 0 ? "🌙" : ik;
+  const dzis = (w.days || [])[0] || {};
+  const kolejne = (w.days || []).slice(1).map((d) => {
+    const dz = DNI_KROTKO[new Date(d.date + "T12:00").getDay()];
+    return `<span>${dz} ${(WMO[d.code] || ["", ""])[0]} <b>${st(d.max)}</b>/${st(d.min)}${d.pp ? ` · ${d.pp}%` : ""}</span>`;
+  }).join("");
+  el.className = "";
+  el.innerHTML = `
+    <div class="pogoda"><span class="ikona">${ikona}</span>
+      <div><div class="temp">${st(w.temp)}</div><div class="opis">${esc(opis)} · odczuw. ${st(w.feels)}</div></div></div>
+    <div class="dni"><span>dziś <b>${st(dzis.max)}</b>/${st(dzis.min)}${dzis.pp ? ` · opady ${dzis.pp}%` : ""}</span>
+      <span>wiatr ${w.wind != null ? Math.round(w.wind) : "–"} km/h</span>
+      <span>☀ ${esc(dzis.sunrise || "–")}–${esc(dzis.sunset || "–")}</span>${kolejne}</div>`;
+}
+
+function renderTreningSkrot(t) {
+  const el = $("trening-tresc");
+  if (!t || !t.ok) { el.innerHTML = `<span class="przyg">Appka trener nie odpowiada</span>`; return; }
+  const lines = t.data.lines || [];
+  el.className = "przewijane";
+  el.innerHTML = lines.length
+    ? lines.map((l) => `<div class="linia">${esc(l).replace(/\*\*(.+?)\*\*/g, "<b>$1</b>")}</div>`).join("")
+    : `<span class="przyg">Brak danych</span>`;
+}
+
+function fmtTermin(due) {
+  if (!due) return null;
+  const [dzien, godz] = due.split("T");
+  const d0 = new Date(); d0.setHours(0, 0, 0, 0);
+  const d = new Date(dzien + "T00:00");
+  const roznica = Math.round((d - d0) / 86400e3);
+  const kiedy = new Date(due.length > 10 ? due : dzien + "T23:59");
+  let tekst = roznica === 0 ? "dziś" : roznica === 1 ? "jutro" : roznica === -1 ? "wczoraj"
+    : roznica > 1 && roznica < 7 ? DNI_KROTKO[d.getDay()] : `${dwa(d.getDate())}.${dwa(d.getMonth() + 1)}`;
+  if (godz) tekst += " " + godz;
+  return { tekst, klasa: kiedy < new Date() ? "po" : roznica === 0 ? "dzis" : "" };
+}
+
+function renderTodo(t) {
+  const ul = $("lista");
+  if (!t || !t.ok) { ul.innerHTML = `<li class="przyg">Lista TO DO nie odpowiada</li>`; $("todo-licznik").textContent = ""; return; }
+  const zadania = t.data.tasks || [];
+  $("todo-licznik").textContent = zadania.length ? String(zadania.length) : "";
+  if (!zadania.length) { ul.innerHTML = `<li class="przyg">Nic do zrobienia 🎉</li>`; return; }
+  ul.innerHTML = zadania.map((z) => {
+    const tm = fmtTermin(z.due);
+    return `<li data-id="${z.id}"><span class="ptaszek"></span><span class="t">${esc(z.title)}</span>${tm ? `<span class="termin ${tm.klasa}">${esc(tm.tekst)}</span>` : ""}</li>`;
+  }).join("");
+}
+$("lista").addEventListener("click", async (e) => {
+  const li = e.target.closest("li[data-id]");
+  if (!li || li.classList.contains("zrobione")) return;
+  li.classList.add("zrobione");
+  try { await api(`/api/todo/${li.dataset.id}`, "PATCH", { done: true }); setTimeout(loadDash, 1500); }
+  catch (err) { li.classList.remove("zrobione"); toast("Nie odhaczono: " + err.message, true); }
+});
+$("nowe").addEventListener("submit", async (e) => {
+  e.preventDefault();
+  const inp = $("nowe-tytul"), title = inp.value.trim();
+  if (!title) return;
+  inp.disabled = true;
+  try { await api("/api/todo", "POST", { title }); inp.value = ""; inp.blur(); toast("Dodano"); loadDash(); }
+  catch (err) { toast("Nie dodano: " + err.message, true); }
+  finally { inp.disabled = false; }
+});
+
+function ustaw(id, klasa, tekst) { $("k-" + id).className = "kropka " + klasa; $("v-" + id).textContent = tekst; }
+
+function opisSerwera(s) {
+  if (!s || !s.ok) return ["zle", "błąd sprawdzania", null];
+  const x = s.data;
+  if (x.disabled) return ["", "brak SERVER_IP w .env", null];
+  if (x.up) return [x.n8n === false ? "uwaga" : "ok", `działa${x.since ? " od " + godzMin(x.since) : ""} · n8n ${x.n8n ? "OK" : "nie odpowiada"}`, true];
+  if (x.waking_since) {
+    const sek = Math.max(0, Math.round(Date.now() / 1000 - x.waking_since));
+    return ["uwaga miga", `budzi się… ${Math.floor(sek / 60)}:${dwa(sek % 60)}`, false];
+  }
+  return ["", `śpi${x.since ? " od " + godzMin(x.since) : ""}`, false];
+}
+
+function opisKumy(k) {
+  if (!k || !k.ok) return ["zle", "nie odpowiada"];
+  if (k.data.disabled) return ["", "brak KUMA_API_KEY / KUMA_STATUS_SLUG"];
+  if (k.data.down.length) return ["zle", `leży: ${k.data.down.join(", ")}`];
+  if (k.data.pending.length) return ["uwaga", `oczekuje: ${k.data.pending.join(", ")}`];
+  return ["ok", `wszystko OK (${k.data.up}/${k.data.total})`];
+}
+
+const STATUS_BATERII = { 2: "ładuje", 3: "rozładowuje", 4: "nie ładuje", 5: "pełna" };
+function opisBaterii() {
+  const b = bateria();
+  if (!b) return ["", "przeglądarka (bez appki)"];
+  const kl = b.temp > 42 ? "zle" : b.temp > 38 || (b.level < 20 && !b.plugged) ? "uwaga" : "ok";
+  return [kl, `🔋 ${b.level}% · ${Math.round(b.temp)}°C · ${STATUS_BATERII[b.status] || "?"}${b.plugged ? "" : " · bez zasilacza!"}`];
+}
+
+function renderJarvis(d) {
+  const [ks, ts, up] = opisSerwera(d.serwer);
+  ustaw("serwer", ks, ts);
+  $("b-wake").disabled = up === true;
+  $("b-sleep").disabled = up === false;
+  const m = d.malinka && d.malinka.ok ? d.malinka.data : {};
+  ustaw("malinka", m.temp > 75 ? "zle" : m.temp > 65 ? "uwaga" : "ok",
+    [m.load != null ? `load ${m.load.toFixed(2)}` : null, m.temp != null ? `${m.temp}°C` : null,
+      m.mem_used_pct != null ? `RAM ${m.mem_used_pct}%` : null].filter(Boolean).join(" · ") || "działa");
+  ustaw("kuma", ...opisKumy(d.kuma));
+  ustaw("panel", ...opisBaterii());
+  $("odswiezone").textContent = godzMin(d.now);
+  // czerwona kropka na pasku: coś leży w Kumie
+  const zleKuma = d.kuma && d.kuma.ok && d.kuma.data.down && d.kuma.data.down.length;
+  znacznik("serwery", zleKuma);
+}
+
+function znacznik(tab, wlacz) {
+  const b = document.querySelector(`#rail button[data-tab="${tab}"]`);
+  if (!b) return;
+  let z = b.querySelector(".znacznik");
+  if (wlacz && !z) { z = document.createElement("span"); z.className = "znacznik"; b.appendChild(z); }
+  if (!wlacz && z) z.remove();
+}
+
+let dashTrwa = false;
+async function loadDash() {
+  if (dashTrwa) return;
+  dashTrwa = true;
+  try {
+    const d = await api("/api/dash");
+    $("offline").hidden = true;
+    if (d.config && typeof d.config.wake_min === "number") wakeMin = d.config.wake_min;
+    renderPogoda(d.pogoda); renderTreningSkrot(d.trening); renderTodo(d.todo); renderJarvis(d);
+  } catch (e) { $("offline").hidden = false; }
+  finally { dashTrwa = false; }
+}
+
+// ================================================================== wspólne: wybór komputera
+let wybranyPc = lsGet("pc") || "";
+function chipyPc(pcs, opisFn) {
+  $("naglowek-info").innerHTML = `<div class="chipy">${pcs.map((p) =>
+    `<button class="chip ${p.id === wybranyPc ? "aktywny" : ""}" data-akcja="wybierz-pc" data-pc="${esc(p.id)}">` +
+    `<span class="kropka ${p.online ? "ok" : ""}"></span>${esc(p.nazwa)}${opisFn ? opisFn(p) : ""}</button>`).join("")}</div>`;
+}
+function wybierzPc(pcs, preferuj) {
+  let pc = pcs.find((p) => p.id === wybranyPc);
+  if (preferuj) pc = pcs.find(preferuj) || pc;
+  if (!pc || (!pc.online && pcs.some((p) => p.online))) pc = pcs.find((p) => p.online) || pc || pcs[0];
+  if (pc) wybranyPc = pc.id;
+  return pc;
+}
+function pcOffline(pc) {
+  return `<div class="siatka"><div class="karta" style="align-items:center;justify-content:center;text-align:center;gap:10px">
+    <div style="font-size:40px">💤</div><div style="font-size:18px;font-weight:700">${esc(pc.nazwa)} jest offline</div>
+    <div class="przyg mala">${esc(pc.error || "")}</div>
+    ${pc.wol ? `<button class="glowny" style="width:220px" data-akcja="pc-cmd" data-pc="${esc(pc.id)}" data-cmd="wol">Obudź (Wake-on-LAN)</button>`
+    : `<div class="przyg mala">Bez MAC w PCS — Wake-on-LAN niedostępny (laptop: włącz ręcznie)</div>`}</div></div>`;
+}
+
+// ================================================================== zakładki: rysowanie
+const wynikiSpeedPc = {};
+const RENDER = {};
+
+RENDER.pc = (d) => {
+  const [pcs, err] = zrodlo(d.pcs, "Komputery");
+  if (!pcs) return err;
+  if (!pcs.length) return pustoHtml("Brak komputerów — ustaw PCS i AGENT_TOKEN w .env panelu i zainstaluj agenta (pc-agent).");
+  const pc = wybierzPc(pcs);
+  chipyPc(pcs);
+  if (!pc.online) return pcOffline(pc);
+  const s = pc.stan || {}, cpu = s.cpu || {}, gpu = s.gpu || {}, a = pc.audio || {};
+  const ramP = s.ramRazemGb ? (100 * s.ramUzyteGb) / s.ramRazemGb : null;
+  const vramP = gpu.vramRazemMb ? (100 * gpu.vramUzyteMb) / gpu.vramRazemMb : null;
+  const ping = s.pingMs;
+  const sp = wynikiSpeedPc[pc.id];
+  const kafle = [
+    kafel("CPU", cpu.temp != null ? Math.round(cpu.temp) + "°" : "–", "", kolTemp(cpu.temp), cpu.nazwa || ""),
+    kafel("GPU", gpu.temp != null ? Math.round(gpu.temp) + "°" : "–", "", kolTemp(gpu.temp), gpu.nazwa || ""),
+    kafel("Moc", s.mocW != null ? Math.round(s.mocW) : "–", "W", KOL.morski, "CPU + GPU"),
+    kafel("RAM", s.ramUzyteGb != null ? s.ramUzyteGb.toFixed(1) : "–", s.ramRazemGb ? `/${Math.round(s.ramRazemGb)} GB` : "GB", kolProc(ramP)),
+    kafel("VRAM", gpu.vramUzyteMb != null ? (gpu.vramUzyteMb / 1024).toFixed(1) : "–", gpu.vramRazemMb ? `/${Math.round(gpu.vramRazemMb / 1024)} GB` : "GB", kolProc(vramP)),
+    kafel("Ping", ping != null ? (ping < 10 ? ping.toFixed(1) : Math.round(ping)) : "–", "ms", ping == null ? KOL.zle : ping < 30 ? KOL.ok : ping < 80 ? KOL.uwaga : KOL.zle, "1.1.1.1"),
+    kafel("CPU obc.", cpu.obciazenie != null ? Math.round(cpu.obciazenie) : "–", "%", kolProc(cpu.obciazenie), cpu.moc != null ? `${Math.round(cpu.moc)} W` : ""),
+    kafel("GPU obc.", gpu.obciazenie != null ? Math.round(gpu.obciazenie) : "–", "%", kolProc(gpu.obciazenie), gpu.moc != null ? `${Math.round(gpu.moc)} W` : ""),
+    kafel("Włączony", s.uptimeS != null ? eta(s.uptimeS) : "–", "", KOL.fiolet, "od startu Windows"),
+  ].join("");
+  const urz = (a.urzadzenia || []).map((u) =>
+    `<button class="chip ${u.domyslne ? "aktywny" : ""}" data-akcja="pc-cmd" data-pc="${esc(pc.id)}" data-cmd="audio/wyjscie" ${bodyAttr({ id: u.id })}>${u.domyslne ? "🎧 " : ""}${esc(u.nazwa)}</button>`).join("");
+  return `<div class="siatka pc-uklad">
+    <div class="karta"><h2>Sprzęt i temperatury<span class="prawo">${esc(s.host || "")}</span></h2>
+      <div class="kafle" style="grid-template-columns:repeat(3,1fr)">${kafle}</div>
+      <div class="przyciski" style="margin-top:auto;padding-top:8px;grid-template-columns:1fr 1fr">
+        <button data-akcja="pc-cmd" data-pc="${esc(pc.id)}" data-cmd="speedtest" data-dlugie>⇅ Speedtest PC</button>
+        <div class="mala przyg" style="align-self:center">${sp ? `↓ ${sp.pobieranieMbps} · ↑ ${sp.wysylanieMbps} Mb/s${sp.pingMs != null ? ` · ${Math.round(sp.pingMs)} ms` : ""}` : "Test: 25 MB w dół, 10 MB w górę"}</div>
+      </div></div>
+    <div class="siatka" style="grid-template-rows:auto 1fr;gap:8px">
+      <div class="karta"><h2>Dźwięk<span class="prawo">${a.glosnosc != null ? a.glosnosc + "%" : ""}</span></h2>
+        <div class="chipy" style="margin-bottom:6px">${urz || '<span class="przyg mala">brak urządzeń</span>'}</div>
+        <div class="suwak"><button data-akcja="pc-cmd" data-pc="${esc(pc.id)}" data-cmd="audio/wycisz" ${bodyAttr({})}>${a.wyciszony ? "🔇" : "🔊"}</button>
+          <input type="range" min="0" max="100" value="${a.glosnosc ?? 0}" data-suwak="master" data-pc="${esc(pc.id)}"><span class="proc">${a.glosnosc ?? "–"}%</span></div>
+      </div>
+      <div class="karta"><h2>Zasilanie</h2>
+        <div class="przyciski" style="flex:1">
+          <button data-akcja="pc-cmd" data-pc="${esc(pc.id)}" data-cmd="zasilanie/uspij" data-potwierdz>🌙 Uśpij</button>
+          <button class="groznie" data-akcja="pc-cmd" data-pc="${esc(pc.id)}" data-cmd="zasilanie/wylacz" data-potwierdz>⏻ Wyłącz</button>
+          <button data-akcja="pc-cmd" data-pc="${esc(pc.id)}" data-cmd="zasilanie/restart" data-potwierdz>↻ Restart</button>
+          <button data-akcja="pc-cmd" data-pc="${esc(pc.id)}" data-cmd="zasilanie/zablokuj">🔒 Zablokuj</button>
+        </div></div>
+    </div></div>`;
+};
+
+let muzykaStan = null; // do płynnego paska postępu między odświeżeniami
+RENDER.muzyka = (d) => {
+  const [pcs, err] = zrodlo(d.pcs, "Komputery");
+  if (!pcs) return err;
+  if (!pcs.length) return pustoHtml("Brak komputerów — ustaw PCS i AGENT_TOKEN w .env panelu.");
+  const pc = wybierzPc(pcs, (p) => p.online && p.media && p.media.stan === "gra");
+  chipyPc(pcs, (p) => (p.online && p.media && p.media.stan === "gra" ? " ▶" : ""));
+  if (!pc.online) { muzykaStan = null; return pcOffline(pc); }
+  const m = pc.media || {}, a = pc.audio || {};
+  muzykaStan = m.dlugoscS ? { poz: m.pozycjaS || 0, dl: m.dlugoscS, gra: m.stan === "gra", t: Date.now() } : null;
+  const okl = m.okladkaId ? `<img class="okladka" src="/api/pc/${encodeURIComponent(pc.id)}/okladka/${esc(m.okladkaId)}" alt="">` : `<div class="okladka">🎵</div>`;
+  const cmd = (c, t, kl = "") => `<button class="${kl}" data-akcja="pc-cmd" data-pc="${esc(pc.id)}" data-cmd="media/${c}">${t}</button>`;
+  const lewa = m.stan === "brak" || !m.tytul
+    ? `<div class="karta" style="align-items:center;justify-content:center;gap:8px"><div style="font-size:44px">🎵</div><div class="przyg">Nic nie gra na ${esc(pc.nazwa)}</div>
+        <div class="sterowanie">${cmd("poprzedni", "⏮")}${cmd("toggle", "⏯", "duzy")}${cmd("nastepny", "⏭")}</div></div>`
+    : `<div class="karta"><h2>Teraz gra<span class="prawo">${esc(m.aplikacja || "")}</span></h2>
+        <div style="display:flex;gap:14px;align-items:center;flex:1;min-height:0">${okl}
+          <div style="flex:1;min-width:0"><div class="utwor">${esc(m.tytul)}</div><div class="wykonawca">${esc(m.wykonawca || "")}</div>
+            <div class="przyg mala">${esc(m.album || "")}</div>
+            ${muzykaStan ? `<div style="margin-top:10px">${pasek((100 * (m.pozycjaS || 0)) / m.dlugoscS)}<div class="czas-utworu"><span id="m-poz">${czasTrwania(m.pozycjaS)}</span><span>${czasTrwania(m.dlugoscS)}</span></div></div>` : ""}
+            <div class="sterowanie">${cmd("poprzedni", "⏮")}${cmd("toggle", m.stan === "gra" ? "⏸" : "▶", "duzy")}${cmd("nastepny", "⏭")}</div>
+          </div></div></div>`;
+  const apki = (a.aplikacje || []).map((x) => `<div class="suwak" style="margin-bottom:4px">
+      <button data-akcja="pc-cmd" data-pc="${esc(pc.id)}" data-cmd="audio/aplikacja" ${bodyAttr({ pid: x.pid, wyciszona: !x.wyciszona })}>${x.wyciszona ? "🔇" : x.aktywna ? "🔊" : "🔈"}</button>
+      <span class="nazwa">${esc(x.nazwa)}</span>
+      <input type="range" min="0" max="100" value="${x.glosnosc}" data-suwak="app" data-pc="${esc(pc.id)}" data-pid="${x.pid}"><span class="proc">${x.glosnosc}%</span></div>`).join("");
+  return `<div class="siatka" style="grid-template-columns:1.25fr 1fr">${lewa}
+    <div class="karta"><h2>Mikser<span class="prawo">${esc((a.urzadzenia || []).find((u) => u.domyslne)?.nazwa || "")}</span></h2>
+      <div class="suwak" style="margin-bottom:8px"><button data-akcja="pc-cmd" data-pc="${esc(pc.id)}" data-cmd="audio/wycisz" ${bodyAttr({})}>${a.wyciszony ? "🔇" : "🔊"}</button>
+        <span class="nazwa"><b>Główna</b></span><input type="range" min="0" max="100" value="${a.glosnosc ?? 0}" data-suwak="master" data-pc="${esc(pc.id)}"><span class="proc">${a.glosnosc ?? "–"}%</span></div>
+      <div class="przewijane" data-scroll="mikser">${apki || pustoHtml("Żadna aplikacja nie gra")}</div></div></div>`;
+};
+function tickMuzyka() {
+  if (aktywna !== "muzyka" || !muzykaStan || !muzykaStan.gra) return;
+  const poz = Math.min(muzykaStan.dl, muzykaStan.poz + (Date.now() - muzykaStan.t) / 1000);
+  const el = $("m-poz");
+  if (el) {
+    el.textContent = czasTrwania(poz);
+    const bar = el.closest("div").previousElementSibling;
+    if (bar && bar.firstElementChild) bar.firstElementChild.style.width = `${(100 * poz) / muzykaStan.dl}%`;
+  }
+}
+
+RENDER.discord = (d) => {
+  const dc = d.discord || {};
+  const [pcs] = zrodlo(d.pcs, "Komputery");
+  const online = (pcs || []).filter((p) => p.online);
+  const pc = online.length ? wybierzPc(online) : null;
+  if (pcs && pcs.length) chipyPc(pcs);
+  let lewa;
+  if (!dc.ts) lewa = pustoHtml("Bot nie przesłał jeszcze stanu — dodaj cogs/panel.py do bota (load_extension).");
+  else if (!(dc.kanaly || []).length) lewa = pustoHtml("Nikt nie siedzi na kanałach głosowych.");
+  else {
+    lewa = dc.kanaly.map((k) => `<div class="dzien-naglowek">🔊 ${esc(k.kanal)} <span class="przyg" style="text-transform:none">· ${esc(k.serwer)} · ${k.osoby.length} os.</span></div>` +
+      k.osoby.map((o) => `<div class="osoba">${o.avatar ? `<img src="${esc(o.avatar)}" alt="" referrerpolicy="no-referrer">` : '<span class="awatar"></span>'}
+        <span class="v">${esc(o.nazwa)}${o.bot ? ' <span class="etykieta">BOT</span>' : ""}</span>
+        <span class="ikony">${o.stream ? '<span class="etykieta czerwona">LIVE</span>' : ""}${o.kamera ? "📷" : ""}${o.mute ? '<span class="etykieta czerwona">🎙 off</span>' : ""}${o.deaf ? '<span class="etykieta czerwona">🎧 off</span>' : ""}</span></div>`).join("")).join("");
+  }
+  const prawa = pc
+    ? `<div class="duze-przyciski" style="flex:1">
+        <button data-akcja="pc-cmd" data-pc="${esc(pc.id)}" data-cmd="discord/mikrofon">🎙️<div class="mala">mikrofon</div></button>
+        <button data-akcja="pc-cmd" data-pc="${esc(pc.id)}" data-cmd="discord/sluchawki">🎧<div class="mala">słuchawki</div></button></div>
+       <div class="przyg mala" style="margin-top:6px">Przełącza wyciszenie w Discordzie na ${esc(pc.nazwa)} (skróty z agent.json).</div>`
+    : pustoHtml("Żaden komputer z agentem nie jest online.");
+  return `<div class="siatka" style="grid-template-columns:1.5fr 1fr">
+    <div class="karta"><h2>Kanały głosowe<span class="prawo">${dc.ts ? temuOd(dc.ts) : ""}</span></h2><div class="przewijane" data-scroll="dc">${lewa}</div></div>
+    <div class="karta"><h2>Sterowanie</h2>${prawa}</div></div>`;
+};
+
+function serwerSpi(s) {
+  const [kl, txt] = opisSerwera(s);
+  return `<div class="siatka"><div class="karta" style="align-items:center;justify-content:center;text-align:center;gap:10px">
+    <div style="font-size:40px">💤</div><div style="font-size:18px;font-weight:700">Serwer ${esc(txt)}</div>
+    <div class="przyg mala">Media, Glances i Paperless są na serwerze — panel ich nie budzi.</div>
+    <button class="glowny" style="width:200px" data-akcja="serwer" data-cmd="wake" ${kl.includes("miga") ? "disabled" : ""}>Obudź serwer</button></div></div>`;
+}
+
+const STANY_ARR = { downloading: "pobiera", importPending: "czeka na import", importing: "importuje", imported: "zaimportowane",
+  failedPending: "błąd", failed: "błąd", queued: "w kolejce", paused: "pauza", completed: "pobrane", delay: "opóźnione", warning: "uwaga" };
+RENDER.media = (d) => {
+  if (!d.media) return serwerSpi(d.serwer);
+  const [m, err] = zrodlo(d.media, "Media");
+  if (!m) return err;
+  const [q, eq] = zrodlo(m.qbit, "qBittorrent"), [so, es] = zrodlo(m.sonarr, "Sonarr"), [ra, er] = zrodlo(m.radarr, "Radarr"), [jf, ej] = zrodlo(m.jellyfin, "Jellyfin");
+  const torr = q ? (q.torrenty.length ? q.torrenty.map((t) => `<div class="wiersz" style="display:block">
+      <div style="display:flex;gap:6px;align-items:center"><span class="v" style="flex:1">${esc(t.nazwa)}</span>
+        <button class="maly" data-akcja="qbit" data-hash="${esc(t.hash)}" data-cmd="${t.pauza ? "start" : "stop"}">${t.pauza ? "▶" : "⏸"}</button></div>
+      ${pasek(100 * (t.postep || 0), t.postep >= 1 ? KOL.ok : KOL.akcent)}
+      <div class="mala przyg">${esc(t.stan)} · ${Math.floor(100 * (t.postep || 0))}% z ${bajty(t.rozmiar)}${t.dl ? ` · ↓ ${predk(t.dl)} · ${eta(t.eta)}` : ""}</div></div>`).join("") : pustoHtml("Nic się nie pobiera")) : eq;
+  const kolejka = [...(so ? so.kolejka.map((x) => ({ ...x, ik: "📺" })) : []), ...(ra ? ra.kolejka.map((x) => ({ ...x, ik: "🎬" })) : [])];
+  const nadch = [...(so ? so.nadchodzace.map((x) => ({ ...x, ik: "📺" })) : []), ...(ra ? ra.nadchodzace.map((x) => ({ ...x, ik: "🎬" })) : [])]
+    .filter((x) => x.kiedy).sort((a, b) => String(a.kiedy).localeCompare(String(b.kiedy))).slice(0, 12);
+  const sr = (kolejka.length ? kolejka.map((x) => `<div class="wiersz" style="display:block"><div class="v">${x.ik} ${esc(x.tytul)} ${esc(x.odc || "")}</div>
+      ${x.postep != null ? pasek(100 * x.postep) : ""}<div class="mala przyg">${esc(STANY_ARR[x.stan] || x.stan || "")}${x.eta ? ` · zostało ${esc(x.eta)}` : ""}</div></div>`).join("") : pustoHtml("Kolejka pusta")) +
+    `<div class="dzien-naglowek">Nadchodzące</div>` +
+    (nadch.length ? nadch.map((x) => `<div class="wiersz"><span class="v">${x.ik} ${esc(x.tytul)} ${esc(x.odc || "")}</span><span class="etykieta ${x.jest ? "zielona" : ""}">${esc(dataKrotko(x.kiedy))}</span></div>`).join("") : pustoHtml("Nic w najbliższych dniach")) + es + er;
+  const jelly = jf ? `<div class="dzien-naglowek">Teraz ogląda</div>${jf.teraz.length ? jf.teraz.map((x) => `<div class="wiersz" style="display:block"><div class="v">${x.pauza ? "⏸" : "▶"} ${esc(x.serial ? x.serial + " — " : "")}${esc(x.tytul)}</div>
+      ${x.postep != null ? pasek(100 * x.postep, KOL.fiolet) : ""}<div class="mala przyg">${esc(x.kto || "")} · ${esc(x.urzadzenie || "")}</div></div>`).join("") : pustoHtml("Nikt nie ogląda")}
+      <div class="dzien-naglowek">Ostatnio dodane</div>${jf.ostatnie.map((x) => `<div class="wiersz"><span class="v">${x.typ === "Episode" ? "📺" : "🎬"} ${esc(x.serial ? x.serial + " — " : "")}${esc(x.tytul)}</span>${x.rok ? `<span class="k mala">${x.rok}</span>` : ""}</div>`).join("") || pustoHtml("—")}` : ej;
+  return `<div class="siatka" style="grid-template-columns:1.15fr 1fr 1fr">
+    <div class="karta"><h2>Pobieranie<span class="prawo">${q ? `↓ ${predk(q.dl)} · ↑ ${predk(q.ul)}` : ""}</span></h2><div class="przewijane" data-scroll="qb">${torr}</div></div>
+    <div class="karta"><h2>Sonarr / Radarr</h2><div class="przewijane" data-scroll="arr">${sr}</div></div>
+    <div class="karta"><h2>Jellyfin</h2><div class="przewijane" data-scroll="jf">${jelly}</div></div></div>`;
+};
+
+RENDER.serwery = (d) => {
+  const [ks, ts, up] = opisSerwera(d.serwer);
+  let srw = `<div class="wiersz"><span class="kropka ${ks}"></span><span class="v zawijaj">${esc(ts)}</span></div>`;
+  const [g, eg] = d.glances ? zrodlo(d.glances, "Glances") : [null, ""];
+  if (g) {
+    srw += `<div class="kafle" style="grid-template-columns:repeat(4,1fr);margin:6px 0">
+      ${kafel("CPU", g.cpu != null ? Math.round(g.cpu) : "–", "%", kolProc(g.cpu))}
+      ${kafel("Temp", g.cpu_temp != null ? Math.round(g.cpu_temp) + "°" : "–", "", kolTemp(g.cpu_temp))}
+      ${kafel("RAM", g.ram != null ? Math.round(g.ram) : "–", "%", kolProc(g.ram))}
+      ${kafel("Load", g.load != null ? g.load.toFixed(1) : "–", "", KOL.morski, g.rdzenie ? `${g.rdzenie} rdz.` : "")}</div>`;
+    srw += (g.gpu || []).map((x) => `<div class="wiersz"><span class="k">GPU</span><span class="v">${esc(x.nazwa)}</span><span class="mala">${x.proc != null ? Math.round(x.proc) + "%" : ""} ${x.temp != null ? Math.round(x.temp) + "°C" : ""} ${x.mem != null ? "VRAM " + Math.round(x.mem) + "%" : ""}</span></div>`).join("");
+    srw += (g.dyski || []).map((x) => `<div style="margin:3px 0"><div class="mala" style="display:flex;justify-content:space-between"><span>${esc(x.mnt)}</span><span class="przyg">${bajty(x.uzyte)} / ${bajty(x.razem)}</span></div>${pasek(x.proc, kolProc(x.proc))}</div>`).join("");
+    srw += `<div class="dzien-naglowek">Kontenery (${(g.kontenery || []).length})</div>` + (g.kontenery || []).map((c) => {
+      const okc = /running|healthy/i.test(c.status || "");
+      return `<div class="wiersz"><span class="kropka ${okc ? "ok" : "zle"}"></span><span class="v">${esc(c.nazwa)}</span><span class="k mala">${c.cpu != null ? c.cpu.toFixed(1) + "%" : ""} ${c.ram ? bajty(c.ram) : ""}</span></div>`;
+    }).join("");
+  } else srw += eg;
+  const przyciskiSerwera = `<div class="przyciski" style="grid-template-columns:1fr 1fr 1fr;margin-top:6px;flex:none">
+    <button class="glowny" data-akcja="serwer" data-cmd="wake" ${up ? "disabled" : ""}>Obudź</button>
+    <button class="groznie" data-akcja="serwer" data-cmd="sleep" data-potwierdz ${up === false ? "disabled" : ""}>Uśpij</button>
+    <button data-akcja="serwer" data-cmd="reboot" data-potwierdz ${up === false ? "disabled" : ""}>Restart</button></div>`;
+  const [m] = zrodlo(d.malinka, "Malinka");
+  const mm = m || {};
+  const [kb, tb] = opisBaterii();
+  const hb = d.panel && d.panel.ts ? temuOd(d.panel.ts) : "brak";
+  const malinkaHtml = `<div class="kafle" style="grid-template-columns:1fr 1fr">
+      ${kafel("Temp", mm.temp != null ? Math.round(mm.temp) + "°" : "–", "", kolTemp(mm.temp))}
+      ${kafel("Load", mm.load != null ? mm.load.toFixed(2) : "–", "", KOL.morski)}
+      ${kafel("RAM", mm.mem_used_pct ?? "–", "%", kolProc(mm.mem_used_pct), mm.mem_total_gb ? `z ${mm.mem_total_gb} GB` : "")}
+      ${kafel("Dysk", mm.dysk_pct ?? "–", "%", kolProc(mm.dysk_pct), "SSD")}</div>
+    <div class="wiersz" style="margin-top:6px"><span class="k">Uptime</span><span class="v">${mm.uptime_s ? eta(mm.uptime_s) : "–"}</span></div>
+    <div class="dzien-naglowek">Telefon (panel)</div>
+    <div class="wiersz"><span class="kropka ${kb}"></span><span class="v zawijaj">${esc(tb)}</span></div>
+    <div class="wiersz"><span class="k">Sygnał</span><span class="v">${esc(hb)}</span></div>`;
+  const [k, ek] = zrodlo(d.kuma, "Uptime Kuma");
+  const kumaHtml = k ? k.monitory.map((x) => `<div class="wiersz"><span class="kropka ${x.stan === "up" ? "ok" : x.stan === "down" ? "zle" : "uwaga"}"></span><span class="v">${esc(x.nazwa)}</span>${/backup/i.test(x.nazwa) ? '<span class="etykieta">backup</span>' : ""}</div>`).join("") : ek;
+  return `<div class="siatka" style="grid-template-columns:1.25fr .9fr 1fr">
+    <div class="karta"><h2>Serwer<span class="prawo">${g && g.uptime ? "up " + esc(g.uptime) : ""}</span></h2><div class="przewijane" data-scroll="srw">${srw}</div>${przyciskiSerwera}</div>
+    <div class="karta"><h2>Malinka</h2><div class="przewijane" data-scroll="mal">${malinkaHtml}</div></div>
+    <div class="karta"><h2>Uptime Kuma<span class="prawo">${k ? `${k.up}/${k.total} OK` : ""}</span></h2><div class="przewijane" data-scroll="kuma">${kumaHtml}</div></div></div>`;
+};
+
+// jakość sygnału (typowe progi dla 5G/LTE)
+const kolRsrp = (v) => (v == null ? KOL.brak : v >= -80 ? KOL.ok : v >= -90 ? KOL.morski : v >= -100 ? KOL.uwaga : KOL.zle);
+const kolSinr = (v) => (v == null ? KOL.brak : v >= 20 ? KOL.ok : v >= 13 ? KOL.morski : v >= 0 ? KOL.uwaga : KOL.zle);
+const TYP_SIECI = { ENDC: "5G NSA", SA: "5G SA", "LTE-NSA": "5G NSA", LTE: "4G LTE", "LTE-A": "4G LTE-A", WCDMA: "3G", GSM: "2G" };
+
+RENDER.siec = (d) => {
+  const [z, ez] = zrodlo(d.zte, "Router ZTE");
+  let zte = ez;
+  if (z) {
+    const typ = TYP_SIECI[String(z.siec || "").toUpperCase()] || z.siec || "?";
+    zte = `<div style="display:flex;align-items:baseline;gap:10px;margin-bottom:6px"><span style="font-size:26px;font-weight:800">${esc(typ)}</span>
+        <span class="etykieta">${esc(z.pasmo ? "pasmo " + z.pasmo : "")}</span><span class="przyg mala">${esc(z.operator || "")}</span></div>
+      <div class="kafle" style="grid-template-columns:1fr 1fr">
+        ${kafel("5G RSRP", z.nr.rsrp ?? "–", "dBm", kolRsrp(z.nr.rsrp))}${kafel("5G SINR", z.nr.sinr ?? "–", "dB", kolSinr(z.nr.sinr))}
+        ${kafel("LTE RSRP", z.lte.rsrp ?? "–", "dBm", kolRsrp(z.lte.rsrp), z.pasmo_lte ? "pasmo " + z.pasmo_lte : "")}${kafel("LTE SINR", z.lte.sinr ?? "–", "dB", kolSinr(z.lte.sinr))}</div>
+      <div class="wiersz" style="margin-top:6px"><span class="k">Teraz</span><span class="v">↓ ${predk(z.rx)} · ↑ ${predk(z.tx)}</span></div>
+      <div class="wiersz"><span class="k">Miesiąc</span><span class="v">↓ ${bajty(z.miesiac_rx)} · ↑ ${bajty(z.miesiac_tx)}</span></div>
+      <div class="wiersz"><span class="k">Temp.</span><span class="v">${[z.temp.modem != null ? `modem ${Math.round(z.temp.modem)}°` : null, z.temp["5g"] != null ? `5G ${Math.round(z.temp["5g"])}°` : null].filter(Boolean).join(" · ") || "–"}</span></div>
+      ${z.zalogowany ? "" : '<div class="mala uwaga-t">Router nie zalogowany — sprawdź ZTE_PASS</div>'}`;
+  }
+  const [a, ea] = zrodlo(d.adguard, "AdGuard");
+  const ad = a ? `<div class="kafle" style="grid-template-columns:1fr 1fr 1fr">
+      ${kafel("Zapytań", a.zapytania > 9999 ? Math.round(a.zapytania / 1000) + "k" : a.zapytania, "", KOL.akcent)}
+      ${kafel("Blok.", Math.round(a.proc), "%", KOL.pom, `${a.zablokowane}`)}${kafel("Czas", Math.round(a.czas_ms), "ms", KOL.morski)}</div>
+    <div class="dzien-naglowek">Kto pyta (24 h)</div>${a.klienci.map((k) => `<div class="wiersz"><span class="v">${esc(k.nazwa || k.ip)}</span><span class="k mala">${k.nazwa ? esc(k.ip) + " · " : ""}${k.n}</span></div>`).join("") || pustoHtml("—")}
+    <div class="dzien-naglowek">Najczęściej blokowane</div>${a.blokowane.map((k) => `<div class="wiersz"><span class="v mala">${esc(k.domena)}</span><span class="k mala">${k.n}</span></div>`).join("") || pustoHtml("—")}` : ea;
+  const s = d.speedtest;
+  const sp = `<div class="kafle" style="grid-template-columns:1fr 1fr 1fr">
+      ${kafel("Ping", s ? s.ping : "–", "ms", KOL.morski)}${kafel("Pobier.", s ? Math.round(s.dol) : "–", "Mb/s", KOL.ok)}${kafel("Wysył.", s ? Math.round(s.gora) : "–", "Mb/s", KOL.fiolet)}</div>
+    <div class="przyg mala" style="margin:6px 0">${s ? "Ostatni test " + temuOd(s.ts) : "Jeszcze nie testowano"} · z malinki przez ZTE (25 MB ↓, 10 MB ↑)</div>
+    <button class="glowny" data-akcja="speedtest-malinka" data-dlugie style="margin-top:auto">⇅ Testuj łącze</button>`;
+  return `<div class="siatka" style="grid-template-columns:1.1fr 1fr .9fr">
+    <div class="karta"><h2>Router 5G (ZTE)<span class="prawo">${z && z.kreski != null ? "▂▄▆█".slice(0, Math.max(1, Math.min(4, z.kreski))) : ""}</span></h2><div class="przewijane" data-scroll="zte">${zte}</div></div>
+    <div class="karta"><h2>AdGuard</h2><div class="przewijane" data-scroll="ag">${ad}</div></div>
+    <div class="karta"><h2>Speedtest</h2>${sp}</div></div>`;
+};
+
+// ------------------------------------------------------------------ Trening + minutnik przerw
+const minutnik = { koniec: null, dl: 90, zagrany: false };
+RENDER.trening = (d) => {
+  const [t, et] = zrodlo(d.trening, "Trener");
+  if (!t) return et + minutnikHtml();
+  const tydz = `<div class="tydzien">${t.dni.map((x) => `<div class="dzien ${x.dzis ? "dzis" : ""}"><div class="d">${esc(x.dzien)} ${esc(x.date.slice(8))}</div>
+      <div class="p">${x.plan.map((p) => p.ikona).join("") || "·"}</div>
+      <div class="z">${x.zrobione.length ? "✔ " + esc(x.zrobione.map((z) => z.km ? `${z.km.toFixed(1)} km` : z.typ).join(", ")) : ""}</div></div>`).join("")}</div>`;
+  const dzis = t.dni.find((x) => x.dzis) || { plan: [], zrobione: [] };
+  const plan = dzis.plan.length ? dzis.plan.map((p) => `<div style="margin-bottom:6px"><div style="font-weight:700">${p.ikona} ${esc(p.tytul)}${p.min ? ` <span class="przyg mala">${p.min} min</span>` : ""}</div>
+      <div class="mala przyg">${esc(p.opis)}</div>
+      ${(p.sila || []).map((c) => `<div class="wiersz"><span class="v">${esc(c.nazwa)}</span><span class="k mala">${c.serie ? c.serie + "×" : ""}${esc(c.powt || "")}${c.kg ? ` @ ${c.kg} kg` : ""}</span></div>`).join("")}</div>`).join("")
+    : pustoHtml(t.podsumowanie ? "Dziś odpoczynek" : "Brak planu na ten tydzień — ułóż go w appce trener");
+  const c = t.cele || {}, kl = c.klata || {}, pm = c.polmaraton || {};
+  const w = t.wellness;
+  const cele = `<div class="mala" style="display:flex;justify-content:space-between"><span>🏋️ Klata (e1RM)</span><span>${kl.kg ? Math.round(kl.kg) : "–"} / ${kl.cel} kg</span></div>${pasek(kl.kg ? (100 * kl.kg) / kl.cel : 0, KOL.pom)}
+    <div class="mala" style="display:flex;justify-content:space-between;margin-top:6px"><span>🏃 Półmaraton</span><span>${pm.sek ? czasTrwania(pm.sek) : "–"} / ${czasTrwania(pm.cel)}</span></div>${pasek(pm.sek ? Math.min(100, (100 * pm.cel) / pm.sek) : 0, KOL.ok)}
+    ${w ? `<div class="mala przyg" style="margin-top:6px">${[w.senH ? `🛌 ${w.senH.toFixed(1)} h` : null, w.hrSpocz ? `❤️ ${w.hrSpocz}` : null, w.hrv ? `HRV ${Math.round(w.hrv)}` : null, w.waga ? `⚖️ ${w.waga} kg` : null].filter(Boolean).join(" · ")}</div>` : ""}`;
+  return `<div style="display:flex;flex-direction:column;gap:8px;height:100%">${tydz}
+    <div class="siatka" style="grid-template-columns:1.3fr 1fr;flex:1;min-height:0">
+      <div class="karta"><h2>Dziś<span class="prawo">${dzis.zrobione.length ? "✔ zrobione" : ""}</span></h2><div class="przewijane" data-scroll="tr">${plan}</div></div>
+      <div class="siatka" style="grid-template-rows:1fr auto;gap:8px">${minutnikHtml()}<div class="karta"><h2>Cele</h2>${cele}</div></div></div></div>`;
+};
+function minutnikHtml() {
+  return `<div class="karta"><h2>Przerwa<span class="prawo" id="mn-dl">${minutnik.dl} s</span></h2>
+    <div class="minutnik" id="mn-czas">${minutnik.koniec ? "" : czasTrwania(minutnik.dl)}</div>
+    <div class="chipy" style="justify-content:center;margin-top:4px">${[60, 90, 120, 180, 240].map((s) =>
+      `<button class="chip maly ${minutnik.dl === s ? "aktywny" : ""}" data-akcja="minutnik" data-s="${s}">${s >= 120 ? s / 60 + " min" : s + " s"}</button>`).join("")}
+      <button class="chip maly" data-akcja="minutnik" data-s="0">■</button></div></div>`;
+}
+let audioCtx = null;
+function pikniecie() {
+  try {
+    audioCtx = audioCtx || new (window.AudioContext || window.webkitAudioContext)();
+    [0, 0.25, 0.5].forEach((o) => {
+      const osc = audioCtx.createOscillator(), g = audioCtx.createGain();
+      osc.frequency.value = 880; osc.connect(g); g.connect(audioCtx.destination);
+      g.gain.setValueAtTime(0.25, audioCtx.currentTime + o); g.gain.exponentialRampToValueAtTime(0.001, audioCtx.currentTime + o + 0.2);
+      osc.start(audioCtx.currentTime + o); osc.stop(audioCtx.currentTime + o + 0.2);
+    });
+  } catch (e) { /* bez dźwięku */ }
+}
+function tickMinutnik() {
+  const el = $("mn-czas");
+  if (!minutnik.koniec) { if (el) el.classList.remove("koniec"); return; }
+  const zostalo = (minutnik.koniec - Date.now()) / 1000;
+  if (zostalo <= 0 && !minutnik.zagrany) { minutnik.zagrany = true; pikniecie(); wake(1); }
+  if (zostalo < -30) { minutnik.koniec = null; }
+  if (el) { el.textContent = zostalo > 0 ? czasTrwania(Math.ceil(zostalo)) : "Seria!"; el.classList.toggle("koniec", zostalo <= 0); }
+}
+
+RENDER.swiatlo = (d) => {
+  const [w, ew] = zrodlo(d.wled, "Pasek LED");
+  if (!w) {
+    return `<div class="siatka"><div class="karta" style="align-items:center;justify-content:center;text-align:center;gap:8px">
+      <div style="font-size:40px">💡</div><div style="font-size:16px;font-weight:700">Pasek LED jeszcze niepodłączony</div>
+      <div class="przyg mala" style="max-width:460px">Wgraj WLED na płytkę ESP8266 (README-esp.md), potem wpisz jej adres do WLED_URL w .env panelu.</div>${ew}</div></div>`;
+  }
+  const KOLORY = [[255, 255, 255], [255, 180, 107], [255, 120, 40], [255, 0, 0], [255, 0, 128], [160, 0, 255], [0, 80, 255], [0, 200, 255], [0, 255, 120], [255, 220, 0]];
+  const proc = Math.round((100 * (w.bri || 0)) / 255);
+  return `<div class="siatka" style="grid-template-columns:1fr 1.2fr">
+    <div class="karta"><h2>${esc(w.nazwa || "WLED")}<span class="prawo">${esc(w.wersja || "")}</span></h2>
+      <button class="${w.on ? "glowny" : ""}" style="min-height:70px;font-size:20px" data-akcja="led" ${bodyAttr({ on: !w.on })}>${w.on ? "💡 Włączony" : "⚫ Wyłączony"}</button>
+      <div class="suwak" style="margin-top:12px"><span class="nazwa">Jasność</span><input type="range" min="1" max="255" value="${w.bri || 128}" data-suwak="led-bri"><span class="proc">${proc}%</span></div>
+      <div class="dzien-naglowek" style="margin-top:10px">Presety</div>
+      <div class="chipy">${w.presety.map((p) => `<button class="chip ${w.ps === p.id ? "aktywny" : ""}" data-akcja="led" ${bodyAttr({ ps: p.id })}>${esc(p.nazwa)}</button>`).join("") || '<span class="przyg mala">brak presetów</span>'}</div></div>
+    <div class="karta"><h2>Kolor</h2><div class="kolory">${KOLORY.map((k) =>
+      `<button style="background:rgb(${k.join(",")})" class="${w.kolor && w.kolor.join() === k.join() ? "aktywny" : ""}" data-akcja="led" ${bodyAttr({ kolor: k })}></button>`).join("")}</div></div></div>`;
+};
+
+RENDER.dzien = (d) => {
+  const [kal, ekal] = zrodlo(d.kalendarz, "Kalendarz");
+  let kalHtml = ekal;
+  if (kal === null && !ekal) kalHtml = pustoHtml("Kalendarz: brak danych (serwer jeszcze nie działał od startu panelu)");
+  if (kal) {
+    let ostatni = "";
+    kalHtml = (kal.wydarzenia || []).map((w) => {
+      const dz = dataKrotko(w.start);
+      const nag = dz !== ostatni ? `<div class="dzien-naglowek">${esc(dz)}</div>` : "";
+      ostatni = dz;
+      const s = new Date(w.start), k = w.koniec ? new Date(w.koniec) : null;
+      const godz = w.caly_dzien ? "cały dzień" : `${dwa(s.getHours())}:${dwa(s.getMinutes())}${k ? "–" + dwa(k.getHours()) + ":" + dwa(k.getMinutes()) : ""}`;
+      return `${nag}<div class="wiersz"><span class="k mala" style="width:78px">${esc(godz)}</span><span class="v zawijaj">${esc(w.tytul)}${w.miejsce ? ` <span class="przyg mala">· ${esc(w.miejsce)}</span>` : ""}</span></div>`;
+    }).join("") || pustoHtml("Nic w kalendarzu na 7 dni");
+  }
+  const kalInfo = kal ? (kal.aktualne ? "" : `stan z ${godzMin(kal.ts)} · serwer śpi`) : "";
+  const [pp, epp] = zrodlo(d.paperless, "Paperless");
+  let fakt = epp || (pp === null ? pustoHtml("Paperless: brak danych") : "");
+  if (pp) {
+    fakt = (pp.faktury || []).map((f) => {
+      const kl = f.dni < 0 ? "czerwona" : f.dni <= 2 ? "zolta" : "";
+      const txt = f.dni < 0 ? `${-f.dni} d po terminie` : f.dni === 0 ? "dziś" : f.dni === 1 ? "jutro" : `za ${f.dni} d`;
+      return `<div class="wiersz"><span class="v zawijaj">${esc(f.tytul)}${f.kwota ? ` <b>${esc(f.kwota)}</b>` : ""}</span><span class="etykieta ${kl}">${esc(txt)}</span></div>`;
+    }).join("") || pustoHtml("Wszystko zapłacone 🎉");
+  }
+  const [po, epo] = zrodlo(d.poczta, "Poczta");
+  const poczta = po ? (po.wazne.length ? po.wazne.map((m) => `<div class="wiersz" style="display:block"><div class="v"><b>${esc(m.od)}</b></div><div class="v mala">${esc(m.temat)}</div>
+      <div class="mala przyg">${esc(m.konto)} · ${esc(temuOd(m.ts))}</div></div>`).join("") : pustoHtml("Brak ważnych nieprzeczytanych 🎉")) +
+    (po.zalegle.length ? `<div class="dzien-naglowek">Z nocy</div>` + po.zalegle.map((m) => `<div class="wiersz"><span class="v"><b>${esc(m.od)}</b> — ${esc(m.temat)}</span></div>`).join("") : "") +
+    `<div class="mala przyg" style="margin-top:6px">Pominięte (promocje itp.): ${po.pominiete} — w porannym briefie</div>` : epo;
+  return `<div class="siatka" style="grid-template-columns:1.2fr 1fr 1fr">
+    <div class="karta"><h2>Kalendarz<span class="prawo">${esc(kalInfo)}</span></h2><div class="przewijane" data-scroll="kal">${kalHtml}</div></div>
+    <div class="karta"><h2>Faktury do zapłaty<span class="prawo">${pp && !pp.aktualne ? `stan z ${godzMin(pp.ts)}` : ""}</span></h2><div class="przewijane" data-scroll="pp">${fakt}</div></div>
+    <div class="karta"><h2>Ważne maile</h2><div class="przewijane" data-scroll="mail">${poczta}</div></div></div>`;
+};
+
+// ================================================================== akcje (delegowane)
+async function akcjaPost(btn, path, body, poSukcesie) {
+  const dlugie = btn && btn.hasAttribute("data-dlugie");
+  const tekst = btn ? btn.innerHTML : "";
+  if (btn) { btn.disabled = true; if (dlugie) btn.innerHTML = "Trwa…"; }
+  try {
+    const r = await api(path, "POST", body || {});
+    if (poSukcesie) poSukcesie(r); else if (r && r.msg) toast(r.msg);
+  } catch (e) { toast(e.message, true); }
+  finally {
+    if (btn && btn.isConnected) { btn.disabled = false; if (dlugie) btn.innerHTML = tekst; }
+    setTimeout(odswiezTeraz, 400);
+  }
+}
+
+document.addEventListener("click", (e) => {
+  const b = e.target.closest("[data-akcja]");
+  if (!b || b.disabled) return;
+  if (b.hasAttribute("data-potwierdz") && !b.classList.contains("potwierdz")) {
+    b.dataset.tekst = b.innerHTML;
+    b.classList.add("potwierdz"); b.innerHTML = "Na pewno?";
+    blokadaRenderu = Date.now() + 4000;
+    setTimeout(() => { if (b.isConnected && b.classList.contains("potwierdz")) { b.classList.remove("potwierdz"); b.innerHTML = b.dataset.tekst; } }, 4000);
+    return;
+  }
+  if (b.classList.contains("potwierdz")) { b.classList.remove("potwierdz"); b.innerHTML = b.dataset.tekst; blokadaRenderu = 0; }
+  let body = {};
+  try { body = b.dataset.body ? JSON.parse(b.dataset.body) : {}; } catch { body = {}; }
+  switch (b.dataset.akcja) {
+    case "zakladka": przelacz(b.dataset.tab); break;
+    case "ekran-off": forcedUntil = 0; awakeUntil = 0; goSleep(); break;
+    case "serwer": akcjaPost(b, `/api/serwer/${b.dataset.cmd}`); break;
+    case "wybierz-pc": wybranyPc = b.dataset.pc; lsSet("pc", wybranyPc); if (dane[aktywna]) renderuj(aktywna, dane[aktywna], true); odswiezTeraz(); break;
+    case "pc-cmd":
+      akcjaPost(b, `/api/pc/${encodeURIComponent(b.dataset.pc)}/${b.dataset.cmd}`, body, (r) => {
+        if (b.dataset.cmd === "speedtest") { wynikiSpeedPc[b.dataset.pc] = r; toast(`PC: ↓ ${r.pobieranieMbps} · ↑ ${r.wysylanieMbps} Mb/s`); }
+        else if (r && r.msg) toast(r.msg);
+      });
+      break;
+    case "qbit": akcjaPost(b, `/api/media/qbit/${b.dataset.hash}/${b.dataset.cmd}`); break;
+    case "speedtest-malinka": akcjaPost(b, "/api/siec/speedtest", {}, (r) => toast(`Łącze: ↓ ${r.dol} · ↑ ${r.gora} Mb/s · ${r.ping} ms`)); break;
+    case "led": akcjaPost(b, "/api/swiatlo", body, () => {}); break;
+    case "minutnik": {
+      const s = Number(b.dataset.s);
+      if (!s) { minutnik.koniec = null; }
+      else { minutnik.dl = s; minutnik.koniec = Date.now() + s * 1000; minutnik.zagrany = false;
+        // AudioContext trzeba utworzyć w geście użytkownika, inaczej WebView nie zagra sygnału na końcu przerwy
+        try { audioCtx = audioCtx || new (window.AudioContext || window.webkitAudioContext)(); } catch (err) { /* bez dźwięku */ } }
+      if (dane.trening) renderuj("trening", dane.trening, true);
+      tickMinutnik();
+      break;
+    }
+    default: break;
+  }
+});
+
+// suwaki: podgląd od razu, wysyłka co 300 ms i na puszczeniu
+function ustawTlo(r) { r.style.setProperty("--w", `${(100 * (r.value - r.min)) / (r.max - r.min)}%`); }
+let suwakT = 0;
+function wyslijSuwak(r) {
+  const v = Number(r.value);
+  if (r.dataset.suwak === "master") return api(`/api/pc/${encodeURIComponent(r.dataset.pc)}/audio/glosnosc`, "POST", { wartosc: v });
+  if (r.dataset.suwak === "app") return api(`/api/pc/${encodeURIComponent(r.dataset.pc)}/audio/aplikacja`, "POST", { pid: Number(r.dataset.pid), glosnosc: v });
+  if (r.dataset.suwak === "led-bri") return api("/api/swiatlo", "POST", { bri: v });
+  return null;
+}
+document.addEventListener("input", (e) => {
+  const r = e.target.closest("input[type=range][data-suwak]");
+  if (!r) return;
+  blokadaRenderu = Date.now() + 2000;
+  ustawTlo(r);
+  const proc = r.parentElement.querySelector(".proc");
+  if (proc) proc.textContent = r.dataset.suwak === "led-bri" ? `${Math.round((100 * r.value) / 255)}%` : `${r.value}%`;
+  clearTimeout(suwakT);
+  suwakT = setTimeout(() => { const p = wyslijSuwak(r); if (p) p.catch((err) => toast(err.message, true)); }, 300);
+});
+document.addEventListener("change", (e) => {
+  const r = e.target.closest("input[type=range][data-suwak]");
+  if (!r) return;
+  clearTimeout(suwakT);
+  const p = wyslijSuwak(r);
+  if (p) p.catch((err) => toast(err.message, true)).finally(() => { blokadaRenderu = Date.now() + 800; });
+});
+
+async function heartbeat() {
+  try { await api("/api/heartbeat", "POST", { battery: bateria(), sleeping }); } catch (e) { /* offline */ }
+}
+
+// ================================================================== start
+// Po przeładowaniu strony (np. co 6 h z appki) zostań w tym stanie, w jakim jest ekran telefonu
+const startowa = bateria();
+if (startowa && startowa.sleeping) goSleep();
+else if (B) try { B.setSleep(false); } catch (e) { /* j.w. */ }
+
+przelacz("przeglad", false);
+tick(); loadDash(); pollScreen(); heartbeat();
+ostatnio.przeglad = Date.now();
+setInterval(tick, 1000);
+setInterval(petla, 1000);
+setInterval(pollScreen, 3000);
+setInterval(heartbeat, 60000);
+let licznikSnu = 0;
+setInterval(() => { licznikSnu++; if (sleeping && licznikSnu % 10 === 0) loadDash(); }, 30000); // śpiąc: Przegląd co 5 min

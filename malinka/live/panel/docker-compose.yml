@@ -1,5 +1,5 @@
 # JARVIS — panel na starym telefonie (Redmi Note 9 Pro), malinka.
-# network_mode: host, bo "Obudź serwer" wysyła WoL broadcastem do LAN-u (z sieci bridge nie wyjdzie).
+# network_mode: host, bo "Obudź serwer/PC" wysyła WoL broadcastem do LAN-u (z sieci bridge nie wyjdzie).
 # Port: PORT z .env (domyślnie 8084) — sprawdź przed startem:  ss -tlnp | grep 8084
 #   telefon w LAN:   http://192.168.254.10:8084
 #   tailnet (opcja): sudo tailscale serve --bg --https=8446 http://localhost:8084
@@ -19,9 +19,11 @@ services:
       - ./data:/data
       # klucz, którym bot robi /shutdown_serwer (jpower@serwer, forced command) — tylko do odczytu
       - ../jarvis-bot/ssh_keys/id_rsa:/ssh/id_rsa:ro
+      # stan mail-notifiera (ważne nieprzeczytane maile) — zakładka Dzień, tylko do odczytu
+      - ../mail-notifier/state:/mail:ro
       - /etc/localtime:/etc/localtime:ro
     restart: unless-stopped
-    mem_limit: 64m
+    mem_limit: 96m
     healthcheck:
       test: ["CMD", "python", "-c", "import os,urllib.request;urllib.request.urlopen('http://127.0.0.1:%s/api/health' % os.environ.get('PORT','8084'),timeout=5)"]
       interval: 60s

@@ -1,4 +1,5 @@
-"""JARVIS — sterowanie panelem na telefonie z Discorda: /ekran, /panel_alert.
+"""JARVIS — panel na telefonie: /ekran, /panel_alert + wysyłanie stanu kanałów głosowych
+(kto siedzi, wyciszenia) do zakładki "Discord" na panelu.
 
 Rozmawia z kontenerem jarvis_panel na malince (bot i panel chodzą w network_mode: host,
 więc domyślnie http://127.0.0.1:8084). W .env bota opcjonalnie:
@@ -11,7 +12,7 @@ import os
 import aiohttp
 import discord
 from discord import app_commands
-from discord.ext import commands
+from discord.ext import commands, tasks
 
 PANEL_URL = os.getenv("PANEL_URL", "http://127.0.0.1:8084").rstrip("/")
 PANEL_TOKEN = os.getenv("PANEL_TOKEN", "")
@@ -22,11 +23,52 @@ class Panel(commands.Cog):
     def __init__(self, bot):
         self.bot = bot
 
+    async def cog_load(self):
+        self.odswiez_glos.start()
+
+    async def cog_unload(self):
+        self.odswiez_glos.cancel()
+
+    # ------------------------------------------------------------ kanały głosowe -> panel
+    def kanaly_glosowe(self):
+        kanaly = []
+        for g in self.bot.guilds:
+            for ch in list(g.voice_channels) + list(g.stage_channels):
+                osoby = []
+                for m in ch.members:
+                    vs = m.voice
+                    if not vs:
+                        continue
+                    osoby.append({"nazwa": m.display_name, "avatar": str(m.display_avatar.replace(size=64).url),
+                                  "mute": bool(vs.self_mute or vs.mute), "deaf": bool(vs.self_deaf or vs.deaf),
+                                  "stream": bool(vs.self_stream), "kamera": bool(vs.self_video), "bot": m.bot})
+                if osoby:
+                    kanaly.append({"serwer": g.name, "kanal": ch.name, "osoby": osoby})
+        return kanaly
+
+    async def wyslij_glos(self):
+        try:
+            await self.api("/api/discord", {"kanaly": self.kanaly_glosowe()})
+        except Exception:  # noqa: BLE001  panel wyłączony — spróbujemy przy następnej zmianie
+            pass
+
+    @tasks.loop(seconds=60)
+    async def odswiez_glos(self):
+        await self.wyslij_glos()
+
+    @odswiez_glos.before_loop
+    async def przed_petla(self):
+        await self.bot.wait_until_ready()
+
+    @commands.Cog.listener()
+    async def on_voice_state_update(self, member, before, after):
+        await self.wyslij_glos()
+
     async def api(self, sciezka: str, body: dict):
         naglowki = {"X-Panel-Token": PANEL_TOKEN} if PANEL_TOKEN else {}
         async with aiohttp.ClientSession(timeout=TIMEOUT) as s:
             async with s.post(PANEL_URL + sciezka, json=body, headers=naglowki) as r:
-                dane = await r.json(content_type=None)
+                dane = await r.json(content_type=None) if r.status != 204 else None
                 if r.status >= 400:
                     raise RuntimeError((dane or {}).get("error") or f"HTTP {r.status}")
                 return dane
