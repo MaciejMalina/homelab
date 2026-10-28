@@ -35,7 +35,7 @@ IGNORE_PORTS="2375 8000 8888 8388 32551 61208"
 IGNORE_SRC_REGEX='^(172\.(1[6-9]|2[0-9]|3[01])\.|192\.168\.254\.10$)'
 
 GLUETUN=gluetun
-DL_MIN_KB=512                               # >0,5 MB pobrane przez VPN od ostatniego sprawdzenia = pobieranie
+DL_MIN_KB=10240                             # >10 MB pobrane przez VPN w minute (~170 KB/s) = pobieranie (2026-10-28: 512 KB lapalo ruch zwrotny przy samym seedowaniu ~800 KB/s)
 VPN_STATE=/run/jarvis-idle-vpn-rx
 
 [ -f "$KILLSWITCH" ] && exit 0
