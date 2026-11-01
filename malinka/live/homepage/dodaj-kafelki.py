@@ -33,6 +33,26 @@ KAFELKI = [  # (grupa, nazwa, linie pod nazwą)
         "icon: mdi-dumbbell",
         "href: https://malinka.tail0524ca.ts.net:8444",
         "description: Treningi z zegarka, siłownia, plan od AI (tylko tailnet)"]),
+    ("Sieć i Bezpieczeństwo", "Łącze (speedtest)", [
+        "icon: mdi-speedometer",
+        "href: http://malinka:8084/",
+        "description: Ostatni pomiar z malinki (uruchamiasz go w panelu, zakładka Sieć)",
+        "widget:",
+        "  type: customapi",
+        "  url: http://192.168.254.10:8084/api/siec/speedtest",
+        "  refreshInterval: 300000",
+        "  mappings:",
+        "    - field: dol",
+        "      label: Pobieranie",
+        "      format: float",
+        '      suffix: " Mb/s"',
+        "    - field: gora",
+        "      label: Wysyłanie",
+        "      format: float",
+        '      suffix: " Mb/s"',
+        "    - field: ts_ms",
+        "      label: Pomiar",
+        "      format: relativeDate"]),
 ]
 
 # Kafelek jest usuwany, gdy jego nazwa albo którakolwiek linia pasuje do wzorca (wielkość liter bez znaczenia).

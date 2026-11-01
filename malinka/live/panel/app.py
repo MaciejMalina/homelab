@@ -23,7 +23,8 @@ API (JSON):
   GET  /api/pc/<id>/okladka/<oid>      okładka z agenta
   POST /api/discord                    {"kanaly": [...]}  <- cog panel.py w bocie (tylko z 127.0.0.1)
   POST /api/media/qbit/<hash>/<start|stop>
-  POST /api/siec/speedtest
+  GET  /api/siec/speedtest        ostatni wynik (ts, ts_ms, ping, dol, gora) - dla kafelka w Homepage
+POST /api/siec/speedtest
   POST /api/swiatlo                    {"on"?, "bri"?, "kolor"?: [r,g,b], "ps"?}  -> WLED
   POST /api/todo, PATCH /api/todo/<id> -> jarvis_todo
   GET  /api/health
@@ -675,6 +676,9 @@ class H(BaseHTTPRequestHandler):
             return self.odpowiedz(200, {"ok": True})
         if sc == "/api/dash":
             return self.odpowiedz(200, dash())
+        if sc == "/api/siec/speedtest":   # tylko odczyt ostatniego wyniku; sam pomiar to POST
+            w = Z.pamiec_get("speedtest") or {}
+            return self.odpowiedz(200, {**w, "ts_ms": int(w["ts"] * 1000) if w.get("ts") else None})
         if m := re.fullmatch(r"/api/tab/(\w+)", sc):
             fn = TABS.get(m.group(1))
             if not fn:

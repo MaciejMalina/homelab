@@ -499,6 +499,8 @@ def adguard():
 
 
 _speed_lock = threading.Lock()
+# Cloudflare odrzuca domyślny User-Agent Pythona (403), więc przedstawiamy się jak zwykła przeglądarka
+_SPEED_UA = {"User-Agent": "Mozilla/5.0 (X11; Linux aarch64) jarvis-panel"}
 
 
 def speedtest():
@@ -506,14 +508,14 @@ def speedtest():
         raise RuntimeError("test już trwa")
     try:
         t0 = time.time()
-        zadanie("https://speed.cloudflare.com/__down?bytes=0", surowe=True, timeout=10)
+        zadanie("https://speed.cloudflare.com/__down?bytes=0", surowe=True, timeout=10, headers=_SPEED_UA)
         ping = (time.time() - t0) * 1000
         t0 = time.time()
-        dane, _ = zadanie("https://speed.cloudflare.com/__down?bytes=25000000", surowe=True, timeout=90)
+        dane, _ = zadanie("https://speed.cloudflare.com/__down?bytes=25000000", surowe=True, timeout=90, headers=_SPEED_UA)
         dol = len(dane) * 8 / (time.time() - t0) / 1e6
         t0 = time.time()
         zadanie("https://speed.cloudflare.com/__up", method="POST", body=b"\0" * 10_000_000, surowe=True, timeout=90,
-                headers={"Content-Type": "application/octet-stream"})
+                headers={**_SPEED_UA, "Content-Type": "application/octet-stream"})
         gora = 80 / (time.time() - t0)
         wynik = {"ts": time.time(), "ping": round(ping), "dol": round(dol, 1), "gora": round(gora, 1)}
         pamiec_set("speedtest", wynik)
