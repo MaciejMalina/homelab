@@ -34,12 +34,13 @@ cd ~/panel
 nano .env                            # dopisz blok DOCKER_* z .env.example (nie kopiuj całego pliku — nadpiszesz klucze)
 docker compose up -d --build         # startuje proxy i panel
 curl -s localhost:2375/containers/json | head -c 200; echo                       # lista -> JSON
-curl -s -o /dev/null -w '%{http_code}\n' -X POST localhost:2375/containers/NAZWA/restart   # 204 = proxy pozwala na restart
+curl -s -o /dev/null -w '%{http_code}\n' -X POST localhost:2375/containers/NAZWA/restart   # prawdziwy kontener: 204; nieistniejący: 404 (też dobrze — proxy przepuściło)
 curl -s -o /dev/null -w '%{http_code}\n' localhost:2375/images/json                          # 403 = reszta zablokowana (tak ma być)
 ```
 
-Jeśli restart w proxy zwraca 403, a lista działa — ten obraz nie zna `ALLOW_RESTARTS`: zmień w compose `POST: 0` na `POST: 1`
-(proxy przepuści wtedy wszystkie zapisy w sekcji kontenerów) i napisz, a zawężę to inaczej. Restart wyłączają: `ro` przy hoście,
+Restart przechodzi dzięki własnej regule w `docker-proxy.cfg.template` (tylko `POST /containers/<nazwa>/restart`). Sam `ALLOW_RESTARTS` bez `POST=1` w obrazie
+0.5.0 nie działa, a `POST: 1` otworzyłoby też tworzenie i kasowanie kontenerów — nie zmieniaj tego. Obraz jest przypięty po digeście, bo szablon pasuje tylko do tej wersji.
+Stop, kill, exec, start i create zostają zablokowane (403). Restart wyłączają: `ro` przy hoście,
 `DOCKER_NIE_RESTARTUJ` (domyślnie sam panel i proxy). Logi mogą zawierać sekrety, więc idą przez POST, który wymaga `PANEL_TOKEN`
 (jeśli ustawiony). Host serwera w `DOCKER_HOSTS` (opcjonalnie, `ro`) wpisuj tylko po adresie LAN — po IP Tailscale panel
 nie rozpozna, że serwer śpi, i go nie przepuści przez `idle-shutdown.sh`.

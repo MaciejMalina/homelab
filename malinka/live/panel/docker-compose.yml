@@ -11,14 +11,16 @@
 # docker-socket-proxy, które przepuszcza tylko listę kontenerów, logi i restart, i słucha wyłącznie na 127.0.0.1:2375.
 services:
   docker-proxy:
-    image: tecnativa/docker-socket-proxy:latest
+    image: tecnativa/docker-socket-proxy@sha256:1f5038b54f06c3e18422902cf00ba21803d1c97805aae032e5e6673d532d3459   # = v0.5.0; przypięte po digeście, bo własny szablon pasuje tylko do tej wersji
     container_name: jarvis_docker_proxy
     environment:
       CONTAINERS: 1        # lista, szczegóły i logi kontenerów (tylko odczyt)
-      ALLOW_RESTARTS: 1    # POST .../restart (oraz stop/kill — panel wywołuje wyłącznie restart)
-      POST: 0              # reszta zapisów (tworzenie, usuwanie, exec…) zablokowana
+      ALLOW_RESTARTS: 1    # włącza regułę restartu z docker-proxy.cfg.template (sam ten przełącznik przy POST=0 nic nie robi)
+      POST: 0              # reszta zapisów (tworzenie, usuwanie, exec, stop, kill…) zablokowana
     volumes:
       - /var/run/docker.sock:/var/run/docker.sock:ro
+      # szablon HAProxy z jedną dodatkową regułą: POST /containers/<nazwa>/restart (bez POST=1, które otworzyłoby tworzenie kontenerów)
+      - ./docker-proxy.cfg.template:/usr/local/etc/haproxy/haproxy.cfg.template:ro
     ports:
       - "127.0.0.1:2375:2375"   # tylko localhost malinki; panel chodzi w network_mode: host
     restart: unless-stopped

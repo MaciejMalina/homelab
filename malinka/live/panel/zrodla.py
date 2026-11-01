@@ -10,6 +10,7 @@ import http.cookiejar
 import json
 import os
 import re
+import ssl
 import tempfile
 import threading
 import time
@@ -297,7 +298,7 @@ def qbit_req(sciezka, method="GET", body=None):
                 raise
             odp = zadanie(QBIT_URL + "/api/v2/auth/login", method="POST", form=True, opener=_qbit["op"],
                           body={"username": QBIT_USER, "password": QBIT_PASS}, headers={"Referer": QBIT_URL + "/"})
-            if str(odp).strip() != "Ok.":
+            if str(odp).strip() == "Fails.":   # nowsze qBittorrenty odpowiadają 204 bez treści
                 raise RuntimeError("qBittorrent: złe logowanie") from None
             return raz()
 
@@ -403,13 +404,15 @@ def media():
 
 
 # --------------------------------------------------------------------------- sieć: ZTE MC889A Pro, AdGuard, speedtest
-ZTE_URL, ZTE_PASS = E("ZTE_URL", "http://192.168.254.1").rstrip("/"), E("ZTE_PASS", "")
+ZTE_URL, ZTE_PASS = E("ZTE_URL", "https://192.168.254.1").rstrip("/"), E("ZTE_PASS", "")
 ZTE_POLA = ("network_type,network_provider,signalbar,wan_active_band,nr5g_action_band,wan_ipaddr,"
             "Z5g_rsrp,Z5g_rsrq,Z5g_SINR,nr5g_pci,lte_rsrp,lte_rsrq,lte_snr,lte_rssi,lte_ca_pcell_band,"
             "realtime_rx_thrpt,realtime_tx_thrpt,monthly_rx_bytes,monthly_tx_bytes,realtime_time,"
             "pm_sensor_mdm,pm_modem_5g,pm_sensor_ambient,loginfo")
 _zte = {"jar": http.cookiejar.CookieJar(), "zalogowany": 0.0}
-_zte["op"] = urllib.request.build_opener(urllib.request.HTTPCookieProcessor(_zte["jar"]))
+# router ZTE słucha tylko po HTTPS z certyfikatem samopodpisanym — weryfikację wyłączamy wyłącznie dla tego jednego połączenia w LAN-ie
+_zte["op"] = urllib.request.build_opener(urllib.request.HTTPCookieProcessor(_zte["jar"]),
+                                         urllib.request.HTTPSHandler(context=ssl._create_unverified_context()))
 _zte_lock = threading.Lock()
 
 
