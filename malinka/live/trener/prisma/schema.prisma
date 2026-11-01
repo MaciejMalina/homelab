@@ -1,0 +1,174 @@
+generator client {
+  provider        = "prisma-client-js"
+  // klient bez silnika w Ruście (kompilator zapytań w WASM) + sterownik better-sqlite3:
+  // mniej RAM na malince i brak pobierania binarek przy buildzie
+  previewFeatures = ["queryCompiler", "driverAdapters"]
+  engineType      = "client"
+}
+
+datasource db {
+  provider = "sqlite"
+  url      = env("DATABASE_URL")
+}
+
+/// Profil i ustawienia (jeden wiersz, id = 1)
+model Settings {
+  id               Int     @id @default(1)
+  name             String  @default("Maciej")
+  birthYear        Int?
+  weightKg         Float?
+  heightCm         Int?
+  goals            String  @default("1) 100 kg w wyciskaniu leżąc na 1 powtórzenie. 2) Półmaraton poniżej 1:30:00. 3) Ogólna dobra sprawność fizyczna.")
+  benchGoalKg      Float   @default(100)
+  halfGoalSec      Int     @default(5400)
+  /// dni treningowe, np. "pn,wt,cz,sb,nd"
+  trainingDays     String  @default("pn,wt,śr,cz,sb,nd")
+  sessionsPerWeek  Int     @default(6)
+  longRunDay       String  @default("nd")
+  sports           String  @default("bieganie (teren i bieżnia), siłownia, rower, basen")
+  gymEquipment     String  @default("Siłownia komercyjna: sztangi, ławki, hantle, wyciągi, maszyny.")
+  injuries         String  @default("")
+  notes            String  @default("")
+  /// godzina (czas PL) generowania planu w niedzielę
+  planHour         Int     @default(19)
+  autoPlan         Boolean @default(true)
+  autoAnalyze      Boolean @default(true)
+  /// wysyłka treningów do kalendarza intervals.icu: "run" | "endurance" | "none"
+  pushToIntervals  String  @default("run")
+  updatedAt        DateTime @updatedAt
+}
+
+/// Ukończona aktywność z intervals.icu (z zegarka przez Huawei Health)
+model Activity {
+  id          String   @id
+  startLocal  String
+  date        String
+  type        String
+  name        String   @default("")
+  movingTime  Int?
+  elapsedTime Int?
+  distance    Float?
+  avgHr       Int?
+  maxHr       Int?
+  load        Int?
+  elevation   Float?
+  calories    Int?
+  avgCadence  Float?
+  rpe         Int?
+  /// JSON: sekundy w strefach tętna
+  hrZones     String?
+  /// JSON: skrót odcinków/okrążeń
+  laps        String?
+  raw         String
+  analysis    String?
+  analyzedAt  DateTime?
+  /// true = aktywność z importu historii, bez automatycznej analizy
+  skipAnalysis Boolean @default(false)
+  createdAt   DateTime @default(now())
+
+  @@index([date])
+}
+
+/// Dane dzienne (sen, tętno spoczynkowe, waga...) z intervals.icu
+model Wellness {
+  date       String  @id
+  sleepSecs  Int?
+  sleepScore Float?
+  restingHr  Int?
+  hrv        Float?
+  weight     Float?
+  steps      Int?
+  vo2max     Float?
+  raw        String
+  updatedAt  DateTime @updatedAt
+}
+
+model Exercise {
+  id        Int     @id @default(autoincrement())
+  name      String  @unique
+  category  String
+  compound  Boolean @default(false)
+  /// domyślna przerwa w sekundach
+  rest      Int     @default(90)
+  createdAt DateTime @default(now())
+  items     SessionExercise[]
+}
+
+model StrengthSession {
+  id          Int       @id @default(autoincrement())
+  name        String
+  date        String
+  startedAt   DateTime  @default(now())
+  finishedAt  DateTime?
+  notes       String    @default("")
+  analysis    String?
+  plannedId   Int?
+  exercises   SessionExercise[]
+}
+
+model SessionExercise {
+  id         Int             @id @default(autoincrement())
+  sessionId  Int
+  exerciseId Int
+  order      Int
+  notes      String          @default("")
+  /// cel z planu, np. "4x5 @ 80 kg"
+  target     String          @default("")
+  session    StrengthSession @relation(fields: [sessionId], references: [id], onDelete: Cascade)
+  exercise   Exercise        @relation(fields: [exerciseId], references: [id])
+  sets       StrengthSet[]
+}
+
+model StrengthSet {
+  id                Int             @id @default(autoincrement())
+  sessionExerciseId Int
+  order             Int
+  weight            Float?
+  reps              Int?
+  rpe               Float?
+  warmup            Boolean         @default(false)
+  done              Boolean         @default(false)
+  item              SessionExercise @relation(fields: [sessionExerciseId], references: [id], onDelete: Cascade)
+}
+
+/// Plan tygodniowy od AI
+model Plan {
+  id        Int      @id @default(autoincrement())
+  weekStart String   @unique
+  summary   String
+  raw       String
+  createdAt DateTime @default(now())
+  workouts  PlannedWorkout[]
+}
+
+model PlannedWorkout {
+  id               Int     @id @default(autoincrement())
+  planId           Int
+  date             String
+  sport            String
+  title            String
+  description      String
+  durationMin      Int?
+  /// tekst kroków w składni intervals.icu (bieg/rower/basen)
+  intervalsText    String?
+  /// JSON: [{nazwa, serie, powtorzenia, ciezar_kg, rpe, uwagi}]
+  strength         String?
+  intervalsEventId String?
+  plan             Plan    @relation(fields: [planId], references: [id], onDelete: Cascade)
+
+  @@index([date])
+}
+
+model ChatMessage {
+  id        Int      @id @default(autoincrement())
+  role      String
+  content   String
+  createdAt DateTime @default(now())
+}
+
+/// Stan techniczny (ostatnia synchronizacja, błędy, zużycie tokenów)
+model KV {
+  key       String   @id
+  value     String
+  updatedAt DateTime @updatedAt
+}

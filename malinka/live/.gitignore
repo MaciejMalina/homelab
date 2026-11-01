@@ -1,8 +1,10 @@
 # malinka/live/ — tu lądują ściągnięte z malinki compose+config; dane/wolumeny nigdy nie wchodzą do gita
 npm/data/
 npm/letsencrypt/
-mountain/server/data/
-mountain/server/uploads/
+trener/data/
+trener/.env
+trener/node_modules/
+trener/.next/
 homepage/config/images/
 homepage/config/logs/
 adguardhome/work/

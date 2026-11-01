@@ -156,6 +156,90 @@ def discord_zapisz(b):
     DISCORD.update(ts=time.time(), kanaly=kanaly[:20])
 
 
+# --------------------------------------------------------------------------- Docker (przez docker-socket-proxy)
+# DOCKER_HOSTS="malinka|http://127.0.0.1:2375|rw;serwer|http://192.168.254.11:2375|ro"
+#   nazwa|adres proxy|rw (wolno restartować) albo ro (tylko lista i logi; domyślnie ro)
+# Nigdy nie montujemy gniazda Dockera do panelu — rozmawiamy tylko z proxy, które przepuszcza wąski zestaw wywołań.
+DOCKER_NIE_RESTARTUJ = {x.strip() for x in E("DOCKER_NIE_RESTARTUJ", "jarvis_panel,jarvis_docker_proxy").split(",") if x.strip()}
+DOCKER_IGNORUJ = {x.strip() for x in E("DOCKER_IGNORUJ", "").split(",") if x.strip()}  # np. kontener, o którym wiesz, że jest unhealthy
+NAZWA_KONT_RE = re.compile(r"[A-Za-z0-9][A-Za-z0-9_.-]{0,127}")
+ANSI_RE = re.compile(r"\x1b\[[0-9;?]*[ -/]*[@-~]")
+
+
+def docker_hosty():
+    out = []
+    for el in E("DOCKER_HOSTS", "").split(";"):
+        c = [x.strip() for x in el.split("|")]
+        if len(c) >= 2 and c[0] and c[1]:
+            out.append({"id": re.sub(r"[^\w-]", "", c[0].lower()) or "host", "nazwa": c[0], "url": c[1].rstrip("/"),
+                        "rw": len(c) > 2 and c[2].lower() == "rw"})
+    return out
+
+
+def docker_host(hid):
+    for h in docker_hosty():
+        if h["id"] == hid:
+            return h
+    raise ValueError("nie ma takiego hosta Dockera (DOCKER_HOSTS)")
+
+
+def _nazwa_kontenera(nazwa):
+    if not NAZWA_KONT_RE.fullmatch(nazwa or ""):
+        raise ValueError("zła nazwa kontenera")
+    return urllib.parse.quote(nazwa)
+
+
+def docker_lista(h):
+    lista = zadanie(f"{h['url']}/containers/json?all=1", timeout=3)
+    out = []
+    for c in lista or []:
+        nazwa = ((c.get("Names") or ["?"])[0]).lstrip("/")
+        status = c.get("Status") or ""
+        zdr = ("unhealthy" if "unhealthy" in status else "healthy" if "healthy" in status
+               else "starting" if "health: starting" in status else None)
+        stan = c.get("State") or "?"
+        ok = (stan == "running" and zdr != "unhealthy") or nazwa in DOCKER_IGNORUJ
+        out.append({"nazwa": nazwa, "obraz": (c.get("Image") or "").split("@")[0][-48:], "stan": stan, "status": status,
+                    "zdrowie": zdr, "ok": ok, "restart": h["rw"] and nazwa not in DOCKER_NIE_RESTARTUJ})
+    out.sort(key=lambda x: (x["ok"], x["nazwa"].lower()))  # najpierw te, z którymi jest problem
+    return out
+
+
+def _rozpakuj_strumien(raw, tail):
+    """Logi kontenera bez TTY przychodzą w ramkach [typ,0,0,0,rozmiar(4B BE)]+dane; z TTY — surowy tekst."""
+    if len(raw) >= 8 and raw[0] in (0, 1, 2) and raw[1:4] == b"\0\0\0":
+        kawalki, i = [], 0
+        while i + 8 <= len(raw):
+            dl = int.from_bytes(raw[i + 4:i + 8], "big")
+            kawalki.append(raw[i + 8:i + 8 + dl])
+            i += 8 + dl
+        raw = b"".join(kawalki)
+    tekst = ANSI_RE.sub("", raw.decode("utf-8", "replace"))
+    linie = [l[:400] for l in tekst.splitlines()[-tail:]]
+    return "\n".join(linie)[-20000:]
+
+
+def docker_logi(h, nazwa, tail=80):
+    n = _nazwa_kontenera(nazwa)
+    tail = max(10, min(int(tail or 80), 300))
+    raw, _ = zadanie(f"{h['url']}/containers/{n}/logs?stdout=1&stderr=1&tail={tail}", timeout=6, surowe=True)
+    return _rozpakuj_strumien(raw, tail)
+
+
+def docker_restart(h, nazwa):
+    n = _nazwa_kontenera(nazwa)
+    if not h["rw"]:
+        raise ValueError(f"{h['nazwa']}: tylko podgląd — restart wyłączony (w DOCKER_HOSTS jest ro)")
+    if nazwa in DOCKER_NIE_RESTARTUJ:
+        raise ValueError(f"{nazwa}: tego kontenera panel nie restartuje (DOCKER_NIE_RESTARTUJ)")
+    try:
+        zadanie(f"{h['url']}/containers/{n}/restart?t=10", method="POST", timeout=40)
+    except urllib.error.HTTPError as e:
+        if e.code == 403:
+            raise RuntimeError("proxy Dockera odmówiło restartu (włącz w nim ALLOW_RESTARTS=1)") from e
+        raise
+
+
 # --------------------------------------------------------------------------- serwer: Glances
 GLANCES_URL = E("GLANCES_URL", "").rstrip("/")
 

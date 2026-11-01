@@ -1,0 +1,31 @@
+# JARVIS — Vaultwarden (MALINKA): menedżer haseł zgodny z aplikacjami Bitwarden.
+# Na malince: ~/vaultwarden  (dane w ./data wchodzą do dziennego backupu konfiguracji — /home)
+#
+# Dostęp TYLKO przez tailnet: https://malinka.tail0524ca.ts.net:10000
+#   sudo tailscale serve --bg --https=10000 http://localhost:8085
+#   (NIE --https=443 — 443 na Tailscale należy do NPM/Homepage, patrz notatka o konflikcie z 2026-08-27)
+# Port 8085 słucha tylko na localhost — z LAN-u nie da się wejść z pominięciem Tailscale.
+#
+# Po założeniu SWOJEGO konta: SIGNUPS_ALLOWED -> "false" i `docker compose up -d`.
+services:
+  vaultwarden:
+    image: vaultwarden/server:latest
+    container_name: vaultwarden
+    restart: unless-stopped
+    user: "1000:1000"                   # bez roota; dane należą do macmal (kopia bazy z crona)
+    environment:
+      DOMAIN: "https://malinka.tail0524ca.ts.net:10000"
+      SIGNUPS_ALLOWED: "true"           # <- po założeniu konta zmień na "false"
+      INVITATIONS_ALLOWED: "false"
+      SHOW_PASSWORD_HINT: "false"
+      ROCKET_PORT: "8080"               # >1024, bo kontener nie jest rootem
+      TZ: "Europe/Warsaw"
+      LOG_LEVEL: "warn"
+    volumes:
+      - ./data:/data
+    ports:
+      - "127.0.0.1:8085:8080"
+    mem_limit: 128m
+    logging:
+      driver: json-file
+      options: { max-size: "2m", max-file: "2" }

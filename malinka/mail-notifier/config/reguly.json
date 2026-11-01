@@ -1,0 +1,48 @@
+{
+  "_opis": "Reguły mail-notifiera, przeładowywane co obieg (bez restartu). Nadawca z @ = dokładny adres, bez @ = domena z subdomenami, \"*\" = każdy. Słowa = wyrażenia regularne na temacie, wielkość liter bez znaczenia. Kolejność: zawsze > kod 2FA w temacie > wazne_nadawcy > smieci_nadawcy > smieci_slowa > karty Oferty/Społeczności/Fora > mailing (List-Unsubscribe) > wazne_slowa > reszta do porannego podsumowania.",
+
+  "_opis_domyslnie": "false = powiadamiamy TYLKO o mailach z reguł powyżej (zawsze, 2FA, ważni nadawcy, ważne słowa); reszta idzie do podsumowania o 7:30. true = jak dawniej, powiadom też o każdym niesklasyfikowanym.",
+  "domyslnie_powiadom": false,
+
+  "_opis_zawsze": "Powiadom nawet z karty Oferty i z mailingu. nadawca = adres/domena/lista albo \"*\"; temat = musi pasować do tematu; tresc = musi pasować do treści maila; bez = temat nie może pasować; typ: paczka (📦 + kod odbioru, także w ciszy nocnej), okazja (🔥), zwykly.",
+  "zawsze": [
+    { "nadawca": "info@paczkomaty.pl", "temat": "czeka|do odbioru|odbierz", "typ": "paczka" },
+    { "nadawca": ["poczta-polska.pl", "pocztapolska.pl", "envelo.pl"], "tresc": "czeka na odbiór|do odbioru|kod odbioru", "typ": "paczka" },
+    { "nadawca": ["dpd.com.pl", "dpd.pl", "gls-poland.com", "gls-group.eu", "dhl.com", "dhl.pl", "orlenpaczka.pl", "allegro.pl"], "tresc": "czeka na odbiór|czeka w (paczkomacie|automacie|punkcie)|kod odbioru", "typ": "paczka" },
+    { "nadawca": "pepper.pl", "bez": "regulamin|polityk|prywatno|newsletter", "typ": "okazja" },
+    { "nadawca": "*", "tresc": "kod odbioru|czeka na odbiór w punkcie|przesyłka czeka na odbiór", "typ": "paczka" }
+  ],
+
+  "wazne_nadawcy": [
+    "paczkomaty.pl"
+  ],
+
+  "smieci_nadawcy": [
+    "sprawdz@inpost.pl",
+    "mailing.inpost.pl",
+    "mcdonalds.pl",
+    "no-reply@twitch.tv",
+    "newsletter.empik.com",
+    "mail.cinema-city.pl",
+    "promo.albiononline.com",
+    "mail.x-kom.pl",
+    "email.decathlon.pl",
+    "uniperks.pl",
+    "updates.ubisoft.com",
+    "n.instant-gaming.com",
+    "email.skyshowtime.com",
+    "update.strava.com",
+    "engage.strava.com",
+    "insideoutlier@outlier.ai",
+    "olx.pl"
+  ],
+
+  "smieci_slowa": [],
+
+  "wazne_slowa": [
+    "przesyłk", "paczk", "kurier", "doręcz", "nadan[aoey]", "do odbioru", "odbierz",
+    "zamówieni", "faktur", "do zapłaty", "termin płatności", "nieopłacon", "zaległ",
+    "kod (weryfik|logowania|bezpiecz|jednorazow)",
+    "nowe logowanie", "nowym urządzeniu", "zmian\\w* hasł", "reset\\w* hasł", "nieudan\\w* (logowan|prób)"
+  ]
+}

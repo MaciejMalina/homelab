@@ -1,0 +1,30 @@
+# JARVIS mail-notifier (malinka) — powiadomienia Discord o nowych mailach z „Głównych”.
+# Zastępuje n8n-lite: czysty Python (bez zależności), ~20 MB RAM.
+services:
+  mail-notifier:
+    image: python:3.12-alpine
+    container_name: mail_notifier
+    restart: unless-stopped
+    user: "1000:1000"
+    env_file: .env
+    environment:
+      - TZ=Europe/Warsaw
+      - PYTHONUNBUFFERED=1
+    command: ["python", "-I", "/app/mail_notifier.py"]
+    # DNS z pominięciem AdGuarda na tej samej malince — po restarcie (zanik prądu)
+    # i przy pauzie kontenerów w backupie AdGuard chwilę nie odpowiada ([Errno -3]).
+    dns:
+      - 1.1.1.1
+      - 9.9.9.9
+    # Kuma stoi na tej samej malince, a „malinka” nie rozwiąże się przez 1.1.1.1 —
+    # host-gateway = adres hosta widziany z kontenera (port 3001 jest opublikowany).
+    extra_hosts:
+      - "malinka:host-gateway"
+    volumes:
+      - ./mail_notifier.py:/app/mail_notifier.py:ro
+      - ./config:/config:ro           # reguly.json — edycja bez restartu
+      - ./state:/state
+    mem_limit: 64m
+    logging:
+      driver: json-file
+      options: { max-size: "2m", max-file: "2" }

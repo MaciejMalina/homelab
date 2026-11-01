@@ -16,7 +16,7 @@
     <!-- Przegląd: stały układ (reszta zakładek renderuje się z JS) -->
     <section class="zakladka" id="t-przeglad">
       <div class="siatka">
-        <div id="czas" class="karta">
+        <div id="czas" class="karta" data-akcja="pogoda-otworz" role="button" aria-label="Pogoda — szczegóły">
           <div id="zegar">--:--</div>
           <div id="data"></div>
           <div id="pogoda" class="przyg">Pogoda…</div>
@@ -52,6 +52,15 @@
     </section>
 
     <section class="zakladka" id="t-inne" hidden></section>
+
+    <!-- widok szczegółowy (pogoda, kontenery) — nakładka na obszar treści; pasek zakładek zostaje -->
+    <div id="widok" hidden>
+      <header id="widok-naglowek">
+        <button class="maly" data-akcja="widok-wstecz" aria-label="Wróć">‹ Wróć</button>
+        <h1 id="widok-tytul"></h1><div class="info" id="widok-info"></div>
+      </header>
+      <div id="widok-tresc"></div>
+    </div>
   </main>
 </div>
 

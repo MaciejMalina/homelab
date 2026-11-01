@@ -2,16 +2,18 @@
 
 ```
 telefon (appka JARVIS Panel = WebView, ekran główny, poziomo)
-   │  http://192.168.254.10:8084        co 3 s /api/screen · zakładka co 2–60 s /api/tab/<nazwa> · co 60 s /api/heartbeat
+   │  http://192.168.254.10:8084        strumień SSE /api/stream (ekran, alerty, Discord — od razu) · zakładka co 2–60 s /api/tab/<nazwa> · co 60 s /api/heartbeat
+   │                                    (gdy strumień milczy: zapasowe odpytywanie /api/screen co 3 s)
    ▼
 malinka: jarvis_panel (ten folder, network_mode: host, port 8084)
-   ├─ Przegląd   todo :8083, trener :8082, Kuma :3001, Open-Meteo
+   ├─ Przegląd   todo :8083, trener :8082, Kuma :3001, Open-Meteo (dotknij kafla pogody → godzinowa + 7 dni)
    ├─ Dzień      kalendarz Nextcloud (CalDAV) + Paperless (serwer, po LAN-ie), mail-notifier/state/stan.json
    ├─ Komputer   agent C# na gaming PC / laptopie (pc-agent/): temperatury, W, RAM/VRAM, ping, audio, zasilanie
    ├─ Muzyka     agent: co gra (Spotify/przeglądarka), play/pauza, mikser aplikacji
    ├─ Discord    bot (cogs/panel.py) wypycha kanały głosowe; mute/deafen = skróty klawiszowe przez agenta
    ├─ Media      qBittorrent / Sonarr / Radarr / Jellyfin na serwerze
-   ├─ Serwery    Glances na serwerze, malinka (/proc), Uptime Kuma, obudź/uśpij/restart serwera
+   ├─ Serwery    Glances na serwerze, malinka (/proc), Uptime Kuma, obudź/uśpij/restart serwera,
+   │             kontenery Dockera (lista, logi, restart) przez docker-socket-proxy
    ├─ Sieć       ZTE MC889A Pro (goform API), AdGuard, speedtest z malinki
    ├─ Trening    trener GET /api/panel (plan tygodnia, dziś, cele) + minutnik przerw
    └─ Światło    WLED na płytce ESP8266 (gdy wgrasz firmware)
@@ -20,6 +22,38 @@ malinka: jarvis_panel (ten folder, network_mode: host, port 8084)
 **Serwer pytamy wyłącznie po LAN-ie (192.168.254.11).** `idle-shutdown.sh` ignoruje ruch z 192.168.254.10,
 więc panel nie trzyma serwera przy życiu. Gdy serwer śpi, Media/Glances pokazują „Obudź”, a Dzień — ostatni zapisany
 kalendarz i faktury (`data/pamiec.json`).
+
+## Nowe w tej wersji (po inspiracji dashboardVibed)
+
+**Kontenery Dockera** (Serwery → „Zarządzaj kontenerami”): lista z problemami na górze, podgląd logów (ostatnie 100 linii,
+odświeżane co 5 s), restart z potwierdzeniem „Na pewno?”. Panel nie dostaje gniazda Dockera — `docker-compose.yml` stawia
+obok `jarvis_docker_proxy` (docker-socket-proxy: tylko lista, logi i restart, słucha na 127.0.0.1:2375).
+
+```bash
+cd ~/panel
+nano .env                            # dopisz blok DOCKER_* z .env.example (nie kopiuj całego pliku — nadpiszesz klucze)
+docker compose up -d --build         # startuje proxy i panel
+curl -s localhost:2375/containers/json | head -c 200; echo                       # lista -> JSON
+curl -s -o /dev/null -w '%{http_code}\n' -X POST localhost:2375/containers/NAZWA/restart   # 204 = proxy pozwala na restart
+curl -s -o /dev/null -w '%{http_code}\n' localhost:2375/images/json                          # 403 = reszta zablokowana (tak ma być)
+```
+
+Jeśli restart w proxy zwraca 403, a lista działa — ten obraz nie zna `ALLOW_RESTARTS`: zmień w compose `POST: 0` na `POST: 1`
+(proxy przepuści wtedy wszystkie zapisy w sekcji kontenerów) i napisz, a zawężę to inaczej. Restart wyłączają: `ro` przy hoście,
+`DOCKER_NIE_RESTARTUJ` (domyślnie sam panel i proxy). Logi mogą zawierać sekrety, więc idą przez POST, który wymaga `PANEL_TOKEN`
+(jeśli ustawiony). Host serwera w `DOCKER_HOSTS` (opcjonalnie, `ro`) wpisuj tylko po adresie LAN — po IP Tailscale panel
+nie rozpozna, że serwer śpi, i go nie przepuści przez `idle-shutdown.sh`.
+
+**Pogoda** — dotknięcie kafla na Przeglądzie otwiera widok: teraz (wilgotność, ciśnienie, wiatr z porywami, opady, UV, wschód/zachód),
+najbliższe 24 godziny (przewijane) i 7 dni z zakresem temperatur.
+
+**Blokada „tapnięcia przez ekran”** — przez 600 ms po wybudzeniu (dotykiem albo komendą z JARVIS-a) panel ignoruje kliknięcia,
+żeby przypadkowy dotyk w ciemny ekran nie uśpił serwera ani nie zrestartował kontenera.
+
+**Push zamiast odpytywania** — `/api/stream` (Server-Sent Events): zmiana ekranu i alert z JARVIS-a oraz wiadomość od bota
+Discorda dochodzą od razu (w testach ~50 ms zamiast do 3 s). Dane zakładek (temperatury, kolejka pobierania, itp.) nadal się odpytuje,
+bo i tak trzeba je pobierać ze źródeł. Telefon sam łączy się ponownie po restarcie panelu, a martwe połączenie (Wi-Fi w uśpieniu)
+wykrywa po braku `ping` przez 45 s.
 
 ## 1. Malinka
 

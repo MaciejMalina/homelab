@@ -161,3 +161,42 @@ li.zrobione .t { text-decoration: line-through; color: var(--przyg); }
 #toast.widoczny { opacity: 1; } #toast.zle { border-color: var(--zle); }
 #offline { position: fixed; left: 0; right: 0; bottom: 0; z-index: 25; background: #45100f; color: #fecaca; text-align: center; font-size: 12px; padding: 3px; }
 #sen { position: fixed; inset: 0; z-index: 100; background: #000; }
+
+/* ---------------------------------------------------------------- widok szczegółowy (pogoda, kontenery) */
+#tresc { position: relative; }
+#widok { position: absolute; inset: 0; z-index: 5; background: var(--tlo); display: flex; flex-direction: column; min-height: 0; }
+#widok-naglowek { height: 34px; flex: none; display: flex; align-items: center; gap: 10px; padding: 0 2px 4px; }
+#widok-naglowek h1 { margin: 0; font-size: 16px; font-weight: 700; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+#widok-naglowek .info { flex: 1; text-align: right; color: var(--przyg); font-size: 12px; }
+#widok-tresc { flex: 1; min-height: 0; }
+#czas { position: relative; }
+#czas::after { content: "›"; position: absolute; right: 12px; top: 6px; font-size: 22px; color: var(--przyg); }
+
+.godziny { display: flex; gap: 6px; overflow-x: auto; scrollbar-width: none; padding-bottom: 2px; }
+.godziny::-webkit-scrollbar { display: none; }
+.godz { flex: none; width: 54px; text-align: center; padding: 4px 0; border-radius: 10px; background: #0a0f14; border: 1px solid var(--ramka); }
+.godz .g { font-size: 11px; color: var(--przyg); font-variant-numeric: tabular-nums; }
+.godz .i { font-size: 22px; line-height: 1.25; }
+.godz b { font-size: 14px; font-weight: 600; }
+.godz .pp, .dzien-pog .pp { font-size: 11px; color: var(--przyg); min-height: 14px; }
+.pp.mokro { color: var(--akcent); font-weight: 600; }
+.dzien-pog { display: flex; align-items: center; gap: 8px; padding: 4px 0; border-bottom: 1px solid var(--ramka); font-size: 13px; }
+.dzien-pog:last-child { border-bottom: 0; }
+.dzien-pog .dt { width: 78px; flex: none; }
+.dzien-pog .ik { width: 24px; flex: none; text-align: center; font-size: 17px; }
+.dzien-pog .mn, .dzien-pog .mx { width: 30px; flex: none; text-align: right; font-variant-numeric: tabular-nums; }
+.dzien-pog .mn { color: var(--przyg); } .dzien-pog .mx { text-align: left; font-weight: 600; }
+.dzien-pog .zakres { flex: 1; min-width: 40px; height: 6px; border-radius: 3px; background: #1b2430; position: relative; }
+.dzien-pog .zakres i { position: absolute; top: 0; bottom: 0; border-radius: 3px; background: linear-gradient(90deg, var(--akcent), var(--pom)); }
+.dzien-pog .pp { width: 36px; flex: none; text-align: right; }
+.dzien-pog .wi { width: 62px; flex: none; text-align: right; font-size: 12px; color: var(--przyg); }
+.dzien-pog .uv { width: 38px; flex: none; text-align: right; font-size: 12px; }
+
+.wiersz.kont { gap: 6px; padding: 3px 0; }
+.wiersz.kont .st { max-width: 46%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; text-align: right; }
+.wiersz.kont button { flex: none; min-height: 28px; }
+pre.logi { margin: 0; font: 11px/1.35 ui-monospace, "Roboto Mono", monospace; color: #c9d1dc; white-space: pre-wrap; overflow-wrap: anywhere;
+  user-select: text; -webkit-user-select: text; background: #080c10; border: 1px solid var(--ramka); border-radius: 10px; padding: 6px 8px; }
+#widok .siatka > *, #widok .siatka > * > * { min-width: 0; }
+#widok .kafel .wa { font-size: 18px; }
+#widok .kafel .et { font-size: 9px; letter-spacing: .05em; }

@@ -1,0 +1,52 @@
+# Buduje APK appki "JARVIS Panel" (malinka/live/panel/android) i wystawia je jako artefakt.
+# Uruchamia się po zmianie w android/ albo ręcznie: Actions -> "Panel APK" -> Run workflow.
+# Opcjonalne sekrety repo (Settings -> Secrets and variables -> Actions), żeby każda wersja
+# instalowała się na poprzednią bez odinstalowania:
+#   PANEL_KEYSTORE_B64  — base64 pliku panel.jks
+#   PANEL_KEYSTORE_PASS — hasło do niego
+name: Panel APK
+
+on:
+  workflow_dispatch:
+  push:
+    paths:
+      - "malinka/live/panel/android/**"
+      - ".github/workflows/panel-apk.yml"
+
+jobs:
+  apk:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "17"
+
+      - uses: gradle/actions/setup-gradle@v4
+        with:
+          gradle-version: "8.10.2"
+
+      - name: Klucz podpisu (jeśli są sekrety)
+        env:
+          KS_B64: ${{ secrets.PANEL_KEYSTORE_B64 }}
+          KS_PASS: ${{ secrets.PANEL_KEYSTORE_PASS }}
+        run: |
+          if [ -n "$KS_B64" ] && [ -n "$KS_PASS" ]; then
+            echo "$KS_B64" | base64 -d > "$RUNNER_TEMP/panel.jks"
+            echo "PANEL_KS_FILE=$RUNNER_TEMP/panel.jks" >> "$GITHUB_ENV"
+            echo "PANEL_KS_PASS=$KS_PASS" >> "$GITHUB_ENV"
+            echo "Podpis: stały klucz z sekretów"
+          else
+            echo "Podpis: klucz debug (każda wersja wymaga odinstalowania poprzedniej)"
+          fi
+
+      - name: Build
+        run: gradle --no-daemon -p malinka/live/panel/android assembleDebug
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: jarvis-panel-apk
+          path: malinka/live/panel/android/app/build/outputs/apk/debug/app-debug.apk
+          if-no-files-found: error

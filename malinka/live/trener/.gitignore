@@ -1,0 +1,8 @@
+node_modules/
+.next/
+.env
+data/
+*.sqlite
+*.sqlite-journal
+next-env.d.ts
+*.tsbuildinfo

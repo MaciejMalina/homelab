@@ -6,7 +6,24 @@
 # Sterowanie z JARVIS-a (bot/n8n/skrypty na malince):
 #   curl -s -X POST -H 'Content-Type: application/json' -d '{"mode":"on","minutes":10}' http://127.0.0.1:8084/api/screen
 #   curl -s -X POST -H 'Content-Type: application/json' -d '{"text":"Backup padł","level":"crit"}' http://127.0.0.1:8084/api/alert
+#
+# Kontenery Dockera w panelu (Serwery -> „Zarządzaj kontenerami"): panel NIE dostaje gniazda Dockera. Rozmawia z
+# docker-socket-proxy, które przepuszcza tylko listę kontenerów, logi i restart, i słucha wyłącznie na 127.0.0.1:2375.
 services:
+  docker-proxy:
+    image: tecnativa/docker-socket-proxy:latest
+    container_name: jarvis_docker_proxy
+    environment:
+      CONTAINERS: 1        # lista, szczegóły i logi kontenerów (tylko odczyt)
+      ALLOW_RESTARTS: 1    # POST .../restart (oraz stop/kill — panel wywołuje wyłącznie restart)
+      POST: 0              # reszta zapisów (tworzenie, usuwanie, exec…) zablokowana
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock:ro
+    ports:
+      - "127.0.0.1:2375:2375"   # tylko localhost malinki; panel chodzi w network_mode: host
+    restart: unless-stopped
+    mem_limit: 32m
+
   panel:
     build: .
     image: jarvis-panel:local

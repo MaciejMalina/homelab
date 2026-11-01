@@ -110,18 +110,32 @@ let forcedUntil = 0;
 let sleeping = false;
 let screenVer = null;
 
+// Blokada „tapnięcia przez ekran": tuż po wybudzeniu (dotyk albo komenda z JARVIS-a) ignorujemy dotyk i kliknięcia,
+// żeby przypadkowy dotyk w jeszcze ciemny ekran nie uśpił serwera ani nie zrestartował kontenera.
+// Te nasłuchiwacze muszą być pierwsze na document (faza przechwytywania), przed resztą skryptu.
+const BLOKADA_MS = 600;
+let blokadaDo = 0;
+for (const typ of ["pointerdown", "pointerup", "click", "mousedown", "mouseup"]) {
+  document.addEventListener(typ, (e) => {
+    if (Date.now() < blokadaDo) { e.stopImmediatePropagation(); e.preventDefault(); }
+  }, true);
+}
+
 function goSleep() {
   if (sleeping) return;
   sleeping = true;
+  blokadaDo = 0;
   if (document.activeElement && document.activeElement.blur) document.activeElement.blur();
   $("sen").hidden = false;
   if (B) try { B.setSleep(true); } catch (e) { /* stara appka */ }
+  zamknijWidok();
   if (aktywna !== "przeglad") przelacz("przeglad", false);
 }
 function wake(minuty) {
   awakeUntil = Math.max(awakeUntil, Date.now() + minuty * 60e3);
   if (!sleeping) return;
   sleeping = false;
+  blokadaDo = Date.now() + BLOKADA_MS;
   $("sen").hidden = true;
   if (B) try { B.setSleep(false); } catch (e) { /* j.w. */ }
   odswiezTeraz();
@@ -130,20 +144,37 @@ $("sen").addEventListener("click", () => wake(wakeMin));
 document.addEventListener("pointerdown", () => { if (!sleeping) wake(wakeMin); }, true);
 document.addEventListener("keydown", () => { if (!sleeping) wake(wakeMin); }, true);
 
+function zastosujEkran(s) {
+  if (typeof s.wake_min === "number") wakeMin = s.wake_min;
+  if (s.ver !== screenVer) {
+    const pierwszy = screenVer === null;
+    screenVer = s.ver;
+    const untilMs = s.until ? Date.now() + (s.until - s.now) * 1000 : Infinity;
+    if (s.mode === "on" && untilMs > Date.now()) { forcedUntil = untilMs; wake(wakeMin); }
+    else if (s.mode === "sleep" && !pierwszy) { forcedUntil = 0; awakeUntil = 0; goSleep(); }
+    else if (s.mode !== "on") forcedUntil = 0;
+  }
+  pokazAlert(s.alert);
+}
 async function pollScreen() {
-  try {
-    const s = await api("/api/screen");
-    if (typeof s.wake_min === "number") wakeMin = s.wake_min;
-    if (s.ver !== screenVer) {
-      const pierwszy = screenVer === null;
-      screenVer = s.ver;
-      const untilMs = s.until ? Date.now() + (s.until - s.now) * 1000 : Infinity;
-      if (s.mode === "on" && untilMs > Date.now()) { forcedUntil = untilMs; wake(wakeMin); }
-      else if (s.mode === "sleep" && !pierwszy) { forcedUntil = 0; awakeUntil = 0; goSleep(); }
-      else if (s.mode !== "on") forcedUntil = 0;
-    }
-    pokazAlert(s.alert);
-  } catch (e) { /* offline pokazuje loadDash */ }
+  try { zastosujEkran(await api("/api/screen")); } catch (e) { /* offline pokazuje loadDash */ }
+}
+
+// Strumień zdarzeń z malinki (SSE): zmiana ekranu/alertu i stan Discorda dochodzą od razu. Gdy strumień nie działa,
+// wracamy do odpytywania /api/screen co 3 s (gdy działa — tylko co 30 s, jako zapas).
+let strumien = null;
+let strumienZywy = false;
+let strumienOstatni = 0;
+function startStrumien() {
+  if (!window.EventSource) return;
+  try { if (strumien) strumien.close(); } catch (e) { /* j.w. */ }
+  strumienOstatni = Date.now();
+  strumien = new EventSource("/api/stream");
+  const zywy = () => { strumienZywy = true; strumienOstatni = Date.now(); };
+  strumien.addEventListener("ekran", (e) => { zywy(); try { zastosujEkran(JSON.parse(e.data)); } catch (err) { /* uszkodzone zdarzenie */ } });
+  strumien.addEventListener("ping", zywy);
+  strumien.addEventListener("discord", () => { zywy(); if (aktywna === "discord" && !sleeping) odswiezTeraz(); });
+  strumien.onerror = () => { strumienZywy = false; };  // EventSource łączy się ponownie sam
 }
 function pokazAlert(a) {
   const el = $("alert");
@@ -182,6 +213,7 @@ $("rail").innerHTML = Object.entries(TABS).map(([id, t]) =>
 
 function przelacz(id, odswiez = true) {
   if (!TABS[id]) return;
+  zamknijWidok();
   aktywna = id;
   document.querySelectorAll("#rail button").forEach((b) => b.classList.toggle("aktywna", b.dataset.tab === id));
   $("tytul").textContent = TABS[id].tytul;
@@ -585,7 +617,7 @@ RENDER.serwery = (d) => {
       ${kafel("Load", g.load != null ? g.load.toFixed(1) : "–", "", KOL.morski, g.rdzenie ? `${g.rdzenie} rdz.` : "")}</div>`;
     srw += (g.gpu || []).map((x) => `<div class="wiersz"><span class="k">GPU</span><span class="v">${esc(x.nazwa)}</span><span class="mala">${x.proc != null ? Math.round(x.proc) + "%" : ""} ${x.temp != null ? Math.round(x.temp) + "°C" : ""} ${x.mem != null ? "VRAM " + Math.round(x.mem) + "%" : ""}</span></div>`).join("");
     srw += (g.dyski || []).map((x) => `<div style="margin:3px 0"><div class="mala" style="display:flex;justify-content:space-between"><span>${esc(x.mnt)}</span><span class="przyg">${bajty(x.uzyte)} / ${bajty(x.razem)}</span></div>${pasek(x.proc, kolProc(x.proc))}</div>`).join("");
-    srw += `<div class="dzien-naglowek">Kontenery (${(g.kontenery || []).length})</div>` + (g.kontenery || []).map((c) => {
+    srw += `<div class="dzien-naglowek">Zasoby kontenerów (${(g.kontenery || []).length})</div>` + (g.kontenery || []).map((c) => {
       const okc = /running|healthy/i.test(c.status || "");
       return `<div class="wiersz"><span class="kropka ${okc ? "ok" : "zle"}"></span><span class="v">${esc(c.nazwa)}</span><span class="k mala">${c.cpu != null ? c.cpu.toFixed(1) + "%" : ""} ${c.ram ? bajty(c.ram) : ""}</span></div>`;
     }).join("");
@@ -604,6 +636,7 @@ RENDER.serwery = (d) => {
       ${kafel("RAM", mm.mem_used_pct ?? "–", "%", kolProc(mm.mem_used_pct), mm.mem_total_gb ? `z ${mm.mem_total_gb} GB` : "")}
       ${kafel("Dysk", mm.dysk_pct ?? "–", "%", kolProc(mm.dysk_pct), "SSD")}</div>
     <div class="wiersz" style="margin-top:6px"><span class="k">Uptime</span><span class="v">${mm.uptime_s ? eta(mm.uptime_s) : "–"}</span></div>
+    ${dockerSkrot(d.docker)}
     <div class="dzien-naglowek">Telefon (panel)</div>
     <div class="wiersz"><span class="kropka ${kb}"></span><span class="v zawijaj">${esc(tb)}</span></div>
     <div class="wiersz"><span class="k">Sygnał</span><span class="v">${esc(hb)}</span></div>`;
@@ -758,6 +791,186 @@ RENDER.dzien = (d) => {
     <div class="karta"><h2>Ważne maile</h2><div class="przewijane" data-scroll="mail">${poczta}</div></div></div>`;
 };
 
+// ================================================================== widoki szczegółowe: pogoda, kontenery Dockera
+// Nakładka na obszar treści (pasek zakładek zostaje). Otwiera ją dotknięcie kafla pogody i przycisk w Serwerach.
+let widok = null;       // {id, dane, kontener: {host, nazwa, restart}|null, logi, ost, laduje}
+const WIDOK = {};
+
+function otworzWidok(id) {
+  widok = { id, dane: null, kontener: null, logi: null, ost: 0, laduje: false };
+  $("widok").hidden = false;
+  rysujWidok(true);
+  wczytajWidok();
+}
+function zamknijWidok() {
+  widok = null;
+  $("widok").hidden = true;
+  $("widok-tresc").innerHTML = "";
+}
+function widokWstecz() {
+  if (widok && widok.kontener) { widok.kontener = null; widok.logi = null; rysujWidok(true); wczytajWidok(); }
+  else zamknijWidok();
+}
+
+async function wczytajWidok() {
+  if (!widok || widok.laduje) return;
+  const w = widok;
+  w.laduje = true;
+  w.ost = Date.now();
+  try {
+    if (w.kontener) {
+      const k = w.kontener;
+      // logi + świeża lista (stan kontenera w nagłówku, np. po restarcie)
+      const [r, lista] = await Promise.all([
+        api(`/api/docker/${encodeURIComponent(k.host)}/${encodeURIComponent(k.nazwa)}/logi`, "POST", { tail: 100 }),
+        api(`/api/tab/${w.id}`).catch(() => null)]);
+      if (lista) w.dane = lista;
+      if (widok === w && w.kontener === k) w.logi = r.logi || "(brak logów)";
+    } else {
+      w.dane = await api(`/api/tab/${w.id}`);
+    }
+    $("offline").hidden = true;
+  } catch (e) {
+    if (w.kontener) w.logi = "Nie udało się pobrać logów: " + e.message;
+    else $("offline").hidden = false;
+  } finally { w.laduje = false; }
+  if (widok === w) rysujWidok();
+}
+
+function rysujWidok(wymus = false) {
+  if (!widok) return;
+  if (!wymus && Date.now() < blokadaRenderu) return;  // trwa potwierdzenie „Na pewno?" albo przesuwanie suwaka
+  const def = WIDOK[widok.id];
+  const kont = $("widok-tresc");
+  const prz = {};
+  kont.querySelectorAll("[data-scroll]").forEach((el) => { prz[el.dataset.scroll] = [el.scrollTop, el.scrollTop + el.clientHeight >= el.scrollHeight - 12]; });
+  $("widok-tytul").textContent = def.tytul(widok);
+  $("widok-info").textContent = widok.dane && widok.dane.now ? "odśw. " + godzMin(widok.dane.now) : "";
+  try { kont.innerHTML = widok.dane ? def.html(widok) : pustoHtml("Wczytuję…"); }
+  catch (e) { kont.innerHTML = `<div class="pusto zle-t">Błąd rysowania widoku: ${esc(e.message)}</div>`; }
+  kont.querySelectorAll("[data-scroll]").forEach((el) => {
+    const p = prz[el.dataset.scroll];
+    if (p) el.scrollTop = el.dataset.dol && p[1] ? el.scrollHeight : p[0];
+    else if (el.dataset.dol) el.scrollTop = el.scrollHeight;
+  });
+}
+
+// ---------- pogoda
+const KIERUNKI = ["N", "NE", "E", "SE", "S", "SW", "W", "NW"];
+const kierunek = (deg) => (deg == null ? "" : KIERUNKI[Math.round(deg / 45) % 8]);
+const kolUv = (u) => (u == null ? KOL.brak : u >= 8 ? KOL.zle : u >= 6 ? KOL.pom : u >= 3 ? KOL.uwaga : KOL.ok);
+
+WIDOK.pogoda = {
+  tytul: () => "Pogoda",
+  co: 300000,
+  html(w) {
+    const [p, err] = zrodlo(w.dane.pogoda, "Pogoda");
+    if (!p) return `<div class="karta">${err}</div>`;
+    const dni = p.dni || [];
+    const dzis = dni[0] || {};
+    const [ik, opis] = WMO[p.code] || ["🌡️", ""];
+    const ikona = p.code === 0 && p.is_day === 0 ? "🌙" : ik;
+    const obecna = `<div class="pogoda"><span class="ikona">${ikona}</span>
+        <div><div class="temp">${st(p.temp)}</div><div class="opis">${esc(opis)} · odczuw. ${st(p.feels)}</div></div></div>`;
+    const kafle = `<div class="kafle" style="grid-template-columns:1fr 1fr;margin-top:8px">
+      ${kafel("Wilgotność", p.wilg ?? "–", "%", KOL.morski)}
+      ${kafel("Ciśnienie", p.cisnienie != null ? Math.round(p.cisnienie) : "–", "hPa", KOL.akcent)}
+      ${kafel("Wiatr", p.wiatr != null ? Math.round(p.wiatr) : "–", "km/h", KOL.akcent,
+        [kierunek(p.kierunek), p.porywy != null ? `porywy ${Math.round(p.porywy)}` : ""].filter(Boolean).join(" · "))}
+      ${kafel("Opady", p.opad ?? 0, "mm", KOL.morski, dzis.opad != null ? `dziś ${dzis.opad} mm` : "")}
+      ${kafel("UV", dzis.uv != null ? Math.round(dzis.uv) : "–", "", kolUv(dzis.uv), "dziś maks.")}
+      ${kafel("Wschód", dzis.sunrise || "–", "", KOL.uwaga, `zachód ${dzis.sunset || "–"}`)}</div>`;
+    const noc = (g) => {
+      const d = dni.find((x) => x.date === g.data);
+      return !!d && !!d.sunrise && !!d.sunset && (g.t < d.sunrise || g.t >= d.sunset);
+    };
+    const godz = (p.godziny || []).map((g) => {
+      const [i] = WMO[g.code] || ["🌡️"];
+      const ikG = (g.code === 0 || g.code === 1) && noc(g) ? "🌙" : i;
+      return `<div class="godz"><div class="g">${esc(g.t)}</div><div class="i">${ikG}</div><b>${st(g.temp)}</b>` +
+        `<div class="pp ${g.pp >= 50 ? "mokro" : ""}">${g.pp ? g.pp + "%" : "&nbsp;"}</div></div>`;
+    }).join("");
+    const mn = Math.min(...dni.map((x) => x.min ?? 99)), mx = Math.max(...dni.map((x) => x.max ?? -99));
+    const zakres = Math.max(1, mx - mn);
+    const wiersze = dni.map((x) => {
+      const [i] = WMO[x.code] || ["🌡️"];
+      const l = (100 * ((x.min ?? mn) - mn)) / zakres, sz = Math.max(4, (100 * ((x.max ?? mx) - (x.min ?? mn))) / zakres);
+      return `<div class="dzien-pog"><span class="dt">${esc(dataKrotko(x.date))}</span><span class="ik">${i}</span>
+        <span class="mn">${st(x.min)}</span><span class="zakres"><i style="left:${l.toFixed(1)}%;width:${sz.toFixed(1)}%"></i></span><span class="mx">${st(x.max)}</span>
+        <span class="pp ${x.pp >= 50 ? "mokro" : ""}">${x.pp ? x.pp + "%" : ""}</span>
+        <span class="wi">${x.wiatr != null ? Math.round(x.wiatr) : "–"} km/h</span><span class="uv" style="color:${kolUv(x.uv)}">UV ${x.uv != null ? Math.round(x.uv) : "–"}</span></div>`;
+    }).join("");
+    return `<div class="siatka" style="grid-template-columns:1fr 1.7fr">
+      <div class="karta"><h2>Teraz</h2><div class="przewijane" data-scroll="pg-t">${obecna}${kafle}</div></div>
+      <div style="display:grid;grid-template-rows:auto minmax(0,1fr);gap:8px;min-height:0">
+        <div class="karta"><h2>Najbliższe 24 godziny</h2><div class="godziny" data-scroll="pg-g">${godz}</div></div>
+        <div class="karta"><h2>7 dni</h2><div class="przewijane" data-scroll="pg-d">${wiersze}</div></div></div></div>`;
+  },
+};
+
+// ---------- kontenery Dockera
+const STAN_KONT = { running: "działa", exited: "zatrzymany", restarting: "restartuje się", paused: "pauza", created: "utworzony", dead: "martwy" };
+const ZDROWIE = { healthy: "zdrowy", unhealthy: "niezdrowy", starting: "startuje" };
+function statusKrotki(s) {
+  let t = String(s || "");
+  const ex = t.match(/^Exited \((-?\d+)\)\s*(.*?)\s*(?:ago)?$/);
+  if (ex) return `kod ${ex[1]}${ex[2] ? " · " + statusKrotki(ex[2]) : ""}`;
+  t = t.replace(/\s*\(.*?\)/g, "").replace(/^Up\s+/, "od ").replace(/\s+ago$/, "")
+    .replace(/About an? hour/, "~1 h").replace(/About an? minute/, "~1 min").replace(/Less than a second/, "<1 s")
+    .replace(/(\d+) seconds?/, "$1 s").replace(/(\d+) minutes?/, "$1 min").replace(/(\d+) hours?/, "$1 h")
+    .replace(/(\d+) days?/, "$1 d").replace(/(\d+) weeks?/, "$1 tyg.").replace(/(\d+) months?/, "$1 mies.");
+  return t;
+}
+function kolKont(c) { return c.ok ? (c.zdrowie === "starting" ? "uwaga" : "ok") : (c.stan === "running" || c.stan === "restarting" ? "uwaga" : "zle"); }
+
+function dockerSkrot(z) {
+  const [x, err] = zrodlo(z, "Docker");
+  if (!x) return `<div class="dzien-naglowek">Kontenery</div>${err}`;
+  const wiersze = (x.hosty || []).map((h) => {
+    if (h.spi) return `<div class="wiersz"><span class="kropka"></span><span class="v">${esc(h.nazwa)}</span><span class="k mala">serwer śpi</span></div>`;
+    if (h.error) return `<div class="wiersz"><span class="kropka zle"></span><span class="v zawijaj">${esc(h.nazwa)}: brak połączenia z proxy Dockera</span></div>`;
+    const zle = h.kontenery.filter((c) => !c.ok);
+    return `<div class="wiersz"><span class="kropka ${zle.length ? "zle" : "ok"}"></span><span class="v zawijaj">${esc(h.nazwa)}: ${h.kontenery.length - zle.length}/${h.kontenery.length} OK${zle.length ? " · " + zle.map((c) => esc(c.nazwa)).join(", ") : ""}</span></div>`;
+  }).join("");
+  return `<div class="dzien-naglowek">Kontenery</div>${wiersze}<button class="maly" style="width:100%;margin-top:4px" data-akcja="docker-otworz">Zarządzaj kontenerami ›</button>`;
+}
+
+WIDOK.docker = {
+  tytul: (w) => (w.kontener ? w.kontener.nazwa : "Kontenery Dockera"),
+  co: 5000,
+  html(w) {
+    const [x, err] = zrodlo(w.dane.docker, "Docker");
+    if (!x) return `<div class="karta">${err}</div>`;
+    if (w.kontener) return widokLogi(w, x);
+    const hosty = x.hosty || [];
+    return `<div class="siatka" style="grid-template-columns:repeat(${Math.max(1, hosty.length)},1fr)">${hosty.map((h) => {
+      let tresc;
+      if (h.spi) tresc = pustoHtml("Serwer śpi — panel go nie budzi.");
+      else if (h.error) tresc = `<div class="pusto zle-t mala">${esc(h.error)}</div>`;
+      else tresc = h.kontenery.map((c) => `<div class="wiersz kont">
+          <span class="kropka ${kolKont(c)}"></span>
+          <span class="v" title="${esc(c.obraz)}">${esc(c.nazwa)}</span>
+          <span class="k mala st">${esc(STAN_KONT[c.stan] || c.stan)}${c.zdrowie && c.zdrowie !== "healthy" ? " · " + esc(ZDROWIE[c.zdrowie]) : ""}${c.stan === "running" ? " " + esc(statusKrotki(c.status)) : ""}</span>
+          <button class="maly" data-akcja="docker-logi" data-host="${esc(h.id)}" data-nazwa="${esc(c.nazwa)}" data-restart="${c.restart ? 1 : 0}">Logi</button></div>`).join("") || pustoHtml("Brak kontenerów");
+      const ok = h.kontenery.filter((c) => c.ok).length;
+      return `<div class="karta"><h2>${esc(h.nazwa)}<span class="prawo">${h.spi || h.error ? "" : `${ok}/${h.kontenery.length}`}${h.rw ? "" : " · tylko podgląd"}</span></h2>
+        <div class="przewijane" data-scroll="dk-${esc(h.id)}">${tresc}</div></div>`;
+    }).join("")}</div>`;
+  },
+};
+
+function widokLogi(w, x) {
+  const k = w.kontener;
+  const h = (x.hosty || []).find((y) => y.id === k.host);
+  const c = h && (h.kontenery || []).find((y) => y.nazwa === k.nazwa);
+  const stan = c ? `${STAN_KONT[c.stan] || c.stan}${c.zdrowie ? " · " + ZDROWIE[c.zdrowie] : ""}${c.stan === "running" ? " " + statusKrotki(c.status) : ""}` : "nie ma go na liście";
+  const restart = k.restart && c ? `<button class="groznie maly" data-akcja="docker-restart" data-host="${esc(k.host)}" data-nazwa="${esc(k.nazwa)}" data-potwierdz data-dlugie>↻ Restart</button>`
+    : `<span class="mala przyg">restart wyłączony</span>`;
+  return `<div class="siatka" style="grid-template-columns:1fr"><div class="karta">
+      <h2><span>${esc(h ? h.nazwa : k.host)} · ${esc(stan)}</span><span class="prawo">${restart}</span></h2>
+      <pre class="logi przewijane" data-scroll="logi" data-dol="1">${w.logi == null ? "Wczytuję logi…" : esc(w.logi)}</pre></div></div>`;
+}
+
 // ================================================================== akcje (delegowane)
 async function akcjaPost(btn, path, body, poSukcesie) {
   const dlugie = btn && btn.hasAttribute("data-dlugie");
@@ -795,6 +1008,18 @@ document.addEventListener("click", (e) => {
       akcjaPost(b, `/api/pc/${encodeURIComponent(b.dataset.pc)}/${b.dataset.cmd}`, body, (r) => {
         if (b.dataset.cmd === "speedtest") { wynikiSpeedPc[b.dataset.pc] = r; toast(`PC: ↓ ${r.pobieranieMbps} · ↑ ${r.wysylanieMbps} Mb/s`); }
         else if (r && r.msg) toast(r.msg);
+      });
+      break;
+    case "pogoda-otworz": otworzWidok("pogoda"); break;
+    case "docker-otworz": otworzWidok("docker"); break;
+    case "widok-wstecz": widokWstecz(); break;
+    case "docker-logi":
+      if (widok) { widok.kontener = { host: b.dataset.host, nazwa: b.dataset.nazwa, restart: b.dataset.restart === "1" }; widok.logi = null; rysujWidok(true); wczytajWidok(); }
+      break;
+    case "docker-restart":
+      akcjaPost(b, `/api/docker/${encodeURIComponent(b.dataset.host)}/${encodeURIComponent(b.dataset.nazwa)}/restart`, {}, (r) => {
+        toast(r.msg || "Restart wysłany");
+        setTimeout(() => { if (widok) { widok.ost = 0; wczytajWidok(); } }, 3000);
       });
       break;
     case "qbit": akcjaPost(b, `/api/media/qbit/${b.dataset.hash}/${b.dataset.cmd}`); break;
@@ -853,11 +1078,14 @@ if (startowa && startowa.sleeping) goSleep();
 else if (B) try { B.setSleep(false); } catch (e) { /* j.w. */ }
 
 przelacz("przeglad", false);
-tick(); loadDash(); pollScreen(); heartbeat();
+tick(); loadDash(); pollScreen(); heartbeat(); startStrumien();
 ostatnio.przeglad = Date.now();
 setInterval(tick, 1000);
 setInterval(petla, 1000);
-setInterval(pollScreen, 3000);
+let licznikPollu = 0;
+setInterval(() => { licznikPollu++; if (!strumienZywy || licznikPollu % 10 === 0) pollScreen(); }, 3000);  // zapas, gdy strumień milczy
+setInterval(() => { if (window.EventSource && Date.now() - strumienOstatni > 45000) { strumienZywy = false; startStrumien(); } }, 10000);
+setInterval(() => { if (widok && !sleeping && Date.now() - widok.ost >= (widok.kontener ? 5000 : WIDOK[widok.id].co)) wczytajWidok(); }, 1000);
 setInterval(heartbeat, 60000);
 let licznikSnu = 0;
 setInterval(() => { licznikSnu++; if (sleeping && licznikSnu % 10 === 0) loadDash(); }, 30000); // śpiąc: Przegląd co 5 min

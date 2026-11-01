@@ -8,7 +8,11 @@ todo/trener/Kuma/AdGuard są pod 127.0.0.1. Źródła danych zakładek: zrodla.p
 API (JSON):
   GET  /api/dash                       zakładka Przegląd
   GET  /api/tab/<nazwa>                dzien | pc | muzyka | discord | media | serwery | siec | trening | swiatlo
-  GET  /api/screen                     stan ekranu: {ver, mode, until, alert, now} — telefon pyta co 3 s
+                                       + widoki szczegółowe: pogoda (godzinowa i 7 dni) | docker (kontenery)
+  GET  /api/screen                     stan ekranu: {ver, mode, until, alert, now} (zapas, gdy nie działa strumień)
+  GET  /api/stream                     SSE: zdarzenia "ekran" (zmiana ekranu/alertu), "discord", "ping" co 15 s
+  POST /api/docker/<host>/<kontener>/logi      {"tail"?: 10..300} -> {"logi": "..."}   (POST, żeby obowiązywał token)
+  POST /api/docker/<host>/<kontener>/restart   host musi być rw w DOCKER_HOSTS
   POST /api/screen                     {"mode": "on"|"sleep"|"auto", "minutes"?: N}   <- JARVIS / bot / n8n
   POST /api/alert                      {"text", "level"?: info|warn|crit, "minutes"?: N}  budzi ekran + baner
   POST /api/alert/clear
@@ -31,6 +35,7 @@ import base64
 import hmac
 import json
 import os
+import queue
 import re
 import socket
 import subprocess
@@ -151,6 +156,43 @@ def pogoda():
             "precip": c.get("precipitation"), "is_day": c.get("is_day"), "days": dni}
 
 
+def pogoda_szczegoly():
+    """Widok po dotknięciu kafla pogody: bieżące, najbliższe 24 godziny i 7 dni. Czasy lokalne (Europe/Warsaw)."""
+    q = urllib.parse.urlencode({
+        "latitude": LAT, "longitude": LON, "timezone": "Europe/Warsaw", "forecast_days": 7,
+        "current": "temperature_2m,apparent_temperature,relative_humidity_2m,surface_pressure,weather_code,"
+                   "wind_speed_10m,wind_gusts_10m,wind_direction_10m,precipitation,is_day",
+        "hourly": "temperature_2m,weather_code,precipitation_probability,precipitation,wind_speed_10m",
+        "daily": "weather_code,temperature_2m_max,temperature_2m_min,precipitation_probability_max,precipitation_sum,"
+                 "wind_speed_10m_max,uv_index_max,sunrise,sunset",
+    })
+    _, d = http_json(f"https://api.open-meteo.com/v1/forecast?{q}", timeout=10)
+    c, h, dl = d.get("current") or {}, d.get("hourly") or {}, d.get("daily") or {}
+
+    def kol(zrodlo, k, i):
+        arr = zrodlo.get(k) or []
+        return arr[i] if i < len(arr) else None
+
+    # pierwsza godzina >= bieżącej (obie wartości są lokalne, więc porównanie tekstów wystarcza)
+    teraz_h = (c.get("time") or "")[:13]
+    czasy = h.get("time") or []
+    start = next((i for i, t in enumerate(czasy) if t[:13] >= teraz_h), 0)
+    godziny = [{"t": czasy[i][11:16], "data": czasy[i][:10], "code": kol(h, "weather_code", i),
+                "temp": kol(h, "temperature_2m", i), "pp": kol(h, "precipitation_probability", i),
+                "opad": kol(h, "precipitation", i), "wiatr": kol(h, "wind_speed_10m", i)}
+               for i in range(start, min(start + 24, len(czasy)))]
+    dni = [{"date": data, "code": kol(dl, "weather_code", i), "max": kol(dl, "temperature_2m_max", i),
+            "min": kol(dl, "temperature_2m_min", i), "pp": kol(dl, "precipitation_probability_max", i),
+            "opad": kol(dl, "precipitation_sum", i), "wiatr": kol(dl, "wind_speed_10m_max", i),
+            "uv": kol(dl, "uv_index_max", i), "sunrise": (kol(dl, "sunrise", i) or "")[11:16],
+            "sunset": (kol(dl, "sunset", i) or "")[11:16]}
+           for i, data in enumerate(dl.get("time") or [])]
+    return {"temp": c.get("temperature_2m"), "feels": c.get("apparent_temperature"), "wilg": c.get("relative_humidity_2m"),
+            "cisnienie": c.get("surface_pressure"), "code": c.get("weather_code"), "wiatr": c.get("wind_speed_10m"),
+            "porywy": c.get("wind_gusts_10m"), "kierunek": c.get("wind_direction_10m"), "opad": c.get("precipitation"),
+            "is_day": c.get("is_day"), "godziny": godziny, "dni": dni}
+
+
 ETYKIETA_RE = re.compile(r'(\w+)="((?:[^"\\]|\\.)*)"')
 METRYKA_RE = re.compile(r"^monitor_status\{(.*)\}\s+(\S+)$")
 KUMA_STAN = {1: "up", 0: "down", 2: "pending", 3: "maintenance"}
@@ -266,11 +308,81 @@ def trening_brief():
     return {"lines": (d or {}).get("lines", [])}
 
 
+# --------------------------------------------------------------------------- Docker (malinka + serwer)
+def _host_na_serwerze(h):
+    return bool(SERVER_IP) and urllib.parse.urlsplit(h["url"]).hostname == SERVER_IP
+
+
+def docker_wszystko():
+    """Kontenery ze wszystkich hostów z DOCKER_HOSTS. Host na serwerze pomijamy, gdy serwer śpi (nie budzimy go)."""
+    hosty = Z.docker_hosty()
+    if not hosty:
+        return {"disabled": True}
+
+    def jeden(h):
+        w = {"id": h["id"], "nazwa": h["nazwa"], "rw": h["rw"], "kontenery": []}
+        if _host_na_serwerze(h) and not serwer_up():
+            return {**w, "spi": True}
+        try:
+            return {**w, "kontenery": Z.docker_lista(h)}
+        except Exception as e:  # noqa: BLE001
+            return {**w, "error": f"{type(e).__name__}: {e}"[:200]}
+    return {"hosty": list(Z.pula.map(jeden, hosty))}
+
+
+def docker_akcja(hid, nazwa, akcja, body):
+    h = Z.docker_host(hid)
+    if _host_na_serwerze(h) and not serwer_up():
+        raise RuntimeError("serwer śpi")
+    if akcja == "logi":
+        return {"ok": True, "logi": Z.docker_logi(h, nazwa, body.get("tail", 80))}
+    Z.docker_restart(h, nazwa)
+    cache.drop("docker")
+    return {"ok": True, "msg": f"Restart: {nazwa} ({h['nazwa']})"}
+
+
 # --------------------------------------------------------------------------- ekran / alerty / telefon
 stan_lock = threading.Lock()
 EKRAN = {"ver": 1, "mode": "auto", "until": 0, "alert": None}
 PANEL = {"ts": None, "battery": None, "sleeping": None}
 _ostatni_push = {"ts": 0.0}
+
+
+class Szyna:
+    """Zdarzenia dla telefonu (SSE). Każdy klient ma własną kolejkę; zapchany klient po prostu traci zdarzenia
+    (telefon i tak ma zapasowe odpytywanie), więc jedna zawieszona sesja nie blokuje reszty."""
+
+    def __init__(self):
+        self.klienci = set()
+        self.lock = threading.Lock()
+
+    def dolacz(self):
+        q = queue.Queue(maxsize=50)
+        with self.lock:
+            self.klienci.add(q)
+        return q
+
+    def odlacz(self, q):
+        with self.lock:
+            self.klienci.discard(q)
+
+    def publikuj(self, typ, dane=None):
+        with self.lock:
+            klienci = list(self.klienci)
+        for q in klienci:
+            try:
+                q.put_nowait((typ, dane))
+            except queue.Full:
+                pass
+
+
+szyna = Szyna()
+
+
+def stan_ekranu():
+    with stan_lock:
+        s = dict(EKRAN)
+    return {**s, "now": teraz(), "wake_min": WAKE_MIN}
 
 
 def ustaw_ekran(mode, minutes=None):
@@ -284,7 +396,9 @@ def ustaw_ekran(mode, minutes=None):
         until = teraz() + m * 60 if m else 0
     with stan_lock:
         EKRAN.update(ver=EKRAN["ver"] + 1, mode=mode, until=until)
-        return dict(EKRAN)
+        wynik = dict(EKRAN)
+    szyna.publikuj("ekran", stan_ekranu())
+    return wynik
 
 
 def ustaw_alert(text, level="info", minutes=None):
@@ -302,7 +416,9 @@ def wyczysc_alert():
     # zamknięty alert = koniec wymuszonego świecenia; ekran wraca do zwykłego trybu (gaśnie po WAKE_MIN)
     with stan_lock:
         EKRAN.update(ver=EKRAN["ver"] + 1, alert=None, mode="auto", until=0)
-        return dict(EKRAN)
+        wynik = dict(EKRAN)
+    szyna.publikuj("ekran", stan_ekranu())
+    return wynik
 
 
 def heartbeat(b):
@@ -432,7 +548,8 @@ def tab_serwery():
     return {"serwer": cache.get("serwer", 10, serwer),
             "glances": cache.get("glances", 5, Z.glances) if serwer_up() else None,
             "malinka": cache.get("malinka-pelna", 10, malinka),
-            "kuma": cache.get("kuma", 30, kuma), "panel": panel}
+            "kuma": cache.get("kuma", 30, kuma), "panel": panel,
+            "docker": cache.get("docker", 8, docker_wszystko)}
 
 
 TABS = {
@@ -446,6 +563,9 @@ TABS = {
                      "speedtest": Z.pamiec_get("speedtest")},
     "trening": lambda: {"trening": cache.get("tab-trening", 60, Z.trening)},
     "swiatlo": lambda: {"wled": cache.get("wled", 3, Z.wled)},
+    # widoki szczegółowe otwierane z Przeglądu i Serwerów (nie mają własnej ikony na pasku)
+    "pogoda": lambda: {"pogoda": cache.get("pogoda-szczegoly", 900, pogoda_szczegoly)},
+    "docker": lambda: {"docker": cache.get("docker", 8, docker_wszystko)},
 }
 
 
@@ -515,6 +635,34 @@ class H(BaseHTTPRequestHandler):
         except Exception as e:  # noqa: BLE001
             self.blad(500, f"{type(e).__name__}: {e}")
 
+    # ---------- SSE ----------
+    def _sse(self, typ, dane=None):
+        self.wfile.write(f"event: {typ}\ndata: {json.dumps(dane, ensure_ascii=False)}\n\n".encode("utf-8"))
+        self.wfile.flush()
+
+    def _strumien(self):
+        """Długo żyjące połączenie: telefon dostaje zmiany ekranu/alertów od razu, bez odpytywania co 3 s.
+        'ping' co 15 s pozwala telefonowi wykryć martwe połączenie (Wi-Fi w uśpieniu) i połączyć się od nowa."""
+        self.send_response(200)
+        self.send_header("Content-Type", "text/event-stream; charset=utf-8")
+        self.send_header("Cache-Control", "no-store")
+        self.send_header("X-Accel-Buffering", "no")
+        self.end_headers()
+        self.close_connection = True
+        q = szyna.dolacz()
+        try:
+            self._sse("ekran", stan_ekranu())  # od razu aktualny stan
+            while True:
+                try:
+                    typ, dane = q.get(timeout=15)
+                except queue.Empty:
+                    typ, dane = "ping", int(teraz())
+                self._sse(typ, dane)
+        except OSError:  # telefon się rozłączył
+            pass
+        finally:
+            szyna.odlacz(q)
+
     # ---------- GET ----------
     def do_GET(self):
         self.obsluz(self._get)
@@ -533,9 +681,9 @@ class H(BaseHTTPRequestHandler):
                 return self.blad(404, "nie ma takiej zakładki")
             return self.odpowiedz(200, {"now": teraz(), **fn()})
         if sc in ("/api/screen", "/api/state"):
-            with stan_lock:
-                s = dict(EKRAN)
-            return self.odpowiedz(200, {**s, "now": teraz(), "wake_min": WAKE_MIN})
+            return self.odpowiedz(200, stan_ekranu())
+        if sc == "/api/stream":
+            return self._strumien()
         if m := re.fullmatch(r"/api/pc/([\w-]+)/okladka/([0-9A-Fa-f]{1,64})", sc):
             dane, typ = Z.agent(Z.pc_po_id(m.group(1)), f"/api/media/okladka/{m.group(2)}", surowe=True, timeout=4)
             return self.odpowiedz(200, typ=typ, body=dane, cache_s=3600)
@@ -583,7 +731,10 @@ class H(BaseHTTPRequestHandler):
             if self.client_address[0] not in ("127.0.0.1", "::1"):
                 return self.blad(403, "tylko bot na malince")
             Z.discord_zapisz(b)
+            szyna.publikuj("discord")
             return self.odpowiedz(204)
+        if m := re.fullmatch(r"/api/docker/([\w-]+)/([\w.-]+)/(logi|restart)", sc):
+            return self.odpowiedz(200, docker_akcja(m.group(1), m.group(2), m.group(3), b))
         if m := re.fullmatch(r"/api/media/qbit/(\w+)/(start|stop)", sc):
             Z.qbit_akcja(m.group(1), m.group(2))
             cache.drop("media")

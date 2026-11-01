@@ -50,7 +50,7 @@ chk() {
 printf '# Audyt JARVIS — SERWER\n\n'
 kv "Host" "$(hostname)"
 kv "Data audytu" "$(date -Is)"
-kv "Skrypt" "jarvis-audit-serwer.sh v1"
+kv "Skrypt" "jarvis-audit-serwer.sh v2"
 kv "Lockfile idle-shutdown" "$([ "$LOCK_MINE" -eq 1 ] && echo "założony przez audyt (skasuję na końcu)" || echo "już istniał lub brak root")"
 [ "$(id -u)" -ne 0 ] && printf '\n> **UWAGA:** bez roota część sekcji będzie pusta. Puść przez `sudo`.\n'
 
@@ -190,7 +190,7 @@ else
   pre "$(run docker system df -v | head -80)"
 
   sub "Pliki compose"
-  pre "$(run find /opt /home /root /srv -maxdepth 4 -name 'docker-compose*.y*ml' -o -maxdepth 4 -name 'compose.y*ml' 2>/dev/null | sort)"
+  pre "$(find /opt /home /root /srv -maxdepth 4 \( -name 'docker-compose*.y*ml' -o -name 'compose.y*ml' \) 2>/dev/null | sort)"
 fi
 
 # =============================================================================
@@ -263,8 +263,12 @@ if [ -n "$N8N" ]; then
   sub "Liczba workflowów i ich stan (jeśli baza w Postgresie)"
   PGC=$(dq ps --format '{{.Names}}' | grep -iE 'postgres|pgsql' | head -1)
   if [ -n "$PGC" ]; then
-    pre "$(run docker exec "$PGC" psql -U postgres -d n8n -c "select active, count(*) from workflow_entity group by active;")"
-    pre "$(run docker exec "$PGC" psql -U postgres -d n8n -c "select name, active, updatedAt from workflow_entity order by updatedAt desc limit 20;")"
+    # user/baza z env n8n (u Macieja jarvis/jarvis_db, nie postgres/n8n)
+    N8N_ENV=$(run docker inspect -f '{{range .Config.Env}}{{println .}}{{end}}' "$N8N")
+    PGU=$(printf '%s\n' "$N8N_ENV" | sed -n 's/^DB_POSTGRESDB_USER=//p' | head -1)
+    PGD=$(printf '%s\n' "$N8N_ENV" | sed -n 's/^DB_POSTGRESDB_DATABASE=//p' | head -1)
+    pre "$(run docker exec "$PGC" psql -U "${PGU:-postgres}" -d "${PGD:-n8n}" -c 'select active, count(*) from workflow_entity group by active;')"
+    pre "$(run docker exec "$PGC" psql -U "${PGU:-postgres}" -d "${PGD:-n8n}" -c 'select name, active, "updatedAt" from workflow_entity order by "updatedAt" desc limit 20;')"
   fi
 else
   chk FAIL N8N-RUN "n8n nie działa"
@@ -273,13 +277,22 @@ fi
 # =============================================================================
 hdr "8. Qdrant — pamięć RAG"
 # =============================================================================
+# Qdrant zwykle nie ma portu na hoście (n8n łączy się po sieci Dockera) — wtedy pytamy IP kontenera
+QD_HOST=localhost
 QD=$(jget http://localhost:6333/collections)
+if [ -z "$QD" ]; then
+  QDC=$(dq ps --format '{{.Names}}' | grep -i qdrant | head -1)
+  if [ -n "$QDC" ]; then
+    QD_HOST=$(dq inspect -f '{{range .NetworkSettings.Networks}}{{.IPAddress}} {{end}}' "$QDC" | awk '{print $1}')
+    [ -n "$QD_HOST" ] && QD=$(jget "http://$QD_HOST:6333/collections")
+  fi
+fi
 if [ -n "$QD" ]; then
-  chk OK QDR-RUN "Qdrant odpowiada"
+  chk OK QDR-RUN "Qdrant odpowiada ($QD_HOST:6333)"
   pre "$QD"
   for col in $(printf '%s' "$QD" | grep -o '"name":"[^"]*"' | cut -d'"' -f4); do
     sub "Kolekcja: $col"
-    INFO=$(jget "http://localhost:6333/collections/$col")
+    INFO=$(jget "http://$QD_HOST:6333/collections/$col")
     pre "$(printf '%s' "$INFO" | head -c 1500)"
     DIM=$(printf '%s' "$INFO" | grep -o '"size":[0-9]*' | head -1 | cut -d: -f2)
     CNT=$(printf '%s' "$INFO" | grep -o '"points_count":[0-9]*' | head -1 | cut -d: -f2)
@@ -289,7 +302,7 @@ if [ -n "$QD" ]; then
     [ "${CNT:-0}" -eq 0 ] 2>/dev/null && chk FAIL QDR-EMPTY "Kolekcja $col jest PUSTA — pamięć nie zapisuje faktów"
   done
 else
-  chk FAIL QDR-RUN "Qdrant nie odpowiada na :6333"
+  chk FAIL QDR-RUN "Qdrant nie odpowiada na :6333 (ani na hoście, ani na IP kontenera)"
 fi
 
 # =============================================================================
@@ -309,10 +322,10 @@ while IFS= read -r f; do
     kv "Ostatnia modyfikacja" "$(run stat -c '%y' "$f")"
     grep -q 'restic\|rclone\|b2:\|s3:\|sftp:' "$f" 2>/dev/null \
       && chk OK  "P1-OFFSITE" "$f zawiera push offsite (restic/rclone/sftp)" \
-      || chk FAIL "P1-OFFSITE" "$f NIE wypycha kopii poza serwer — punkt 1 roadmapy niezrobiony"
-    grep -q 'jarvis-no-autoshutdown' "$f" 2>/dev/null \
+      || chk INFO "P1-OFFSITE" "$f bez kopii poza serwer — świadoma decyzja (bez offsite)"
+    grep -qE 'jarvis-no-autoshutdown|jarvis-no-shutdown' "$f" 2>/dev/null \
       && chk OK  "P2-LOCKFILE" "$f zakłada lockfile idle-shutdown" \
-      || chk FAIL "P2-LOCKFILE" "$f NIE zakłada /etc/jarvis-no-autoshutdown — wyścig z idle-shutdown (roadmapa #3)"
+      || chk INFO "P2-LOCKFILE" "$f nie zakłada lockfile'a idle-shutdown (/run/jarvis-no-shutdown) — OK, jeśli robi to skrypt, który go wywołuje"
     grep -qE 'trap .*EXIT' "$f" 2>/dev/null \
       && chk OK  "P2-TRAP" "$f ma trap EXIT (sprzątanie)" \
       || chk FAIL "P2-TRAP" "$f nie ma trap EXIT"
@@ -340,6 +353,7 @@ pre "$(run find / -maxdepth 5 -type d -name 'restic*' -not -path '*/proc/*' 2>/d
 sub "Ostatnie pliki w katalogach backupowych (czy w ogóle są świeże?)"
 while IFS= read -r b; do
   [ -d "$b" ] || continue
+  [ "$b" = /var/backups ] && continue   # kopie dpkg/apt Debiana, nie JARVIS-a
   printf '**%s**\n' "$b"
   pre "$(find "$b" -maxdepth 2 -type f -printf '%TY-%Tm-%Td %TH:%TM  %10s  %p\n' 2>/dev/null | sort -r | head -15)"
   NEWEST=$(find "$b" -type f -mtime -2 2>/dev/null | head -1)
@@ -348,6 +362,23 @@ while IFS= read -r b; do
   [ "${OLD:-0}" -gt 0 ] && chk FAIL BKP-OLD "$OLD plików starszych niż 31 dni w $b — brak czyszczenia retencji"
 done < "$BKPLIST"
 rm -f "$BKPLIST"
+
+# find -xdev wyżej nie wchodzi na /mnt/telemetry (osobny dysk) — dlatego osobno
+sub "Backup konfiguracji (backup.sh → /mnt/telemetry/backups/jarvis-config)"
+JC=/mnt/telemetry/backups/jarvis-config
+if [ -d "$JC" ]; then
+  LAST=$(find "$JC" -mindepth 1 -maxdepth 1 -type d -printf '%T@ %p\n' 2>/dev/null | sort -rn | head -1 | cut -d' ' -f2-)
+  kv "Liczba kopii" "$(find "$JC" -mindepth 1 -maxdepth 1 -type d 2>/dev/null | wc -l)"
+  kv "Najnowsza" "${LAST:-—}"
+  [ -n "$LAST" ] && [ -f "$LAST/STATUS" ] && pre "$(run head -20 "$LAST/STATUS")"
+  if [ -n "$LAST" ] && [ -n "$(find "$LAST" -maxdepth 0 -mtime -2 2>/dev/null)" ]; then
+    chk OK BKP-FRESH "Najnowsza kopia konfiguracji młodsza niż 48h ($(basename "$LAST"))"
+  else
+    chk FAIL BKP-FRESH "Brak kopii konfiguracji z ostatnich 48h w $JC — sprawdź journalctl -t jarvis-server-backup-agent"
+  fi
+else
+  chk FAIL BKP-FRESH "Brak katalogu $JC — backup.sh nie zapisał żadnej kopii"
+fi
 
 # =============================================================================
 hdr "10. Idle-shutdown / WoL / zarządzanie mocą"

@@ -47,7 +47,7 @@ dq() { # dq <argumenty docker> — docker bez szumu błędów (pusty wynik = bra
 printf '# Audyt JARVIS — MALINKA\n\n'
 kv "Host" "$(hostname)"
 kv "Data audytu" "$(date -Is)"
-kv "Skrypt" "jarvis-audit-malinka.sh v1"
+kv "Skrypt" "jarvis-audit-malinka.sh v2"
 [ "$(id -u)" -ne 0 ] && printf '\n> **UWAGA:** uruchomiono bez root — część sekcji będzie niepełna. Puść przez `sudo`.\n'
 
 # =============================================================================
@@ -105,7 +105,7 @@ case "$ROOTDISK" in
       else
         chk FAIL STOR-BOOT "Root na USB bez SMART — to najpewniej PENDRIVE. Brak telemetrii zużycia, awaria będzie cicha i nagła. Wymień na SSD (patrz sekcja rekomendacji)."
       fi
-      [ -z "${UASP:-}" ] && chk FAIL STOR-UASP "Nośnik działa przez usb-storage zamiast UAS — wolniej i wyższe obciążenie CPU. Sprawdź mostek USB-SATA / quirks."
+      [ -z "${UASP:-}" ] && chk INFO STOR-UASP "Nośnik przez usb-storage zamiast UAS — świadomie (mostek JMS567, decyzja z SSD)"
     else
       chk OK STOR-BOOT "Root na ${ROOTTRAN:-?} (${ROOTMODEL:-?})"
     fi
@@ -129,8 +129,9 @@ else
 fi
 
 sub "log2ram (ochrona nośnika przed zapisami logów)"
-if systemctl list-unit-files 2>/dev/null | grep -q '^log2ram'; then
-  chk OK P2-LOG2RAM "log2ram zainstalowany ($(run systemctl is-active log2ram))"
+L2R_UNITS=$(systemctl list-unit-files 'log2ram*' --no-legend 2>/dev/null)
+if [ -n "$L2R_UNITS" ] || [ -f /etc/log2ram.conf ] || have log2ram; then
+  chk OK P2-LOG2RAM "log2ram zainstalowany (log2ram.service: $(systemctl is-active log2ram 2>/dev/null))"
   pre "$(run cat /etc/log2ram.conf | grep -v '^#' | grep -v '^$')"
 else
   chk FAIL P2-LOG2RAM "Brak log2ram — /var/log wali w nośnik 24/7 (punkt 4 roadmapy z audytu)"
@@ -174,17 +175,18 @@ else
   pre "$(run docker system df -v | head -60)"
 
   sub "Lokalizacje plików compose"
-  COMPOSE_FILES=$(run find /opt /home /root /srv -maxdepth 4 -name 'docker-compose*.y*ml' -o -maxdepth 4 -name 'compose.y*ml' 2>/dev/null | sort)
+  # find bez run(): run() dokleja stderr do wyniku, a ostrzeżenia find trafiały do dirname
+  COMPOSE_FILES=$(find /opt /home /root /srv -maxdepth 4 \( -name 'docker-compose*.y*ml' -o -name 'compose.y*ml' \) 2>/dev/null | sort)
   pre "$COMPOSE_FILES"
   CF_DIRS=$(printf '%s\n' "$COMPOSE_FILES" | xargs -r -n1 dirname | sort -u)
   CF_N=$(printf '%s\n' "$CF_DIRS" | grep -c . || true)
-  [ "${CF_N:-0}" -gt 1 ] && chk FAIL P2-SCATTER "Konfiguracje w $CF_N różnych katalogach — audyt P2 (rozproszony stan). Docelowo jedno repo git."
+  [ "${CF_N:-0}" -gt 1 ] && chk INFO P2-SCATTER "Konfiguracje w $CF_N katalogach — kopie trzymane w repo jarvis-infra (malinka/live/)"
 fi
 
 # =============================================================================
 hdr "4. Wersjonowanie konfiguracji (audyt P2 / roadmapa #4)"
 # =============================================================================
-GITREPOS=$(run find /opt /home /root /srv -maxdepth 4 -type d -name .git 2>/dev/null | xargs -r -n1 dirname | sort -u)
+GITREPOS=$(find /opt /home /root /srv -maxdepth 4 -type d -name .git 2>/dev/null | xargs -r -n1 dirname | sort -u)
 if [ -n "$GITREPOS" ]; then
   chk OK P2-GIT "Znaleziono repozytoria git:"
   pre "$GITREPOS"
@@ -196,7 +198,7 @@ if [ -n "$GITREPOS" ]; then
       "$(run git -C "$r" remote -v | head -1)"
   done
 else
-  chk FAIL P2-GIT "Brak repozytorium git z konfiguracją — odtworzenie malinki = archeologia (roadmapa #4)"
+  chk INFO P2-GIT "Brak repo git na malince — repo jarvis-infra jest na laptopie (malinka/live/)"
 fi
 have ansible-playbook && chk OK P2-ANSIBLE "Ansible obecny" || chk INFO P2-ANSIBLE "Brak Ansible (docelowy punkt roadmapy, nie pilny)"
 have sops && chk OK P2-SOPS "sops obecny (szyfrowanie sekretów w repo)" || chk INFO P2-SOPS "Brak sops/age — sekrety trzymane poza repo?"
@@ -219,7 +221,7 @@ pre "$(run systemctl list-timers --all --no-pager)"
 # =============================================================================
 hdr "6. Backupy — stan faktyczny (audyt P1)"
 # =============================================================================
-have restic && kv "restic" "$(run restic version)" || chk FAIL P1-RESTIC "Brak restic na malince — offsite backup z §2 audytu nie jest wdrożony"
+have restic && kv "restic" "$(run restic version)" || chk INFO P1-RESTIC "Brak restic na malince — niepotrzebny, kopie ciągnie serwer (backup.sh)"
 have rsync  && kv "rsync" "$(run rsync --version | head -1)" || chk FAIL BKP-RSYNC "Brak rsync"
 have borg   && kv "borg" "$(run borg --version)"
 
@@ -263,7 +265,7 @@ dq ps --format '{{.Names}}' | grep -qi adguard && chk OK NET-DNS "Kontener AdGua
 kv "resolv.conf" "$(run grep nameserver /etc/resolv.conf | tr '\n' ' ')"
 
 sub "Nginx Proxy Manager"
-dq ps --format '{{.Names}}' | grep -qiE 'npm|nginx-proxy' && chk OK NET-NPM "NPM obecny" || chk UNK NET-NPM "Nie widzę kontenera NPM"
+dq ps --format '{{.Names}}' | grep -qiE 'npm|nginx[-_]proxy' && chk OK NET-NPM "NPM obecny" || chk UNK NET-NPM "Nie widzę kontenera NPM"
 
 sub "fail2ban / CrowdSec"
 have fail2ban-client && chk OK SEC-F2B "fail2ban obecny: $(run fail2ban-client status | tr '\n' ' ')" || chk FAIL SEC-F2B "Brak fail2ban (audyt P2 — wspólne hasło na Funnel)"
@@ -295,11 +297,11 @@ else
 fi
 
 sub "Klucze SSH używane przez kontener bota"
-BOT=$(dq ps --format '{{.Names}}' | grep -iE 'bot|jarvis' | head -1)
+BOT=$(dq ps --format '{{.Names}}' | grep -iE 'bot' | head -1)
 if [ -n "$BOT" ]; then
   kv "Kontener bota" "$BOT"
   pre "$(run docker inspect -f '{{range .Mounts}}{{.Source}} -> {{.Destination}} ({{.Mode}}){{println}}{{end}}' "$BOT")"
-  pre "$(run docker exec "$BOT" sh -c 'ls -la ~/.ssh 2>/dev/null; head -c 60 ~/.ssh/config 2>/dev/null')"
+  pre "$(run docker exec "$BOT" sh -c 'ls -la /app/ssh ~/.ssh 2>/dev/null')"
 fi
 
 # =============================================================================

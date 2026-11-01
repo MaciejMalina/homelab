@@ -1,0 +1,543 @@
+{
+  "name": "JARVIS – Maile: etykiety AI",
+  "nodes": [
+    {
+      "parameters": {
+        "pollTimes": {
+          "item": [
+            {
+              "mode": "everyMinute"
+            }
+          ]
+        },
+        "filters": {
+          "readStatus": "both"
+        }
+      },
+      "type": "n8n-nodes-base.gmailTrigger",
+      "typeVersion": 1.4,
+      "position": [
+        0,
+        300
+      ],
+      "id": "dcaf34f6-9815-43d3-a93b-494cc4d90855",
+      "name": "Gmail – macmalonet783",
+      "credentials": {
+        "gmailOAuth2": {
+          "id": "BKI4Lvk81JcNX3ne",
+          "name": "Gmail account"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "http://100.93.105.37:11434/api/chat",
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify({ model: 'qwen3:4b', stream: false, think: false, keep_alive: '15m', options: { temperature: 0 }, messages: [ { role: 'system', content: \"Jesteś precyzyjnym klasyfikatorem e-maili. Zwróć DOKŁADNIE jedną kategorię (jedno słowo, wielkimi literami), bez wyjaśnień.\\n- SPAM: niechciane reklamy, oszustwa, phishing, podejrzane oferty.\\n- NEWSLETTER: biuletyny, marketing, promocje, automatyczne powiadomienia serwisów.\\n- BIZNES: praca, faktury, klienci, umowy, sprawy zawodowe i urzędowe.\\n- OSOBISTE: znajomi, rodzina, prywatne rozmowy, zaproszenia towarzyskie.\\nPrzykłady:\\n\\\"Wygrałeś iPhone, kliknij\\\" -> SPAM\\n\\\"Twój tygodniowy przegląd\\\" -> NEWSLETTER\\n\\\"Faktura nr 12/2026 do zapłaty\\\" -> BIZNES\\n\\\"Hej, idziemy w sobotę na piwo?\\\" -> OSOBISTE\\nOdpowiedz tylko nazwą kategorii. /no_think\" }, { role: 'user', content: 'Temat: ' + ($json.Subject || $json.subject || '') + '\\nOd: ' + ($json.From || $json.from || '') + '\\nTreść: ' + String($json.snippet || '').slice(0, 1000) } ] }) }}",
+        "options": {
+          "timeout": 180000
+        }
+      },
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.4,
+      "position": [
+        220,
+        300
+      ],
+      "id": "229e3624-e556-452a-abd1-529e7a3450a6",
+      "name": "Ollama – macmalonet783",
+      "retryOnFail": true,
+      "maxTries": 3,
+      "waitBetweenTries": 5000,
+      "onError": "continueRegularOutput"
+    },
+    {
+      "parameters": {
+        "jsCode": "// Kategoria z odpowiedzi modelu; błąd Ollamy => NIEZNANE (mail i tak trafi do powiadomienia)\nconst g = $('Gmail – macmalonet783').item.json;\nconst odp = String(($json.message && $json.message.content) || '').replace(/<think>[\\s\\S]*?<\\/think>/gi, '').toUpperCase();\nconst kategoria = ['SPAM', 'NEWSLETTER', 'BIZNES', 'OSOBISTE'].find(k => odp.includes(k)) || 'NIEZNANE';\nreturn { json: {\n  kategoria,\n  messageId: g.id,\n  temat: g.Subject || g.subject || '(bez tematu)',\n  od: g.From || g.from || '',\n  konto: 'macmalonet783',\n} };",
+        "mode": "runOnceForEachItem"
+      },
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        440,
+        300
+      ],
+      "id": "188d2402-a08a-4660-938d-8577bc2ad460",
+      "name": "Klasyfikacja – macmalonet783"
+    },
+    {
+      "parameters": {
+        "resource": "label",
+        "operation": "getAll",
+        "returnAll": true
+      },
+      "type": "n8n-nodes-base.gmail",
+      "typeVersion": 2.2,
+      "position": [
+        660,
+        300
+      ],
+      "id": "82e33a58-549c-4778-b253-48f81114dfea",
+      "name": "Etykiety – macmalonet783",
+      "executeOnce": true,
+      "alwaysOutputData": true,
+      "onError": "continueRegularOutput",
+      "credentials": {
+        "gmailOAuth2": {
+          "id": "BKI4Lvk81JcNX3ne",
+          "name": "Gmail account"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "jsCode": "// Nazwy etykiet w Gmailu (wielkość liter bez znaczenia). Utwórz brakujące w Gmailu.\nconst NAZWY = { BIZNES: 'BIZNES', OSOBISTE: 'OSOBISTE', NEWSLETTER: 'NEWSLETTER', SPAM: 'AI/Spam?' };\nconst mapa = {};\nfor (const l of $input.all()) if (l.json && l.json.name) mapa[l.json.name.toLowerCase()] = l.json.id;\nreturn $('Klasyfikacja – macmalonet783').all().map(i => {\n  const nazwa = NAZWY[i.json.kategoria];\n  const labelId = nazwa ? (mapa[nazwa.toLowerCase()] || null) : null;\n  return { json: { ...i.json, labelId, brakEtykiety: nazwa && !labelId ? nazwa : null } };\n});"
+      },
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        880,
+        300
+      ],
+      "id": "9d280b30-dd38-4b1c-a21b-c43f157502c4",
+      "name": "Przypisz – macmalonet783"
+    },
+    {
+      "parameters": {
+        "jsCode": "return $input.all().filter(i => i.json.labelId);"
+      },
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        1100,
+        200
+      ],
+      "id": "1f98fb1c-dad2-4e7e-9d9b-50014f1817f2",
+      "name": "Z etykietą – macmalonet783"
+    },
+    {
+      "parameters": {
+        "operation": "addLabels",
+        "messageId": "={{ $json.messageId }}",
+        "labelIds": "={{ [$json.labelId] }}"
+      },
+      "type": "n8n-nodes-base.gmail",
+      "typeVersion": 2.2,
+      "position": [
+        1320,
+        200
+      ],
+      "id": "b8e99ac2-32cf-4e62-b971-db1207fd6a29",
+      "name": "Dodaj etykietę – macmalonet783",
+      "retryOnFail": true,
+      "maxTries": 3,
+      "waitBetweenTries": 5000,
+      "onError": "continueRegularOutput",
+      "webhookId": "3c73fa77-d49b-4d7b-a908-20525930e708",
+      "credentials": {
+        "gmailOAuth2": {
+          "id": "BKI4Lvk81JcNX3ne",
+          "name": "Gmail account"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "jsCode": "// Powiadomienie tylko dla BIZNES / OSOBISTE / NIEZNANE (NIEZNANE = Ollama nie odpowiedziała)\nconst USER_ID = '340572098873393153';\nconst KOLOR = { BIZNES: 15844367, OSOBISTE: 3066993, NIEZNANE: 9807270 };\nconst wazne = $input.all().map(i => i.json).filter(m => KOLOR[m.kategoria]);\nreturn wazne.map(m => ({ json: {\n  content: `<@${USER_ID}> 📧 nowy ważny mail`,\n  embeds: [{\n    title: `${m.kategoria} — ${m.temat}`.slice(0, 250),\n    description: `**Od:** ${m.od}`.slice(0, 1000),\n    color: KOLOR[m.kategoria],\n    footer: { text: `JARVIS • ${m.konto}${m.brakEtykiety ? ' • brak etykiety ' + m.brakEtykiety + ' w Gmailu' : ''}` },\n    timestamp: new Date().toISOString(),\n  }],\n  allowed_mentions: { users: [USER_ID] },\n} }));"
+      },
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        1100,
+        400
+      ],
+      "id": "37d9a3da-3f71-4b58-b54d-47704055ff1e",
+      "name": "Powiadomienie – macmalonet783"
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "WEBHOOK_TUTAJ",
+        "sendBody": true,
+        "bodyParameters": {
+          "parameters": [
+            {
+              "name": "content",
+              "value": "={{ $json.content }}"
+            },
+            {
+              "name": "embeds",
+              "value": "={{ $json.embeds }}"
+            },
+            {
+              "name": "allowed_mentions",
+              "value": "={{ $json.allowed_mentions }}"
+            }
+          ]
+        },
+        "options": {}
+      },
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.4,
+      "position": [
+        1320,
+        400
+      ],
+      "id": "37371b91-a252-4a80-97dd-7f95eebb29cf",
+      "name": "Discord – macmalonet783",
+      "retryOnFail": true,
+      "maxTries": 3,
+      "waitBetweenTries": 5000,
+      "disabled": true,
+      "notes": "Wyłączone: powiadomienia wysyła mail-notifier na malince. Włącz, jeśli go nie używasz."
+    },
+    {
+      "parameters": {
+        "pollTimes": {
+          "item": [
+            {
+              "mode": "everyMinute"
+            }
+          ]
+        },
+        "filters": {
+          "readStatus": "both"
+        }
+      },
+      "type": "n8n-nodes-base.gmailTrigger",
+      "typeVersion": 1.4,
+      "position": [
+        0,
+        700
+      ],
+      "id": "9ea9955b-89b6-44de-897e-c3a97c58a9de",
+      "name": "Gmail – maciejmalina19"
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "http://100.93.105.37:11434/api/chat",
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify({ model: 'qwen3:4b', stream: false, think: false, keep_alive: '15m', options: { temperature: 0 }, messages: [ { role: 'system', content: \"Jesteś precyzyjnym klasyfikatorem e-maili. Zwróć DOKŁADNIE jedną kategorię (jedno słowo, wielkimi literami), bez wyjaśnień.\\n- SPAM: niechciane reklamy, oszustwa, phishing, podejrzane oferty.\\n- NEWSLETTER: biuletyny, marketing, promocje, automatyczne powiadomienia serwisów.\\n- BIZNES: praca, faktury, klienci, umowy, sprawy zawodowe i urzędowe.\\n- OSOBISTE: znajomi, rodzina, prywatne rozmowy, zaproszenia towarzyskie.\\nPrzykłady:\\n\\\"Wygrałeś iPhone, kliknij\\\" -> SPAM\\n\\\"Twój tygodniowy przegląd\\\" -> NEWSLETTER\\n\\\"Faktura nr 12/2026 do zapłaty\\\" -> BIZNES\\n\\\"Hej, idziemy w sobotę na piwo?\\\" -> OSOBISTE\\nOdpowiedz tylko nazwą kategorii. /no_think\" }, { role: 'user', content: 'Temat: ' + ($json.Subject || $json.subject || '') + '\\nOd: ' + ($json.From || $json.from || '') + '\\nTreść: ' + String($json.snippet || '').slice(0, 1000) } ] }) }}",
+        "options": {
+          "timeout": 180000
+        }
+      },
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.4,
+      "position": [
+        220,
+        700
+      ],
+      "id": "4a1cb99a-522e-43f7-80f5-75aa7076aa03",
+      "name": "Ollama – maciejmalina19",
+      "retryOnFail": true,
+      "maxTries": 3,
+      "waitBetweenTries": 5000,
+      "onError": "continueRegularOutput"
+    },
+    {
+      "parameters": {
+        "jsCode": "// Kategoria z odpowiedzi modelu; błąd Ollamy => NIEZNANE (mail i tak trafi do powiadomienia)\nconst g = $('Gmail – maciejmalina19').item.json;\nconst odp = String(($json.message && $json.message.content) || '').replace(/<think>[\\s\\S]*?<\\/think>/gi, '').toUpperCase();\nconst kategoria = ['SPAM', 'NEWSLETTER', 'BIZNES', 'OSOBISTE'].find(k => odp.includes(k)) || 'NIEZNANE';\nreturn { json: {\n  kategoria,\n  messageId: g.id,\n  temat: g.Subject || g.subject || '(bez tematu)',\n  od: g.From || g.from || '',\n  konto: 'maciejmalina19',\n} };",
+        "mode": "runOnceForEachItem"
+      },
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        440,
+        700
+      ],
+      "id": "64162330-a5c7-404c-af4e-08f161959808",
+      "name": "Klasyfikacja – maciejmalina19"
+    },
+    {
+      "parameters": {
+        "resource": "label",
+        "operation": "getAll",
+        "returnAll": true
+      },
+      "type": "n8n-nodes-base.gmail",
+      "typeVersion": 2.2,
+      "position": [
+        660,
+        700
+      ],
+      "id": "9a6372d0-463d-4d8f-a987-fa5f72176149",
+      "name": "Etykiety – maciejmalina19",
+      "executeOnce": true,
+      "alwaysOutputData": true,
+      "onError": "continueRegularOutput"
+    },
+    {
+      "parameters": {
+        "jsCode": "// Nazwy etykiet w Gmailu (wielkość liter bez znaczenia). Utwórz brakujące w Gmailu.\nconst NAZWY = { BIZNES: 'BIZNES', OSOBISTE: 'OSOBISTE', NEWSLETTER: 'NEWSLETTER', SPAM: 'AI/Spam?' };\nconst mapa = {};\nfor (const l of $input.all()) if (l.json && l.json.name) mapa[l.json.name.toLowerCase()] = l.json.id;\nreturn $('Klasyfikacja – maciejmalina19').all().map(i => {\n  const nazwa = NAZWY[i.json.kategoria];\n  const labelId = nazwa ? (mapa[nazwa.toLowerCase()] || null) : null;\n  return { json: { ...i.json, labelId, brakEtykiety: nazwa && !labelId ? nazwa : null } };\n});"
+      },
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        880,
+        700
+      ],
+      "id": "7933d373-3a85-450f-a983-1481b6d1ef1b",
+      "name": "Przypisz – maciejmalina19"
+    },
+    {
+      "parameters": {
+        "jsCode": "return $input.all().filter(i => i.json.labelId);"
+      },
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        1100,
+        600
+      ],
+      "id": "517d89b1-7962-4762-ad9c-88a33c9266b0",
+      "name": "Z etykietą – maciejmalina19"
+    },
+    {
+      "parameters": {
+        "operation": "addLabels",
+        "messageId": "={{ $json.messageId }}",
+        "labelIds": "={{ [$json.labelId] }}"
+      },
+      "type": "n8n-nodes-base.gmail",
+      "typeVersion": 2.2,
+      "position": [
+        1320,
+        600
+      ],
+      "id": "d85462d9-f45f-4ee0-a65a-51eab4805bb8",
+      "name": "Dodaj etykietę – maciejmalina19",
+      "retryOnFail": true,
+      "maxTries": 3,
+      "waitBetweenTries": 5000,
+      "onError": "continueRegularOutput",
+      "webhookId": "d735ec4d-d231-4f3b-96c3-feaec46afbaa"
+    },
+    {
+      "parameters": {
+        "jsCode": "// Powiadomienie tylko dla BIZNES / OSOBISTE / NIEZNANE (NIEZNANE = Ollama nie odpowiedziała)\nconst USER_ID = '340572098873393153';\nconst KOLOR = { BIZNES: 15844367, OSOBISTE: 3066993, NIEZNANE: 9807270 };\nconst wazne = $input.all().map(i => i.json).filter(m => KOLOR[m.kategoria]);\nreturn wazne.map(m => ({ json: {\n  content: `<@${USER_ID}> 📧 nowy ważny mail`,\n  embeds: [{\n    title: `${m.kategoria} — ${m.temat}`.slice(0, 250),\n    description: `**Od:** ${m.od}`.slice(0, 1000),\n    color: KOLOR[m.kategoria],\n    footer: { text: `JARVIS • ${m.konto}${m.brakEtykiety ? ' • brak etykiety ' + m.brakEtykiety + ' w Gmailu' : ''}` },\n    timestamp: new Date().toISOString(),\n  }],\n  allowed_mentions: { users: [USER_ID] },\n} }));"
+      },
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        1100,
+        800
+      ],
+      "id": "feac402d-3326-430f-8dec-c0d6563974bd",
+      "name": "Powiadomienie – maciejmalina19"
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "WEBHOOK_TUTAJ",
+        "sendBody": true,
+        "bodyParameters": {
+          "parameters": [
+            {
+              "name": "content",
+              "value": "={{ $json.content }}"
+            },
+            {
+              "name": "embeds",
+              "value": "={{ $json.embeds }}"
+            },
+            {
+              "name": "allowed_mentions",
+              "value": "={{ $json.allowed_mentions }}"
+            }
+          ]
+        },
+        "options": {}
+      },
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.4,
+      "position": [
+        1320,
+        800
+      ],
+      "id": "e152af17-5072-4905-a186-0749cdcb8f5c",
+      "name": "Discord – maciejmalina19",
+      "retryOnFail": true,
+      "maxTries": 3,
+      "waitBetweenTries": 5000,
+      "disabled": true,
+      "notes": "Wyłączone: powiadomienia wysyła mail-notifier na malince. Włącz, jeśli go nie używasz."
+    }
+  ],
+  "connections": {
+    "Gmail – macmalonet783": {
+      "main": [
+        [
+          {
+            "node": "Ollama – macmalonet783",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Ollama – macmalonet783": {
+      "main": [
+        [
+          {
+            "node": "Klasyfikacja – macmalonet783",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Klasyfikacja – macmalonet783": {
+      "main": [
+        [
+          {
+            "node": "Etykiety – macmalonet783",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Etykiety – macmalonet783": {
+      "main": [
+        [
+          {
+            "node": "Przypisz – macmalonet783",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Przypisz – macmalonet783": {
+      "main": [
+        [
+          {
+            "node": "Z etykietą – macmalonet783",
+            "type": "main",
+            "index": 0
+          },
+          {
+            "node": "Powiadomienie – macmalonet783",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Z etykietą – macmalonet783": {
+      "main": [
+        [
+          {
+            "node": "Dodaj etykietę – macmalonet783",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Powiadomienie – macmalonet783": {
+      "main": [
+        [
+          {
+            "node": "Discord – macmalonet783",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Gmail – maciejmalina19": {
+      "main": [
+        [
+          {
+            "node": "Ollama – maciejmalina19",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Ollama – maciejmalina19": {
+      "main": [
+        [
+          {
+            "node": "Klasyfikacja – maciejmalina19",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Klasyfikacja – maciejmalina19": {
+      "main": [
+        [
+          {
+            "node": "Etykiety – maciejmalina19",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Etykiety – maciejmalina19": {
+      "main": [
+        [
+          {
+            "node": "Przypisz – maciejmalina19",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Przypisz – maciejmalina19": {
+      "main": [
+        [
+          {
+            "node": "Z etykietą – maciejmalina19",
+            "type": "main",
+            "index": 0
+          },
+          {
+            "node": "Powiadomienie – maciejmalina19",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Z etykietą – maciejmalina19": {
+      "main": [
+        [
+          {
+            "node": "Dodaj etykietę – maciejmalina19",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Powiadomienie – maciejmalina19": {
+      "main": [
+        [
+          {
+            "node": "Discord – maciejmalina19",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "active": false,
+  "settings": {
+    "executionOrder": "v1"
+  },
+  "pinData": {},
+  "tags": []
+}

@@ -1,0 +1,55 @@
+# JARVIS — paperless-gpt (SERWER): AI porządkuje Paperlessa — tytuł, tagi, korespondent,
+# typ dokumentu, data i pola własne (np. „Termin płatności”, „Kwota”).
+#
+# Na serwerze: /opt/jarvis/paperless-gpt  (wchodzi do dziennego backupu konfiguracji — backup.sh)
+# Paperless (8010) i Ollama (11434) przez porty hosta — bez zmian w ich compose.
+# Ruch z sieci Dockera (172.x) nie trzyma serwera przy życiu (idle-shutdown go ignoruje),
+# więc samo odpytywanie Paperlessa przez paperless-gpt nie blokuje usypiania.
+#
+# UWAGA: paperless-gpt NIE MA LOGOWANIA. Kto dojdzie do portu 8090, może zmieniać dokumenty.
+# Port jest w LAN i tailnecie jak reszta usług serwera; NIE wystawiać przez NPM/DuckDNS.
+#
+# Tryb pracy: tag „paperless-gpt” = ręcznie (podgląd i akceptacja w UI, http://serwer:8090),
+#             tag „paperless-gpt-auto” = automatycznie. Pola własne włącza się w UI: Settings.
+services:
+  paperless-gpt:
+    image: icereed/paperless-gpt:latest
+    container_name: paperless_gpt
+    restart: unless-stopped
+    env_file: .env                      # PAPERLESS_API_TOKEN
+    environment:
+      PUID: "1000"
+      PGID: "1000"
+      TZ: "Europe/Warsaw"
+      PAPERLESS_BASE_URL: "http://host.docker.internal:8010"
+      PAPERLESS_PUBLIC_URL: "https://paperless.maciej-home.duckdns.org"
+      # LLM — GTX 960 ma 4 GB VRAM: qwen3.5:4b (3,4 GB) się mieści, qwen3.5:9b już nie
+      LLM_PROVIDER: "ollama"
+      LLM_MODEL: "qwen3.5:4b"
+      OLLAMA_HOST: "http://host.docker.internal:11434"
+      OLLAMA_CONTEXT_LENGTH: "4096"
+      TOKEN_LIMIT: "2000"
+      OLLAMA_THINK: "false"             # bez „myślenia” — szybciej; usuń, jeśli Ollama zgłosi błąd
+      OLLAMA_KEEP_ALIVE: "2m"
+      LLM_LANGUAGE: "Polish"
+      SUGGESTION_WORKERS: "1"
+      # Porządkowanie
+      CREATE_NEW_TAGS: "false"          # tylko istniejące tagi; "true" = AI zakłada nowe
+      PRESERVE_EXISTING_METADATA: "true" # nie nadpisuje korespondenta/typu ustawionego ręcznie
+      # OCR robi Paperless (Tesseract). LLM-OCR tylko dla dokumentów z tagiem paperless-gpt-ocr-auto.
+      OCR_PROVIDER: "llm"
+      VISION_LLM_PROVIDER: "ollama"
+      VISION_LLM_MODEL: "qwen2.5vl:3b"
+      LOG_LEVEL: "info"
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    volumes:
+      - ./prompts:/app/prompts          # prompty (edycja w UI)
+      - ./config:/app/config            # ustawienia z UI, w tym pola własne
+      - ./db:/app/db                    # historia (cofanie zmian)
+    ports:
+      - "8090:8080"                     # 8080 na serwerze jest zajęty
+    mem_limit: 512m
+    logging:
+      driver: json-file
+      options: { max-size: "5m", max-file: "2" }
