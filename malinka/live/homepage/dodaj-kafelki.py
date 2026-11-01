@@ -33,30 +33,29 @@ KAFELKI = [  # (grupa, nazwa, linie pod nazwą)
         "icon: mdi-dumbbell",
         "href: https://malinka.tail0524ca.ts.net:8444",
         "description: Treningi z zegarka, siłownia, plan od AI (tylko tailnet)"]),
-    ("Sieć i Bezpieczeństwo", "Łącze (speedtest)", [
-        "icon: mdi-speedometer",
+    ("Zarządzanie Infrastrukturą", "JARVIS Panel", [
+        "icon: mdi-tablet-dashboard",
         "href: http://malinka:8084/",
-        "description: Ostatni pomiar z malinki (uruchamiasz go w panelu, zakładka Sieć)",
+        "description: Dashboard na starym telefonie (ekran, alerty, kontenery)",
+        "siteMonitor: http://192.168.254.10:8084/api/health",
         "widget:",
         "  type: customapi",
-        "  url: http://192.168.254.10:8084/api/siec/speedtest",
-        "  refreshInterval: 300000",
+        "  url: http://192.168.254.10:8084/api/screen",
+        "  refreshInterval: 30000",
         "  mappings:",
-        "    - field: dol",
-        "      label: Pobieranie",
-        "      format: float",
-        '      suffix: " Mb/s"',
-        "    - field: gora",
-        "      label: Wysyłanie",
-        "      format: float",
-        '      suffix: " Mb/s"',
-        "    - field: ts_ms",
-        "      label: Pomiar",
-        "      format: relativeDate"]),
+        "    - field: mode",
+        "      label: Ekran",
+        "      remap:",
+        '        - value: "auto"',
+        '          to: "automatycznie"',
+        '        - value: "on"',
+        '          to: "włączony"',
+        '        - value: "off"',
+        '          to: "wygaszony"']),
 ]
 
 # Kafelek jest usuwany, gdy jego nazwa albo którakolwiek linia pasuje do wzorca (wielkość liter bez znaczenia).
-USUN = [r"mountain", r"localhost:8082\b", r"100\.105\.181\.54:8082\b", r"malinka[^\s]*:8082\b"]
+USUN = [r"mountain", r"localhost:8082\b", r"100\.105\.181\.54:8082\b", r"malinka[^\s]*:8082\b", r"api/siec/speedtest"]  # ostatni: kafelek speedtestu, który zastąpił kafelek panelu
 NOWE_NA_GORZE = {"Zadania"}  # tych grup nie ma u Macieja — zakładamy je jako pierwsze w pliku
 CHRONIONE = {k[1] for k in KAFELKI}  # nowych kafelków nigdy nie usuwamy
 
