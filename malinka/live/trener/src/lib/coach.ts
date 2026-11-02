@@ -60,7 +60,7 @@ export async function analyzeActivity(id: string, { notifyDiscord = true } = {})
 
   const { text } = await askClaude({
     system: SYSTEM + "\n\n# Dane Macieja\n" + ctx,
-    maxTokens: 900,
+    maxTokens: 2500,
     messages: [
       {
         role: "user",
@@ -116,7 +116,7 @@ export async function analyzeStrength(sessionId: number, { notifyDiscord = true 
   const plan = s.plannedId ? await prisma.plannedWorkout.findUnique({ where: { id: s.plannedId } }) : null;
   const { text } = await askClaude({
     system: SYSTEM + "\n\n# Dane Macieja\n" + ctx,
-    maxTokens: 900,
+    maxTokens: 2500,
     messages: [
       {
         role: "user",
@@ -225,7 +225,7 @@ export async function generatePlan(ws: string, uwagi = "", { notifyDiscord = tru
 
   const res = await askClaude({
     system: SYSTEM + "\n\n" + INTERVALS_SYNTAX + "\n\n# Dane Macieja\n" + ctx,
-    maxTokens: 6000,
+    maxTokens: 16000,
     tool: PLAN_TOOL,
     messages: [
       {
@@ -355,7 +355,7 @@ export async function chat(userText: string) {
         "\n\nRozmawiasz z Maciejem w czacie appki treningowej. Odpowiadaj zwięźle (zwykle do 200 słów), w markdownie. Jeśli prosi o zmianę planu, opisz zmianę i przypomnij, że może kliknąć „Przebuduj plan” z uwagami w zakładce Plan." +
         "\n\n# Dane Macieja\n" +
         ctx,
-      maxTokens: 1500,
+      maxTokens: 4000,
       messages: msgs,
     });
     await prisma.chatMessage.create({ data: { role: "assistant", content: text } });
