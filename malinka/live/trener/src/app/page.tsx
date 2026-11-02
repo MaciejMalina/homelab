@@ -3,7 +3,6 @@ import { prisma, getSettings, kvGet } from "@/lib/db";
 import { goalStatus } from "@/lib/context";
 import { addDays, fmtDate, fmtDuration, fmtKm, fmtPace, todayPL, weekStart } from "@/lib/time";
 import { ICON, PLAN_ICON, sportGroup, sportName } from "@/lib/sport";
-import { fmtKg } from "@/lib/strength";
 import ActionButton from "@/components/ActionButton";
 import StartStrength from "@/components/StartStrength";
 
@@ -28,7 +27,7 @@ export default async function Home() {
   );
   const sync = JSON.parse((await kvGet("lastSync")) ?? "null") as { at: string; bledy: string[] } | null;
 
-  const benchPct = g.bench ? Math.min(100, (g.bench.kg / g.benchGoal) * 100) : 0;
+  const pullPct = g.pullup ? Math.min(100, (g.pullup.reps / g.pullupGoal) * 100) : 0;
   const halfPct = g.half ? Math.min(100, (g.halfGoal / g.half.sec) * 100) : 0;
   const ost = sen[0];
 
@@ -78,15 +77,15 @@ export default async function Home() {
       <h2>Cele</h2>
       <div className="grid2">
         <div className="stat">
-          <span>Wyciskanie (szac. 1RM)</span>
-          <b>{g.bench ? fmtKg(g.bench.kg) : "–"}</b>
-          <span>cel {fmtKg(g.benchGoal)}</span>
-          <div className="bar"><i style={{ width: `${benchPct}%` }} /></div>
+          <span>Podciąganie {g.pullup && !g.pullup.date ? "(start)" : "(rekord serii)"}</span>
+          <b>{g.pullup ? `${g.pullup.reps} powt.` : "–"}</b>
+          <span>cel {g.pullupGoal} powt.</span>
+          <div className="bar"><i style={{ width: `${pullPct}%` }} /></div>
         </div>
         <div className="stat">
           <span>Półmaraton (prognoza)</span>
           <b>{g.half ? fmtDuration(g.half.sec) : "–"}</b>
-          <span>cel {fmtDuration(g.halfGoal)} · {fmtPace(g.halfGoal / 21.0975)}</span>
+          <span>odniesienie {fmtDuration(g.halfGoal)} · {fmtPace(g.halfGoal / 21.0975)}</span>
           <div className="bar"><i style={{ width: `${halfPct}%` }} /></div>
         </div>
       </div>

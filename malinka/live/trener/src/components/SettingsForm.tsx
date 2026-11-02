@@ -38,13 +38,16 @@ export default function SettingsForm({ initial }: { initial: V }) {
         <div>{T("birthYear", "Rok urodzenia")}</div>
         <div>{T("weightKg", "Waga (kg)")}</div>
         <div>{T("heightCm", "Wzrost (cm)")}</div>
-        <div>{T("benchGoalKg", "Cel: wyciskanie (kg)")}</div>
-        <div>{T("halfGoal", "Cel: półmaraton (h:mm:ss)")}</div>
+        <div>{T("pullupGoalReps", "Cel: podciągnięcia w serii")}</div>
+        <div>{T("pullupStartReps", "Podciągnięcia teraz (start)")}</div>
+        <div>{T("halfGoal", "Półmaraton — czas odniesienia (h:mm:ss)")}</div>
       </div>
       {A("goals", "Cele (opisowo — trener to czyta)")}
       {T("trainingDays", "Dni treningowe", "pn,wt,śr,cz,pt,sb,nd")}
       <div className="grid2">
-        <div>{T("sessionsPerWeek", "Sesji w tygodniu")}</div>
+        <div>{T("gymPerWeek", "Siłownia × w tygodniu")}</div>
+        <div>{T("swimPerWeek", "Basen × w tygodniu")}</div>
+        <div>{T("runPerWeek", "Osobne biegi × w tygodniu")}</div>
         <div>{T("longRunDay", "Dzień długiego wybiegania", "nd")}</div>
       </div>
       {A("sports", "Dyscypliny")}

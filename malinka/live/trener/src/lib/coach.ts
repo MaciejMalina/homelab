@@ -8,12 +8,27 @@ import { createEvents, deleteEvent, intervalsConfigured } from "./intervals";
 import { notify, COLOR } from "./discord";
 import { e1rm, fmtKg } from "./strength";
 
-const SYSTEM = `Jesteś osobistym trenerem Macieja — doświadczonym trenerem przygotowania motorycznego, biegania i trójboju siłowego. Odpowiadasz zawsze po polsku, konkretnie i rzeczowo, bez lania wody i bez przesadnych pochwał. Jeśli coś idzie źle (za szybkie łatwe biegi, brak progresji, za mało snu, ryzyko przetrenowania), mówisz to wprost.
+const SYSTEM = `Jesteś osobistym trenerem Macieja — doświadczonym trenerem biegania, przygotowania motorycznego i siłowania na rękę (armwrestlingu). Odpowiadasz zawsze po polsku, konkretnie i rzeczowo, bez lania wody i bez przesadnych pochwał. Jeśli coś idzie źle (za szybkie łatwe biegi, brak progresji, za mało snu, ryzyko przetrenowania, przeciążenie łokcia/nadgarstka), mówisz to wprost.
 
-Zasady, którymi się kierujesz:
-- Cele Macieja są jednocześnie siłowe (100 kg w wyciskaniu leżąc) i wytrzymałościowe (półmaraton < 1:30, tempo ok. 4:16/km). Łączysz je świadomie: ciężki trening nóg nie dzień przed jakościowym biegiem, akcent biegowy i ciężka klatka mogą być w ten sam dzień (bieg rano/siłownia wieczorem albo odwrotnie).
-- Bieganie: ok. 80% objętości spokojnie (strefa 1–2, swobodna rozmowa), 1–2 akcenty tygodniowo (tempo/próg, interwały, odcinki w tempie startowym), długie wybieganie raz w tygodniu. Objętość zwiększasz ostrożnie (~10%/tydz.), co 3–4 tygodnie lżejszy tydzień.
-- Siła: wyciskanie leżąc 2× w tygodniu (dzień ciężki i dzień objętościowy/technika), progresja liniowa lub falowa wg RPE, akcesoria na triceps, barki, plecy (równowaga dla barków). Nogi i plecy utrzymaniowo-siłowo, bez zajeżdżania nóg przed biegiem.
+Cele Macieja:
+1. Półmaraton w jak najlepszym czasie — to główny cel wytrzymałościowy.
+2. Ogólna tężyzna fizyczna, a w niej najważniejsze: podciąganie (więcej powtórzeń, potem z obciążeniem) i siła do siłowania na rękę. Do tego nogi wspierające bieganie i całe ciało (FBW). Wyciskanie leżąc NIE jest celem — pchanie tylko jako uzupełnienie FBW.
+
+Jak wygląda trening siłowy Macieja (zawsze tak planuj):
+- Każda wizyta na siłowni = najpierw ok. 30 min biegu na bieżni, potem trening siłowy FBW (ok. 45–60 min).
+- Bieg na bieżni przed siłownią to zwykle spokojny bieg w strefie 1–2; czasem krótkie przyspieszenia albo lekki akcent, ale nigdy ciężkie interwały przed ciężkimi nogami.
+- Kolejność w części siłowej: 1) podciąganie (główne ćwiczenie, gdy jest najświeższy), 2) blok armwrestlingowy, 3) nogi pod bieganie, 4) pchanie i core — krótko.
+- Podciąganie: 2–3× w tygodniu, różne bodźce (ciężej: mniej powtórzeń/z obciążeniem; objętościowo: serie submaksymalne, łączna liczba powtórzeń; technika: negatywy, różne chwyty). Progresja: dokładaj powtórzenia, a gdy serie po 8–10 są pewne — obciążenie.
+- Armwrestling: pronacja, supinacja, rising (odwodzenie promieniowe), cupping/zginanie nadgarstka, side pressure i back pressure na wyciągu, uginania młotkowe, chwyt (gruby gryf, farmer, griper). Ścięgna adaptują się wolniej niż mięśnie — progresja ostrożna, 2–3 akcenty tygodniowo, częściej średnio-ciężko (np. 3–4×8–15, RPE 7–8) niż do upadku; przy bólu łokcia/nadgarstka natychmiast lżej.
+- Nogi pod bieganie: jednonóż (przysiad bułgarski, step-up, martwy ciąg na jednej nodze), tylna taśma (RDL, hip thrust, nordic curl), łydki i stopa, core antyrotacyjny. Siła, nie zmęczenie — umiarkowana objętość, bez zakwaszania przed ważnym biegiem.
+
+Bieganie:
+- Ok. 80% objętości spokojnie (strefa 1–2, swobodna rozmowa). 30-minutowe biegi przed siłownią wliczaj do tygodniowej objętości.
+- 1–2 akcenty tygodniowo (tempo/próg, interwały, odcinki w tempie półmaratonu) — w dni bez siłowni albo jako osobna sesja, długie wybieganie raz w tygodniu (w dniu z ustawień).
+- Objętość zwiększasz ostrożnie (~10%/tydz.), co 3–4 tygodnie lżejszy tydzień.
+- Nie stawiaj ciężkich nóg dzień przed akcentem biegowym ani przed długim wybieganiem.
+
+Inne:
 - Basen i rower jako uzupełnienie tlenowe o niskim obciążeniu stawów.
 - Patrzysz na regenerację: krótki sen, podwyższone tętno spoczynkowe lub wysokie obciążenie poprzednich dni = lżej.
 - Nie wymyślasz danych. Jeśli czegoś nie ma w danych, mówisz o tym. Nie jesteś lekarzem — przy bólu lub urazie odsyłasz do specjalisty.`;
@@ -74,15 +89,22 @@ export async function strengthRecords(sessionId: number) {
     include: { exercises: { include: { exercise: true, sets: true } } },
   });
   const rekordy: string[] = [];
+  const bezCiezaru = (w: number | null) => w == null || w <= 0;
   for (const e of s.exercises) {
-    const teraz = Math.max(0, ...e.sets.filter((x) => x.done && !x.warmup).map((x) => e1rm(x.weight, x.reps) ?? 0));
-    if (!teraz) continue;
+    const robocze = e.sets.filter((x) => x.done && !x.warmup);
+    if (!robocze.length) continue;
     const wczesniej = await prisma.strengthSet.findMany({
       where: { done: true, warmup: false, item: { exerciseId: e.exerciseId, sessionId: { not: sessionId } } },
     });
     if (!wczesniej.length) continue;
+    // ćwiczenia z ciężarem: szacowane 1RM
+    const teraz = Math.max(0, ...robocze.map((x) => e1rm(x.weight, x.reps) ?? 0));
     const best = Math.max(0, ...wczesniej.map((x) => e1rm(x.weight, x.reps) ?? 0));
-    if (teraz > best) rekordy.push(`${e.exercise.name}: szac. 1RM ${fmtKg(teraz)} (było ${fmtKg(best)})`);
+    if (teraz > best && best > 0) rekordy.push(`${e.exercise.name}: szac. 1RM ${fmtKg(teraz)} (było ${fmtKg(best)})`);
+    // z masą ciała (np. podciąganie): najwięcej powtórzeń w serii
+    const powt = Math.max(0, ...robocze.filter((x) => bezCiezaru(x.weight)).map((x) => x.reps ?? 0));
+    const powtBest = Math.max(0, ...wczesniej.filter((x) => bezCiezaru(x.weight)).map((x) => x.reps ?? 0));
+    if (powt > powtBest && powtBest > 0) rekordy.push(`${e.exercise.name}: ${powt} powt. w serii (było ${powtBest})`);
   }
   return rekordy;
 }
@@ -102,7 +124,7 @@ export async function analyzeStrength(sessionId: number, { notifyDiscord = true 
 ${plan ? `\nPlan na ten trening: ${plan.title} — ${plan.description}\n${plan.strength ?? ""}` : ""}
 ${rekordy.length ? `\nNowe rekordy (szacowane 1RM): ${rekordy.join("; ")}` : ""}
 
-Odpowiedz w markdownie, maks. ~170 słów, sekcje: **Ocena**, **Dobrze**, **Do poprawy**, **Następnym razem** (konkretne ciężary/powtórzenia dla kluczowych ćwiczeń, zwłaszcza wyciskania).`,
+Odpowiedz w markdownie, maks. ~170 słów, sekcje: **Ocena**, **Dobrze**, **Do poprawy**, **Następnym razem** (konkretne ciężary/powtórzenia dla kluczowych ćwiczeń, zwłaszcza podciągania i bloku armwrestlingowego).`,
       },
     ],
   });
@@ -209,10 +231,15 @@ export async function generatePlan(ws: string, uwagi = "", { notifyDiscord = tru
       {
         role: "user",
         content: `Ułóż plan treningowy na dni: ${dni.join(", ")}.
-Preferowane dni treningowe: ${s.trainingDays}; liczba sesji w tygodniu ok. ${s.sessionsPerWeek}; długie wybieganie: ${s.longRunDay}.
+Liczba sesji w pełnym tygodniu — trzymaj się DOKŁADNIE, niczego nie dokładaj: siłownia ${s.gymPerWeek}× (każda = "Bieżnia" + "Siłownia" tego samego dnia), basen ${s.swimPerWeek}×, osobne biegi ${s.runPerWeek}× (w tym długie wybieganie w dzień: ${s.longRunDay}). Jeśli planujesz tylko część tygodnia (od dziś), zaplanuj proporcjonalnie mniej i uwzględnij to, co już było zaplanowane.
+Dostępne dni treningowe: ${s.trainingDays}. Siłownie rozłóż z co najmniej jednym dniem przerwy między nimi.
 ${keep.length ? `Wcześniej w tym tygodniu było zaplanowane: ${keep.map((k) => `${k.date} ${k.sport} ${k.title}`).join("; ")}.` : ""}
 ${uwagi ? `Uwagi Macieja do tego planu: ${uwagi}` : ""}
-Dni bez treningu pomiń albo wpisz jako "Odpoczynek". Dla siłowni podaj konkretne ciężary w kg wyliczone z dotychczasowych wyników (jeśli brak danych — RPE i ciężar null). Dla biegów podaj tempa absolutne dopasowane do aktualnej formy z danych.`,
+Zasady zapisu:
+- Każdy dzień siłowni zapisz jako DWIE sesje tego samego dnia, w tej kolejności: najpierw "Bieg" z tytułem zaczynającym się od "Bieżnia" (ok. 30 min, z kroki_intervals), potem "Siłownia" (FBW wg zasad: podciąganie → armwrestling → nogi pod bieganie → pchanie/core).
+- Dla siłowni podaj konkretne ciężary w kg wyliczone z dotychczasowych wyników (jeśli brak danych — RPE i ciężar null). Ćwiczenia z masą ciała (podciąganie, pompki, dipy): ciezar_kg = null, a przy podciąganiu z obciążeniem — tylko ciężar DODATKOWY w kg. Używaj nazw ćwiczeń z katalogu w danych (np. "Podciąganie nachwytem", "Pronacja z młotkiem / hantlem z jednej strony"), żeby historia się łączyła.
+- Dla biegów podaj tempa absolutne dopasowane do aktualnej formy z danych.
+- Dni bez treningu pomiń albo wpisz jako "Odpoczynek".`,
       },
     ],
   });

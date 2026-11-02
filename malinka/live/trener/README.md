@@ -4,6 +4,9 @@ Webappka treningowa na malince: treningi z Huawei Watch GT 5 (Huawei Health → 
 zapis siłowni w trakcie treningu, analiza każdego treningu i plan tygodniowy od Claude Sonnet,
 biegi z planu wysyłane z powrotem na zegarek.
 
+Cele (edytowalne w Ustawieniach): półmaraton w jak najlepszym czasie + ogólna tężyzna — podciąganie i siłowanie na rękę,
+nogi pod bieganie, FBW. Każda siłownia w planie = ok. 30 min bieżni, potem trening siłowy.
+
 - Adres: `https://malinka.tail0524ca.ts.net:8444` (tylko tailnet), kontener `jarvis_trener`, port hosta **8082**
 - Stos: Next.js 15 (standalone) + Prisma 6 (klient bez silnika Rust, sterownik better-sqlite3) + SQLite w `./data`
 - Harmonogram w procesie appki: synchronizacja co 20 min, plan na kolejny tydzień w niedzielę o 19:00 (zmiana w Ustawieniach)
@@ -15,8 +18,8 @@ biegi z planu wysyłane z powrotem na zegarek.
    w tym samym boksie zaznacz **Upload planned workouts**. W aplikacji Huawei Health: Ja → usługi zewnętrzne (3rd Party Services) →
    **Health Service Kit** musi być połączony. W boksie Huawei kliknij **Download Old Data** (rok historii).
    Klucz: Settings → Developer Settings → API key; Athlete ID z adresu profilu (`i123456`).
-2. **Claude API** — claude.ai → Ustawienia → Rozliczenia → sekcja kredytów API → podepnij organizację Console
-   (plan Max: kredyty co miesiąc). Na platform.claude.com → API keys → nowy klucz. Warto ustawić limit wydatków.
+2. **Claude API** — platform.claude.com (ten sam mail co claude.ai; plan Pro nie daje kredytów API, rozliczenie osobne):
+   Settings → Billing → doładuj (np. $5 ≈ 2–3 miesiące na Sonnecie), Settings → Limits → limit miesięczny, API keys → nowy klucz.
 3. Webhook Discorda — ten sam, którego używa reszta JARVIS-a.
 
 ## Wdrożenie (malinka)

@@ -3,7 +3,6 @@ import { prisma } from "@/lib/db";
 import { goalStatus } from "@/lib/context";
 import { addDays, fmtDuration, fmtPace, todayPL, weekStart } from "@/lib/time";
 import { PLAN_ICON, sportGroup, sportName } from "@/lib/sport";
-import { fmtKg } from "@/lib/strength";
 
 export const dynamic = "force-dynamic";
 
@@ -48,8 +47,8 @@ export async function GET() {
 
   const g = await goalStatus();
   const cele = [
-    g.bench ? `klata ${fmtKg(g.bench.kg)}/${fmtKg(g.benchGoal)}` : null,
-    g.half ? `półmaraton ~${fmtDuration(g.half.sec)} (cel ${fmtDuration(g.halfGoal)})` : null,
+    g.pullup ? `podciąganie ${g.pullup.reps}/${g.pullupGoal} powt.` : null,
+    g.half ? `półmaraton ~${fmtDuration(g.half.sec)}` : null,
   ].filter(Boolean);
   if (cele.length) lines.push(`🎯 ${cele.join(" • ")}`);
 

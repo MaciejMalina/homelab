@@ -221,6 +221,7 @@ export default function Logger({ initial }: { initial: SessionDTO }) {
 
       {items.map((it, i) => {
         const best = Math.max(0, ...it.sets.filter((s) => s.done && !s.warmup).map((s) => e1rm(s.weight, s.reps)));
+        const maxReps = Math.max(0, ...it.sets.filter((s) => s.done && !s.warmup && !s.weight).map((s) => s.reps ?? 0));
         return (
           <div key={`${it.exerciseId}-${i}`} className="card ex">
             <div className="ex-head">
@@ -251,9 +252,9 @@ export default function Logger({ initial }: { initial: SessionDTO }) {
                           {s.warmup ? "R" : nr}
                         </button>
                       </td>
-                      <td className="prev">{p ? `${fmtNum(p.weight)}×${p.reps ?? ""}` : "—"}</td>
+                      <td className="prev">{p ? (p.weight ? `${fmtNum(p.weight)}×${p.reps ?? ""}` : `${p.reps ?? "?"} powt.`) : "—"}</td>
                       <td style={{ width: "26%" }}>
-                        <input inputMode="decimal" placeholder={p?.weight != null ? fmtNum(p.weight) : ""} value={fmtNum(s.weight)} onChange={(e) => updSet(i, k, { weight: parseNum(e.target.value) })} onFocus={(e) => e.target.select()} />
+                        <input inputMode="decimal" placeholder={p?.weight ? fmtNum(p.weight) : "—"} value={fmtNum(s.weight)} onChange={(e) => updSet(i, k, { weight: parseNum(e.target.value) })} onFocus={(e) => e.target.select()} />
                       </td>
                       <td style={{ width: "20%" }}>
                         <input inputMode="numeric" placeholder={p?.reps != null ? String(p.reps) : ""} value={s.reps ?? ""} onChange={(e) => updSet(i, k, { reps: parseNum(e.target.value) })} onFocus={(e) => e.target.select()} />
@@ -271,13 +272,14 @@ export default function Logger({ initial }: { initial: SessionDTO }) {
               <button onClick={() => removeSet(i)} disabled={!it.sets.length}>− Seria</button>
             </div>
             {best > 0 && <div className="small mut" style={{ marginTop: 6 }}>Szac. 1RM dziś: {Math.round(best * 10) / 10} kg</div>}
+            {best === 0 && maxReps > 0 && <div className="small mut" style={{ marginTop: 6 }}>Najlepsza seria dziś: {maxReps} powt.</div>}
           </div>
         );
       })}
 
       <button className="block" onClick={() => setPicker(true)} style={{ marginBottom: 10 }}>＋ Dodaj ćwiczenie</button>
       <label>Notatka do treningu (trener ją przeczyta)</label>
-      <textarea value={notes} onChange={(e) => setNotes(e.target.value)} placeholder="np. bark lekko pobolewał przy wyciskaniu, słaby sen" />
+      <textarea value={notes} onChange={(e) => setNotes(e.target.value)} placeholder="np. łokieć pobolewał przy pronacji, słaby sen" />
 
       {finished && (
         <>

@@ -18,15 +18,27 @@ model Settings {
   birthYear        Int?
   weightKg         Float?
   heightCm         Int?
-  goals            String  @default("1) 100 kg w wyciskaniu leżąc na 1 powtórzenie. 2) Półmaraton poniżej 1:30:00. 3) Ogólna dobra sprawność fizyczna.")
+  goals            String  @default("1) Półmaraton w jak najlepszym czasie. 2) Ogólna tężyzna fizyczna: podciąganie i siłowanie na rękę (armwrestling) na pierwszym miejscu, nogi pod bieganie, całe ciało (FBW). Każda siłownia: najpierw ok. 30 min biegu na bieżni, potem trening siłowy.")
+  /// cel: maks. liczba podciągnięć nachwytem w jednej serii (bez obciążenia)
+  pullupGoalReps   Int     @default(15)
+  /// NIEUŻYWANE (dawny cel wyciskania) — zostaje, żeby `prisma db push` na istniejącej bazie nie wymagał usuwania kolumny
   benchGoalKg      Float   @default(100)
   halfGoalSec      Int     @default(5400)
   /// dni treningowe, np. "pn,wt,cz,sb,nd"
   trainingDays     String  @default("pn,wt,śr,cz,sb,nd")
-  sessionsPerWeek  Int     @default(6)
+  /// NIEUŻYWANE — zastąpione przez gymPerWeek/swimPerWeek/runPerWeek
+  sessionsPerWeek  Int     @default(5)
+  /// ile razy w tygodniu siłownia (każda = ok. 30 min bieżni + trening siłowy)
+  gymPerWeek       Int     @default(2)
+  /// ile razy w tygodniu basen
+  swimPerWeek      Int     @default(1)
+  /// osobne biegi poza bieżnią przed siłownią (w tym długie wybieganie)
+  runPerWeek       Int     @default(2)
+  /// poziom wyjściowy w podciąganiu podany ręcznie (używany, dopóki nie ma zapisanych serii)
+  pullupStartReps  Int?    @default(10)
   longRunDay       String  @default("nd")
   sports           String  @default("bieganie (teren i bieżnia), siłownia, rower, basen")
-  gymEquipment     String  @default("Siłownia komercyjna: sztangi, ławki, hantle, wyciągi, maszyny.")
+  gymEquipment     String  @default("Siłownia komercyjna z bieżnią: sztangi, ławki, hantle, drążek, wyciągi, maszyny.")
   injuries         String  @default("")
   notes            String  @default("")
   /// godzina (czas PL) generowania planu w niedzielę

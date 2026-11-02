@@ -4,33 +4,55 @@ import { addDays, fmtDuration, fmtPace, todayPL, weekdayLong, weekStart } from "
 import { sportGroup, sportName } from "./sport";
 import { bestHalfPrediction, e1rm } from "./strength";
 
-const BENCH = /wyciskanie sztangi leżąc/i;
+/** Główny miernik siły: podciąganie nachwytem bez obciążenia (maks. powtórzeń w serii) */
+const PULLUP = /^podciąganie nachwytem/i;
+const bezObciazenia = (w: number | null) => w == null || w <= 0;
 
-/** Status celów: najlepsze e1RM w wyciskaniu (60 dni) i prognoza półmaratonu (60 dni) */
+/** Status celów: rekord podciągnięć (90 dni) i prognoza półmaratonu (60 dni) */
 export async function goalStatus() {
   const s = await getSettings();
-  const od = addDays(todayPL(), -60);
+  const od = addDays(todayPL(), -90);
 
   const sets = await prisma.strengthSet.findMany({
     where: { done: true, warmup: false, item: { session: { date: { gte: od } } } },
     include: { item: { include: { exercise: true, session: true } } },
   });
-  let bench: { kg: number; date: string; set: string } | null = null;
+  let pullup: { reps: number; date: string } | null = null;
   for (const st of sets) {
-    if (!BENCH.test(st.item.exercise.name)) continue;
-    const v = e1rm(st.weight, st.reps);
-    if (v && (!bench || v > bench.kg)) bench = { kg: v, date: st.item.session.date, set: `${st.weight}×${st.reps}` };
+    if (!PULLUP.test(st.item.exercise.name) || !bezObciazenia(st.weight) || !st.reps) continue;
+    if (!pullup || st.reps > pullup.reps) pullup = { reps: st.reps, date: st.item.session.date };
   }
 
-  const runs = (await prisma.activity.findMany({ where: { date: { gte: od } } })).filter((a) => sportGroup(a.type) === "run");
+  const runs = (await prisma.activity.findMany({ where: { date: { gte: addDays(todayPL(), -60) } } })).filter((a) => sportGroup(a.type) === "run");
   const half = bestHalfPrediction(runs);
 
+  // dopóki nic nie zapisano w appce — poziom wyjściowy podany w ustawieniach
+  if (!pullup && s.pullupStartReps) pullup = { reps: s.pullupStartReps, date: "" };
+
   return {
-    benchGoal: s.benchGoalKg,
-    bench,
+    pullupGoal: s.pullupGoalReps,
+    pullup,
     halfGoal: s.halfGoalSec,
     half: half ? { sec: Math.round(half.sec), activityId: half.id } : null,
   };
+}
+
+/** Najlepsze wyniki w każdym ćwiczeniu (90 dni): szac. 1RM dla serii z ciężarem, maks. powtórzeń bez ciężaru */
+export async function exerciseBests(days = 90) {
+  const sets = await prisma.strengthSet.findMany({
+    where: { done: true, warmup: false, item: { session: { date: { gte: addDays(todayPL(), -days) } } } },
+    include: { item: { include: { exercise: true, session: true } } },
+  });
+  const best = new Map<string, { kg: number; set: string; reps: number; date: string }>();
+  for (const st of sets) {
+    const name = st.item.exercise.name;
+    const cur = best.get(name) ?? { kg: 0, set: "", reps: 0, date: "" };
+    const v = e1rm(st.weight, st.reps);
+    if (v && v > cur.kg) Object.assign(cur, { kg: v, set: `${st.weight}kg×${st.reps}`, date: st.item.session.date });
+    if (bezObciazenia(st.weight) && st.reps && st.reps > cur.reps) Object.assign(cur, { reps: st.reps, date: cur.date || st.item.session.date });
+    best.set(name, cur);
+  }
+  return best;
 }
 
 function actLine(a: {
@@ -68,7 +90,7 @@ export async function strengthSummary(sessionId: number) {
   for (const e of s.exercises) {
     const done = e.sets.filter((x) => x.done);
     if (!done.length) continue;
-    const txt = done.map((x) => `${x.warmup ? "r:" : ""}${x.weight ?? 0}kg×${x.reps ?? 0}${x.rpe ? `@${x.rpe}` : ""}`).join(", ");
+    const txt = done.map((x) => `${x.warmup ? "r:" : ""}${x.weight ? `${x.weight}kg×${x.reps ?? 0}` : `${x.reps ?? 0} powt.`}${x.rpe ? `@${x.rpe}` : ""}`).join(", ");
     lines.push(`  • ${e.exercise.name}: ${txt}${e.target ? ` (cel: ${e.target})` : ""}`);
   }
   if (s.notes) lines.push(`  notatka: ${s.notes}`);
@@ -121,20 +143,33 @@ export async function buildContext(opts: { days?: number } = {}) {
   out.push(`Imię: ${s.name}${s.birthYear ? `, rocznik ${s.birthYear}` : ""}${s.weightKg ? `, waga ${s.weightKg} kg` : ""}${s.heightCm ? `, wzrost ${s.heightCm} cm` : ""}`);
   out.push(`Cele: ${s.goals}`);
   out.push(`Dyscypliny: ${s.sports}`);
-  out.push(`Dni treningowe: ${s.trainingDays} (sesji/tydzień: ${s.sessionsPerWeek}), długie wybieganie: ${s.longRunDay}`);
+  out.push(`Tydzień treningowy: siłownia ${s.gymPerWeek}× (każda = ok. 30 min bieżni + trening siłowy), basen ${s.swimPerWeek}×, osobne biegi ${s.runPerWeek}× (w tym długie wybieganie: ${s.longRunDay}). Dostępne dni: ${s.trainingDays}`);
   out.push(`Sprzęt: ${s.gymEquipment}`);
   if (s.injuries) out.push(`Kontuzje/ograniczenia: ${s.injuries}`);
   if (s.notes) out.push(`Uwagi: ${s.notes}`);
 
   out.push(`\n## Stan celów`);
   out.push(
-    `Wyciskanie leżąc: cel ${s.benchGoalKg} kg; ` +
-      (goals.bench ? `najlepsze szacowane 1RM (60 dni) ${goals.bench.kg} kg z serii ${goals.bench.set} (${goals.bench.date})` : "brak danych z ostatnich 60 dni"),
+    `Podciąganie nachwytem (bez obciążenia): cel ${s.pullupGoalReps} powt. w serii; ` +
+      (goals.pullup?.date
+        ? `rekord z 90 dni: ${goals.pullup.reps} powt. (${goals.pullup.date})`
+        : goals.pullup
+          ? `brak zapisanych serii — poziom wyjściowy wg Macieja: ${goals.pullup.reps} powt. w serii`
+          : "brak zapisanych serii z 90 dni"),
   );
   out.push(
-    `Półmaraton: cel ${fmtDuration(s.halfGoalSec)} (tempo ${fmtPace(s.halfGoalSec / 21.0975)}); ` +
+    `Półmaraton: jak najlepszy czas, punkt odniesienia ${fmtDuration(s.halfGoalSec)} (tempo ${fmtPace(s.halfGoalSec / 21.0975)}); ` +
       (goals.half ? `prognoza Riegela z najszybszego biegu ≥5 km (60 dni): ${fmtDuration(goals.half.sec)} — szacunek, łatwe biegi go zaniżają` : "brak biegów ≥5 km z 60 dni"),
   );
+
+  const bests = await exerciseBests();
+  if (bests.size) {
+    out.push(`\n## Najlepsze wyniki w ćwiczeniach (90 dni, serie robocze)`);
+    for (const [n, v] of [...bests.entries()].sort()) {
+      const parts = [v.kg ? `szac. 1RM ${v.kg} kg (${v.set})` : null, v.reps ? `maks. ${v.reps} powt. bez ciężaru` : null].filter(Boolean);
+      if (parts.length) out.push(`- ${n}: ${parts.join(", ")}`);
+    }
+  }
 
   out.push(`\n## Tygodnie (pon) — bieg km / rower km / basen m / siłownia sesje / obciążenie`);
   for (const [w, v] of Object.entries(tyg).sort()) {

@@ -4,7 +4,7 @@ import Md from "@/components/Md";
 
 interface M { id?: number; role: "user" | "assistant"; content: string }
 
-const PODPOWIEDZI = ["Jak mi idzie w tym tygodniu?", "Czy jestem na dobrej drodze do 1:30 w półmaratonie?", "Co zmienić, żeby szybciej dojść do 100 kg na klatę?", "Źle spałem — co dziś zrobić?"];
+const PODPOWIEDZI = ["Jak mi idzie w tym tygodniu?", "Na jaki czas w półmaratonie jestem dziś gotowy?", "Jak szybciej zwiększyć liczbę podciągnięć?", "Co dołożyć pod siłowanie na rękę?", "Źle spałem — co dziś zrobić?"];
 
 export default function Trener() {
   const [msgs, setMsgs] = useState<M[]>([]);
@@ -14,9 +14,12 @@ export default function Trener() {
   const end = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
-    fetch("/api/chat").then((r) => r.json()).then(setMsgs).catch(() => {});
+    fetch("/api/chat").then((r) => r.json()).then((x) => Array.isArray(x) && setMsgs(x)).catch(() => {});
   }, []);
-  useEffect(() => end.current?.scrollIntoView({ behavior: "smooth" }), [msgs, busy]);
+  // w klamrach: nowy Chrome zwraca z scrollIntoView() Promise, a React wziąłby go za funkcję sprzątającą efektu
+  useEffect(() => {
+    end.current?.scrollIntoView({ behavior: "smooth" });
+  }, [msgs, busy]);
 
   async function send(t = txt) {
     const m = t.trim();

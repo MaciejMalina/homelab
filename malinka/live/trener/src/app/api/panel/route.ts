@@ -67,7 +67,7 @@ export async function GET() {
     podsumowanie: plan?.summary ?? null,
     dni,
     cele: {
-      klata: g.bench ? { kg: g.bench.kg, cel: g.benchGoal, seria: g.bench.set } : { kg: null, cel: g.benchGoal, seria: null },
+      podciaganie: { powt: g.pullup?.reps ?? null, cel: g.pullupGoal, data: g.pullup?.date || null },
       polmaraton: { sek: g.half?.sec ?? null, cel: g.halfGoal },
     },
     wellness: sen

@@ -698,10 +698,10 @@ RENDER.trening = (d) => {
       <div class="mala przyg">${esc(p.opis)}</div>
       ${(p.sila || []).map((c) => `<div class="wiersz"><span class="v">${esc(c.nazwa)}</span><span class="k mala">${c.serie ? c.serie + "×" : ""}${esc(c.powt || "")}${c.kg ? ` @ ${c.kg} kg` : ""}</span></div>`).join("")}</div>`).join("")
     : pustoHtml(t.podsumowanie ? "Dziś odpoczynek" : "Brak planu na ten tydzień — ułóż go w appce trener");
-  const c = t.cele || {}, kl = c.klata || {}, pm = c.polmaraton || {};
+  const c = t.cele || {}, pd = c.podciaganie || {}, pm = c.polmaraton || {};
   const w = t.wellness;
-  const cele = `<div class="mala" style="display:flex;justify-content:space-between"><span>🏋️ Klata (e1RM)</span><span>${kl.kg ? Math.round(kl.kg) : "–"} / ${kl.cel} kg</span></div>${pasek(kl.kg ? (100 * kl.kg) / kl.cel : 0, KOL.pom)}
-    <div class="mala" style="display:flex;justify-content:space-between;margin-top:6px"><span>🏃 Półmaraton</span><span>${pm.sek ? czasTrwania(pm.sek) : "–"} / ${czasTrwania(pm.cel)}</span></div>${pasek(pm.sek ? Math.min(100, (100 * pm.cel) / pm.sek) : 0, KOL.ok)}
+  const cele = `<div class="mala" style="display:flex;justify-content:space-between"><span>🏋️ Podciąganie</span><span>${pd.powt ?? "–"} / ${pd.cel ?? "–"} powt.</span></div>${pasek(pd.powt && pd.cel ? Math.min(100, (100 * pd.powt) / pd.cel) : 0, KOL.pom)}
+    <div class="mala" style="display:flex;justify-content:space-between;margin-top:6px"><span>🏃 Półmaraton (prognoza)</span><span>${pm.sek ? czasTrwania(pm.sek) : "–"} / ${czasTrwania(pm.cel)}</span></div>${pasek(pm.sek ? Math.min(100, (100 * pm.cel) / pm.sek) : 0, KOL.ok)}
     ${w ? `<div class="mala przyg" style="margin-top:6px">${[w.senH ? `🛌 ${w.senH.toFixed(1)} h` : null, w.hrSpocz ? `❤️ ${w.hrSpocz}` : null, w.hrv ? `HRV ${Math.round(w.hrv)}` : null, w.waga ? `⚖️ ${w.waga} kg` : null].filter(Boolean).join(" · ")}</div>` : ""}`;
   return `<div style="display:flex;flex-direction:column;gap:8px;height:100%">${tydz}
     <div class="siatka" style="grid-template-columns:1.3fr 1fr;flex:1;min-height:0">
