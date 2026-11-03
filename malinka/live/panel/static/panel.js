@@ -547,23 +547,55 @@ RENDER.discord = (d) => {
   const dc = d.discord || {};
   const [pcs] = zrodlo(d.pcs, "Komputery");
   const online = (pcs || []).filter((p) => p.online);
-  const pc = online.length ? wybierzPc(online) : null;
+  const maKanal = (p) => p.discord && p.discord.polaczony && p.discord.kanal;
+  let pc = online.length ? wybierzPc(online) : null;
+  // komputer, na którym Discord RPC widzi Twój kanał głosowy, ma pierwszeństwo przy sterowaniu
+  const naKanale = online.find(maKanal);
+  if (pc && !maKanal(pc) && naKanale) { pc = naKanale; wybranyPc = naKanale.id; }
   if (pcs && pcs.length) chipyPc(pcs);
-  let lewa;
-  if (!dc.ts) lewa = pustoHtml("Bot nie przesłał jeszcze stanu — dodaj cogs/panel.py do bota (load_extension).");
-  else if (!(dc.kanaly || []).length) lewa = pustoHtml("Nikt nie siedzi na kanałach głosowych.");
-  else {
-    lewa = dc.kanaly.map((k) => `<div class="dzien-naglowek">🔊 ${esc(k.kanal)} <span class="przyg" style="text-transform:none">· ${esc(k.serwer)} · ${k.osoby.length} os.</span></div>` +
+
+  // Twój kanał (Discord RPC z agenta): działa na każdym serwerze, nie tylko tam, gdzie jest bot
+  const rpcHtml = online.filter(maKanal).map((p) => {
+    const k = p.discord.kanal;
+    return `<div class="dzien-naglowek">🔊 ${esc(k.nazwa || "Rozmowa")} <span class="przyg" style="text-transform:none">· Ty na ${esc(p.nazwa)} · ${k.uczestnicy.length} os.</span></div>` +
+      k.uczestnicy.map((o) => `<div class="osoba"><span class="awatar"></span><span class="v">${esc(o.nazwa)}</span>
+        <span class="ikony">${o.mute ? '<span class="etykieta czerwona">🎙 off</span>' : ""}${o.deaf ? '<span class="etykieta czerwona">🎧 off</span>' : ""}</span></div>`).join("");
+  }).join("");
+
+  // serwery z botem (stan wypychany przez cogs/panel.py)
+  let botHtml = "";
+  if (dc.ts && (dc.kanaly || []).length) {
+    botHtml = dc.kanaly.map((k) => `<div class="dzien-naglowek">🔊 ${esc(k.kanal)} <span class="przyg" style="text-transform:none">· ${esc(k.serwer)} · ${k.osoby.length} os.</span></div>` +
       k.osoby.map((o) => `<div class="osoba">${o.avatar ? `<img src="${esc(o.avatar)}" alt="" referrerpolicy="no-referrer">` : '<span class="awatar"></span>'}
         <span class="v">${esc(o.nazwa)}${o.bot ? ' <span class="etykieta">BOT</span>' : ""}</span>
         <span class="ikony">${o.stream ? '<span class="etykieta czerwona">LIVE</span>' : ""}${o.kamera ? "📷" : ""}${o.mute ? '<span class="etykieta czerwona">🎙 off</span>' : ""}${o.deaf ? '<span class="etykieta czerwona">🎧 off</span>' : ""}</span></div>`).join("")).join("");
+    if (rpcHtml) botHtml = '<div class="przyg mala" style="margin:10px 0 4px">Serwery z botem</div>' + botHtml;
   }
-  const prawa = pc
-    ? `<div class="duze-przyciski" style="flex:1">
-        <button data-akcja="pc-cmd" data-pc="${esc(pc.id)}" data-cmd="discord/mikrofon">🎙️<div class="mala">mikrofon</div></button>
-        <button data-akcja="pc-cmd" data-pc="${esc(pc.id)}" data-cmd="discord/sluchawki">🎧<div class="mala">słuchawki</div></button></div>
-       <div class="przyg mala" style="margin-top:6px">Przełącza wyciszenie w Discordzie na ${esc(pc.nazwa)} (skróty z agent.json).</div>`
-    : pustoHtml("Żaden komputer z agentem nie jest online.");
+
+  let lewa = rpcHtml + botHtml;
+  if (!lewa) {
+    const rpcDziala = online.some((p) => p.discord && p.discord.polaczony);
+    if (rpcDziala) lewa = pustoHtml("Nie siedzisz na żadnym kanale głosowym.");
+    else if (!dc.ts) lewa = pustoHtml("Brak danych: uruchom Discorda z włączonym RPC w agencie albo dodaj cogs/panel.py do bota.");
+    else lewa = pustoHtml("Nikt nie siedzi na kanałach głosowych.");
+  }
+
+  let prawa;
+  if (pc) {
+    const r = pc.discord && pc.discord.polaczony ? pc.discord : null;
+    const kl = (v) => (r ? (v ? "wylaczony" : "wlaczony") : "");
+    const opis = r
+      ? `Sterowanie przez Discord RPC na ${esc(pc.nazwa)}${r.kanal ? "" : " · nie jesteś na kanale głosowym"}.`
+      : pc.discord && pc.discord.wlaczony
+        ? `Discord RPC na ${esc(pc.nazwa)}: ${esc(pc.discord.status || "niepołączony")} — działają skróty z agent.json.`
+        : `Przełącza wyciszenie w Discordzie na ${esc(pc.nazwa)} (skróty z agent.json).`;
+    prawa = `<div class="duze-przyciski" style="flex:1">
+        <button class="${kl(r && r.mute)}" data-akcja="pc-cmd" data-pc="${esc(pc.id)}" data-cmd="discord/mikrofon">🎙️<div class="mala">${r ? (r.mute ? "wyciszony" : "włączony") : "mikrofon"}</div></button>
+        <button class="${kl(r && r.deaf)}" data-akcja="pc-cmd" data-pc="${esc(pc.id)}" data-cmd="discord/sluchawki">🎧<div class="mala">${r ? (r.deaf ? "ogłuszony" : "słyszysz") : "słuchawki"}</div></button></div>
+       <div class="przyg mala" style="margin-top:6px">${opis}</div>`;
+  } else {
+    prawa = pustoHtml("Żaden komputer z agentem nie jest online.");
+  }
   return `<div class="siatka" style="grid-template-columns:1.5fr 1fr">
     <div class="karta"><h2>Kanały głosowe<span class="prawo">${dc.ts ? temuOd(dc.ts) : ""}</span></h2><div class="przewijane" data-scroll="dc">${lewa}</div></div>
     <div class="karta"><h2>Sterowanie</h2>${prawa}</div></div>`;

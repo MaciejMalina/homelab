@@ -146,6 +146,27 @@ def pc_stan(czesci=("stan", "audio")):
     return list(pula.map(jeden, pcs)) if pcs else []
 
 
+def pc_discord():
+    """Dla każdego komputera: online (health) + stan Discord RPC z agenta (None, gdy RPC wyłączony lub agent starszy)."""
+    def jeden(pc):
+        wynik = {"id": pc["id"], "nazwa": pc["nazwa"], "wol": bool(pc["mac"])}
+        try:
+            wynik["health"] = agent(pc, "/api/health")
+            wynik["online"] = True
+        except Exception as e:  # noqa: BLE001
+            wynik["online"] = False
+            wynik["error"] = f"{type(e).__name__}: {e}"[:200]
+            return wynik
+        try:
+            wynik["discord"] = agent(pc, "/api/discord/stan")
+        except Exception:  # noqa: BLE001
+            wynik["discord"] = None
+        return wynik
+
+    pcs = lista_pc()
+    return list(pula.map(jeden, pcs)) if pcs else []
+
+
 # --------------------------------------------------------------------------- Discord (stan wypychany przez bota)
 DISCORD = {"ts": None, "kanaly": []}
 

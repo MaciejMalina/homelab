@@ -557,7 +557,7 @@ TABS = {
     "dzien": tab_dzien,
     "pc": lambda: {"pcs": cache.get("pc", 2, lambda: Z.pc_stan(("stan", "audio")))},
     "muzyka": lambda: {"pcs": cache.get("muzyka", 2, lambda: Z.pc_stan(("media", "audio")))},
-    "discord": lambda: {"discord": dict(Z.DISCORD), "pcs": cache.get("pc-online", 10, lambda: Z.pc_stan(("health",)))},
+    "discord": lambda: {"discord": dict(Z.DISCORD), "pcs": cache.get("pc-discord", 3, Z.pc_discord)},
     "media": tab_media,
     "serwery": tab_serwery,
     "siec": lambda: {"zte": cache.get("zte", 15, Z.zte), "adguard": cache.get("adguard", 60, Z.adguard),
