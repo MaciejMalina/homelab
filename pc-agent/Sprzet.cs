@@ -103,31 +103,54 @@ public sealed class Sprzet : IDisposable
         }
     }
 
+    /// <summary>Temperatura i moc rowne 0 to brak odczytu (np. AMD bez sterownika PawnIO), a nie prawdziwa wartosc.</summary>
+    static bool Ok(ISensor c, SensorType typ) =>
+        c.Value.HasValue && (typ is not (SensorType.Temperature or SensorType.Power) || c.Value > 0);
+
     /// <summary>Pierwszy czujnik danego typu o jednej z nazw (w kolejności), a jak żadnego — pierwszy danego typu.</summary>
     static float? Wartosc(List<ISensor> czujniki, SensorType typ, params string[] nazwy)
     {
         foreach (var n in nazwy)
         {
-            var s = czujniki.FirstOrDefault(c => c.SensorType == typ && c.Name.Equals(n, StringComparison.OrdinalIgnoreCase) && c.Value.HasValue);
+            var s = czujniki.FirstOrDefault(c => c.SensorType == typ && c.Name.Equals(n, StringComparison.OrdinalIgnoreCase) && Ok(c, typ));
             if (s != null) return s.Value;
         }
         return typ is SensorType.Temperature or SensorType.Power
-            ? czujniki.FirstOrDefault(c => c.SensorType == typ && c.Value.HasValue)?.Value
+            ? czujniki.FirstOrDefault(c => c.SensorType == typ && Ok(c, typ))?.Value
             : null;
     }
 
     async Task Pinguj()
     {
+        double? wynik = null;
         try
         {
             using var p = new Ping();
             var r = await p.SendPingAsync(pingHost, 1500);
-            var wynik = r.Status == IPStatus.Success ? (double?)r.RoundtripTime : null;
-            lock (blokada) ping = wynik;
+            if (r.Status == IPStatus.Success) wynik = r.RoundtripTime;
         }
         catch
         {
-            lock (blokada) ping = null;
+            // ICMP bywa blokowany po drodze (u nas do 1.1.1.1 z Windowsa nie przechodzi) - nizej zapasowy pomiar
+        }
+        wynik ??= await PingTcp();
+        lock (blokada) ping = wynik;
+    }
+
+    /// <summary>Czas nawiazania polaczenia TCP z portem 443 - dobre przyblizenie opoznienia, gdy ICMP nie dziala.</summary>
+    async Task<double?> PingTcp()
+    {
+        try
+        {
+            using var tcp = new System.Net.Sockets.TcpClient();
+            using var cts = new CancellationTokenSource(1500);
+            var sw = System.Diagnostics.Stopwatch.StartNew();
+            await tcp.ConnectAsync(pingHost, 443, cts.Token);
+            return Math.Round(sw.Elapsed.TotalMilliseconds, 1);
+        }
+        catch
+        {
+            return null;
         }
     }
 
