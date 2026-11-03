@@ -14,7 +14,7 @@ namespace JarvisAgent;
 /// </summary>
 public sealed class DiscordRpc
 {
-    public sealed record Uczestnik(string Id, string Nazwa, bool Mute, bool Deaf);
+    public sealed record Uczestnik(string Id, string Nazwa, bool Mute, bool Deaf, string? Avatar, bool Bot);
     public sealed record Kanal(string Id, string Nazwa, string? SerwerId, List<Uczestnik> Uczestnicy);
     sealed record Zeton(string Access, string Refresh, DateTime Wygasa);
 
@@ -284,7 +284,10 @@ public sealed class DiscordRpc
                     var nazwa = S(s, "nick") ?? S(u, "global_name") ?? S(u, "username") ?? "?";
                     var m = B(st, "self_mute") == true || B(st, "mute") == true || B(s, "mute") == true;
                     var g = B(st, "self_deaf") == true || B(st, "deaf") == true || B(s, "deaf") == true;
-                    lista.Add(new Uczestnik(S(u, "id") ?? "", nazwa, m, g));
+                    var uid = S(u, "id");
+                    var hash = S(u, "avatar");
+                    var avatar = uid != null && hash != null ? $"https://cdn.discordapp.com/avatars/{uid}/{hash}.png?size=64" : null;
+                    lista.Add(new Uczestnik(uid ?? "", nazwa, m, g, avatar, B(u, "bot") == true));
                 }
             }
             k = new Kanal(S(o, "id") ?? "", S(o, "name") ?? "", S(o, "guild_id"), lista);
@@ -301,6 +304,15 @@ public sealed class DiscordRpc
         var cel = wartosc ?? !(biezace ?? false);
         await Komenda("SET_VOICE_SETTINGS", new JsonObject { [co] = cel });
         await OdswiezUstawienia();
+        return Stan();
+    }
+
+    /// <summary>Rozlacza z kanalu glosowego (SELECT_VOICE_CHANNEL z channel_id = null).</summary>
+    public async Task<object> Rozlacz()
+    {
+        if (!Gotowy) throw new InvalidOperationException("Discord RPC niepolaczony: " + Status);
+        await Komenda("SELECT_VOICE_CHANNEL", new JsonObject { ["channel_id"] = null, ["force"] = true });
+        await OdswiezKanal();
         return Stan();
     }
 

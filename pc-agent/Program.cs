@@ -112,11 +112,13 @@ app.MapPost("/api/zasilanie/{akcja}", (string akcja) => Results.Json(new { ok = 
 app.MapGet("/api/discord/stan", (DiscordRpc rpc) => Results.Json(rpc.Stan()));
 app.MapPost("/api/discord/{akcja}", async (string akcja, DiscordRpc rpc) =>
 {
+    if (akcja == "rozlacz")
+        return Results.Json(new { ok = true, via = "rpc", stan = await rpc.Rozlacz() });
     var co = akcja switch
     {
         "mikrofon" => "mute",
         "sluchawki" => "deaf",
-        _ => throw new ArgumentException("akcja: mikrofon | sluchawki"),
+        _ => throw new ArgumentException("akcja: mikrofon | sluchawki | rozlacz"),
     };
     if (rpc.Gotowy)
         return Results.Json(new { ok = true, via = "rpc", stan = await rpc.Przelacz(co) });

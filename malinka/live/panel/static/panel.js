@@ -549,16 +549,14 @@ RENDER.discord = (d) => {
   const online = (pcs || []).filter((p) => p.online);
   const maKanal = (p) => p.discord && p.discord.polaczony && p.discord.kanal;
   let pc = online.length ? wybierzPc(online) : null;
-  // komputer, na którym Discord RPC widzi Twój kanał głosowy, ma pierwszeństwo przy sterowaniu
-  const naKanale = online.find(maKanal);
-  if (pc && !maKanal(pc) && naKanale) { pc = naKanale; wybranyPc = naKanale.id; }
-  if (pcs && pcs.length) chipyPc(pcs);
+  // wybór komputera zostaje ręczny; 🔊 przy nazwie pokazuje, na którym jesteś teraz na kanale
+  if (pcs && pcs.length) chipyPc(pcs, (p) => (maKanal(p) ? " 🔊" : ""));
 
   // Twój kanał (Discord RPC z agenta): działa na każdym serwerze, nie tylko tam, gdzie jest bot
   const rpcHtml = online.filter(maKanal).map((p) => {
     const k = p.discord.kanal;
     return `<div class="dzien-naglowek">🔊 ${esc(k.nazwa || "Rozmowa")} <span class="przyg" style="text-transform:none">· Ty na ${esc(p.nazwa)} · ${k.uczestnicy.length} os.</span></div>` +
-      k.uczestnicy.map((o) => `<div class="osoba"><span class="awatar"></span><span class="v">${esc(o.nazwa)}</span>
+      k.uczestnicy.map((o) => `<div class="osoba">${o.avatar ? `<img src="${esc(o.avatar)}" alt="" referrerpolicy="no-referrer">` : '<span class="awatar"></span>'}<span class="v">${esc(o.nazwa)}${o.bot ? ' <span class="etykieta">BOT</span>' : ""}</span>
         <span class="ikony">${o.mute ? '<span class="etykieta czerwona">🎙 off</span>' : ""}${o.deaf ? '<span class="etykieta czerwona">🎧 off</span>' : ""}</span></div>`).join("");
   }).join("");
 
@@ -592,6 +590,7 @@ RENDER.discord = (d) => {
     prawa = `<div class="duze-przyciski" style="flex:1">
         <button class="${kl(r && r.mute)}" data-akcja="pc-cmd" data-pc="${esc(pc.id)}" data-cmd="discord/mikrofon">🎙️<div class="mala">${r ? (r.mute ? "wyciszony" : "włączony") : "mikrofon"}</div></button>
         <button class="${kl(r && r.deaf)}" data-akcja="pc-cmd" data-pc="${esc(pc.id)}" data-cmd="discord/sluchawki">🎧<div class="mala">${r ? (r.deaf ? "ogłuszony" : "słyszysz") : "słuchawki"}</div></button></div>
+       ${r && r.kanal ? `<button class="groznie" style="margin-top:8px;min-height:56px;width:100%" data-akcja="pc-cmd" data-pc="${esc(pc.id)}" data-cmd="discord/rozlacz">📞 Rozłącz z kanału</button>` : ""}
        <div class="przyg mala" style="margin-top:6px">${opis}</div>`;
   } else {
     prawa = pustoHtml("Żaden komputer z agentem nie jest online.");
