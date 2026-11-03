@@ -15,7 +15,7 @@ public sealed class Konfiguracja
     public List<string> DozwoloneIp { get; set; } = new() { "192.168.254.10", "100.105.181.54", "127.0.0.1", "::1" };
     /// <summary>Skróty ustawione w Discordzie: Ustawienia → Skróty klawiszowe → Przełącz wyciszenie / Przełącz ogłuszenie.</summary>
     public string DiscordMikrofon { get; set; } = "Ctrl+Shift+Alt+F9";
-    public string DiscordSluchawki { get; set; } = "Ctrl+Shift+Alt+F10";
+    public string DiscordSluchawki { get; set; } = "Ctrl+Shift+Alt+F11";
     public string PingHost { get; set; } = "1.1.1.1";
 
     public static string Katalog => AppContext.BaseDirectory;

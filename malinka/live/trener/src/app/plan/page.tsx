@@ -4,6 +4,8 @@ import { PLAN_ICON } from "@/lib/sport";
 import { parseStrength } from "@/lib/coach";
 import PlanControls from "@/components/PlanControls";
 import StartStrength from "@/components/StartStrength";
+import ActionButton from "@/components/ActionButton";
+import { doneIds } from "@/lib/move";
 
 export const dynamic = "force-dynamic";
 
@@ -17,9 +19,7 @@ export default async function PlanPage() {
     include: { workouts: { orderBy: [{ date: "asc" }, { id: "asc" }] } },
   });
   const err = JSON.parse((await kvGet("lastPlanError")) || "null") as { at: string; msg: string } | null;
-  const zrobione = new Set(
-    (await prisma.strengthSession.findMany({ where: { plannedId: { not: null }, finishedAt: { not: null }, date: { gte: ws } }, select: { plannedId: true } })).map((x) => x.plannedId),
-  );
+  const zrobione = await doneIds(plans.flatMap((p) => p.workouts));
   const cur = plans.find((p) => p.weekStart === ws);
   const next = plans.find((p) => p.weekStart === addDays(ws, 7));
 
@@ -74,6 +74,17 @@ export default async function PlanPage() {
                         )}
                         {zrobione.has(w.id) && <div className="ok small" style={{ marginTop: 6 }}>✔ Zrobione</div>}
                         {w.sport === "Siłownia" && d === today && !zrobione.has(w.id) && <div style={{ marginTop: 8 }}><StartStrength plannedId={w.id} label="▶ Rozpocznij" /></div>}
+                        {p.weekStart === ws && d !== today && w.sport !== "Odpoczynek" && !zrobione.has(w.id) && !(w.sport === "Bieg" && /^bieżnia/i.test(w.title) && ws_.some((x) => x.sport === "Siłownia")) && (
+                          <div style={{ marginTop: 8 }}>
+                            <ActionButton
+                              url="/api/plan/move"
+                              body={{ id: w.id }}
+                              label={w.sport === "Siłownia" ? "↪ Przenieś na dziś (z bieżnią)" : "↪ Przenieś na dziś"}
+                              busyLabel="Przenoszę…"
+                              confirm={`Przenieść „${w.title}” na dziś?${w.intervalsEventId ? " Na zegarku też się przesunie." : ""}`}
+                            />
+                          </div>
+                        )}
                       </div>
                     );
                   })}

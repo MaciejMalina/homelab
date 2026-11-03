@@ -1,4 +1,4 @@
-﻿# JARVIS Agent — instalacja na Windowsie (laptop i gaming PC).
+# JARVIS Agent — instalacja na Windowsie (laptop i gaming PC).
 # 1) Zbuduj na laptopie:   dotnet publish -c Release
 # 2) Skopiuj JarvisAgent.exe + ten skrypt na docelowy komputer (do jednego folderu)
 # 3) PowerShell JAKO ADMINISTRATOR, w tym folderze:
@@ -38,7 +38,7 @@ if (-not (Test-Path $cfgPath)) {
         token            = $Token
         dozwoloneIp      = @("192.168.254.10", "100.105.181.54", "127.0.0.1", "::1")
         discordMikrofon  = "Ctrl+Shift+Alt+F9"
-        discordSluchawki = "Ctrl+Shift+Alt+F10"
+        discordSluchawki = "Ctrl+Shift+Alt+F11"
         pingHost         = "1.1.1.1"
     } | ConvertTo-Json | Set-Content -Encoding UTF8 $cfgPath
 }
@@ -68,4 +68,4 @@ try {
 }
 Write-Host ""
 Write-Host "Token do .env panelu (AGENT_TOKEN): $Token"
-Write-Host "Discord: Ustawienia -> Skróty klawiszowe -> 'Przełącz wyciszenie' = Ctrl+Shift+Alt+F9, 'Przełącz ogłuszenie' = Ctrl+Shift+Alt+F10"
+Write-Host "Discord: Ustawienia -> Skróty klawiszowe -> 'Przełącz wyciszenie' = Ctrl+Shift+Alt+F9, 'Przełącz ogłuszenie' = Ctrl+Shift+Alt+F11"

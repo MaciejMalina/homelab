@@ -79,7 +79,7 @@ Trener: nowy plik `src/app/api/panel/route.ts` → `cd ~/trener && docker compos
 
 `pc-agent/README.md`: `dotnet publish -c Release` na laptopie, potem `install.ps1` na każdym komputerze.
 Token z instalatora → `AGENT_TOKEN` w `.env` panelu; `PCS=gaming|http://192.168.254.73:8765|<MAC>;laptop|http://<IP Tailscale laptopa>:8765|`.
-W Discordzie ustaw skróty: Przełącz wyciszenie = `Ctrl+Shift+Alt+F9`, Przełącz ogłuszenie = `Ctrl+Shift+Alt+F10`.
+W Discordzie ustaw skróty: Przełącz wyciszenie = `Ctrl+Shift+Alt+F9`, Przełącz ogłuszenie = `Ctrl+Shift+Alt+F11`.
 
 ## 3. Bot Discord
 

@@ -5,6 +5,7 @@ import { addDays, fmtDate, fmtDuration, fmtKm, fmtPace, todayPL, weekStart } fro
 import { ICON, PLAN_ICON, sportGroup, sportName } from "@/lib/sport";
 import ActionButton from "@/components/ActionButton";
 import StartStrength from "@/components/StartStrength";
+import { zalegle } from "@/lib/move";
 
 export const dynamic = "force-dynamic";
 
@@ -26,6 +27,7 @@ export default async function Home() {
     (await prisma.strengthSession.findMany({ where: { plannedId: { in: dzis.map((w) => w.id) }, finishedAt: { not: null } }, select: { plannedId: true } })).map((x) => x.plannedId),
   );
   const sync = JSON.parse((await kvGet("lastSync")) ?? "null") as { at: string; bledy: string[] } | null;
+  const doNadrobienia = await zalegle();
 
   const pullPct = g.pullup ? Math.min(100, (g.pullup.reps / g.pullupGoal) * 100) : 0;
   const halfPct = g.half ? Math.min(100, (g.halfGoal / g.half.sec) * 100) : 0;
@@ -70,6 +72,29 @@ export default async function Home() {
           {w.intervalsEventId && <div className="small mut" style={{ marginTop: 8 }}>📲 Wysłany na zegarek (Kursy → Własne kursy)</div>}
         </div>
       ))}
+      {doNadrobienia.length > 0 && (
+        <>
+          <h2>Do nadrobienia z tego tygodnia</h2>
+          {doNadrobienia.map((w) => (
+            <div key={w.id} className="card">
+              <div className="row">
+                <b className="grow">{PLAN_ICON[w.sport] ?? "•"} {w.title}</b>
+                <span className="mut small">{fmtDate(w.date)}</span>
+              </div>
+              <div className="row" style={{ marginTop: 8 }}>
+                <ActionButton
+                  url="/api/plan/move"
+                  body={{ id: w.id }}
+                  label={w.sport === "Siłownia" ? "↪ Zrób dziś (z bieżnią)" : "↪ Zrób dziś"}
+                  busyLabel="Przenoszę…"
+                  confirm={`Przenieść „${w.title}” na dziś?`}
+                />
+              </div>
+            </div>
+          ))}
+          <div className="small mut">Jeśli wypadło więcej dni, lepiej przebuduj tydzień z uwagami w zakładce Plan.</div>
+        </>
+      )}
       {jutro.length > 0 && (
         <div className="small mut">Jutro: {jutro.map((w) => `${PLAN_ICON[w.sport] ?? ""} ${w.title}`).join(", ")}</div>
       )}

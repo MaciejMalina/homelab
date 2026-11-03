@@ -73,6 +73,14 @@ export async function createEvents(events: NewEvent[]) {
   return call<Json[]>(`${athlete()}/events/bulk?upsertOnUid=true`, { method: "POST", body: JSON.stringify(body) });
 }
 
+/** Przesuwa zaplanowany trening w kalendarzu intervals.icu na inny dzień (stamtąd trafia do Huawei Health / zegarka) */
+export async function moveEvent(eventId: string, date: string) {
+  return call<Json>(`${athlete()}/events/${encodeURIComponent(eventId)}`, {
+    method: "PUT",
+    body: JSON.stringify({ start_date_local: `${date}T00:00:00` }),
+  });
+}
+
 export async function deleteEvent(eventId: string) {
   await call<void>(`${athlete()}/events/${encodeURIComponent(eventId)}`, { method: "DELETE" });
 }
