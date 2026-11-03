@@ -1,4 +1,4 @@
-# JARVIS Agent — instalacja na Windowsie (laptop i gaming PC).
+﻿# JARVIS Agent — instalacja na Windowsie (laptop i gaming PC).
 # 1) Zbuduj na laptopie:   dotnet publish -c Release
 # 2) Skopiuj JarvisAgent.exe + ten skrypt na docelowy komputer (do jednego folderu)
 # 3) PowerShell JAKO ADMINISTRATOR, w tym folderze:
