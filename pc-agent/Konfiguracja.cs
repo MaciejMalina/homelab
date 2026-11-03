@@ -17,6 +17,11 @@ public sealed class Konfiguracja
     public string DiscordMikrofon { get; set; } = "Ctrl+Shift+Alt+F9";
     public string DiscordSluchawki { get; set; } = "Ctrl+Shift+Alt+F11";
     public string PingHost { get; set; } = "1.1.1.1";
+    /// <summary>Discord RPC (stan i sterowanie bez skrotow, na wszystkich serwerach). Puste = wylaczone, dziala fallback ze skrotami.
+    /// Aplikacja z Discord Developer Portal: Application ID, Client Secret, Redirects = DiscordRedirect.</summary>
+    public string DiscordClientId { get; set; } = "";
+    public string DiscordClientSecret { get; set; } = "";
+    public string DiscordRedirect { get; set; } = "http://localhost";
 
     public static string Katalog => AppContext.BaseDirectory;
     static string Plik => Path.Combine(Katalog, "agent.json");

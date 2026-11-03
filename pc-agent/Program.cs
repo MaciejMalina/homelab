@@ -17,8 +17,10 @@ builder.Logging.ClearProviders();
 builder.WebHost.UseUrls($"http://0.0.0.0:{cfg.Port}");
 builder.Services.ConfigureHttpJsonOptions(o => o.SerializerOptions.PropertyNamingPolicy = JsonNamingPolicy.CamelCase);
 builder.Services.AddSingleton(new Sprzet(cfg.PingHost));
+builder.Services.AddSingleton(new DiscordRpc(cfg));
 
 var app = builder.Build();
+app.Services.GetRequiredService<DiscordRpc>().Start();
 
 // ------------------------------------------------------------------ bramka: IP + token
 app.Use(async (ctx, next) =>
@@ -107,16 +109,19 @@ app.MapPost("/api/audio/aplikacja", (ZadanieAplikacji z) =>
 });
 app.MapPost("/api/media/{akcja}", async (string akcja) => Results.Json(new { ok = await Media.Akcja(akcja) }));
 app.MapPost("/api/zasilanie/{akcja}", (string akcja) => Results.Json(new { ok = true, msg = Zasilanie.Wykonaj(akcja) }));
-app.MapPost("/api/discord/{akcja}", (string akcja) =>
+app.MapGet("/api/discord/stan", (DiscordRpc rpc) => Results.Json(rpc.Stan()));
+app.MapPost("/api/discord/{akcja}", async (string akcja, DiscordRpc rpc) =>
 {
-    var skrot = akcja switch
+    var co = akcja switch
     {
-        "mikrofon" => cfg.DiscordMikrofon,
-        "sluchawki" => cfg.DiscordSluchawki,
+        "mikrofon" => "mute",
+        "sluchawki" => "deaf",
         _ => throw new ArgumentException("akcja: mikrofon | sluchawki"),
     };
-    Klawisze.Nacisnij(skrot);
-    return Results.Json(new { ok = true });
+    if (rpc.Gotowy)
+        return Results.Json(new { ok = true, via = "rpc", stan = await rpc.Przelacz(co) });
+    Klawisze.Nacisnij(co == "mute" ? cfg.DiscordMikrofon : cfg.DiscordSluchawki);
+    return Results.Json(new { ok = true, via = "skrot" });
 });
 app.MapPost("/api/speedtest", async () => Results.Json(await Speedtest.Uruchom()));
 

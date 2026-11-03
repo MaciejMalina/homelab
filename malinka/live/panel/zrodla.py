@@ -510,13 +510,29 @@ def speedtest():
         t0 = time.time()
         zadanie("https://speed.cloudflare.com/__down?bytes=0", surowe=True, timeout=10, headers=_SPEED_UA)
         ping = (time.time() - t0) * 1000
-        t0 = time.time()
-        dane, _ = zadanie("https://speed.cloudflare.com/__down?bytes=25000000", surowe=True, timeout=90, headers=_SPEED_UA)
-        dol = len(dane) * 8 / (time.time() - t0) / 1e6
-        t0 = time.time()
-        zadanie("https://speed.cloudflare.com/__up", method="POST", body=b"\0" * 10_000_000, surowe=True, timeout=90,
-                headers={**_SPEED_UA, "Content-Type": "application/octet-stream"})
-        gora = 80 / (time.time() - t0)
+        # kilka strumieni naraz: pojedynczy krotki strumien TCP zanizal wynik ~3-6x
+        from concurrent.futures import ThreadPoolExecutor
+        N = 4
+
+        def _dol():
+            dane, _ = zadanie("https://speed.cloudflare.com/__down?bytes=25000000", surowe=True,
+                              timeout=90, headers=_SPEED_UA)
+            return len(dane)
+
+        def _gora():
+            zadanie("https://speed.cloudflare.com/__up", method="POST", body=b"\0" * 10_000_000,
+                    surowe=True, timeout=90,
+                    headers={**_SPEED_UA, "Content-Type": "application/octet-stream"})
+            return 10_000_000
+
+        def _mierz(f):
+            t0 = time.time()
+            with ThreadPoolExecutor(N) as ex:
+                bajty = sum(ex.map(lambda _: f(), range(N)))
+            return bajty * 8 / (time.time() - t0) / 1e6
+
+        dol = _mierz(_dol)
+        gora = _mierz(_gora)
         wynik = {"ts": time.time(), "ping": round(ping), "dol": round(dol, 1), "gora": round(gora, 1)}
         pamiec_set("speedtest", wynik)
         return wynik
