@@ -1199,7 +1199,7 @@ window.jarvisGest = (g) => {
     return;
   }
   wake(wakeMin);   // gest = aktywność, odsuwa wygaszanie
-  // machnięcie w prawo = następna zakładka (niżej na pasku), w lewo = poprzednia (gora/dol: starsza wersja appki)
+  // palec wskazujący w prawo = następna zakładka (niżej na pasku), w lewo = poprzednia (gora/dol: starsza wersja appki)
   if (g === "prawo" || g === "lewo" || g === "gora" || g === "dol") {
     const ids = Object.keys(TABS);
     const n = ids[(ids.indexOf(aktywna) + (g === "prawo" || g === "dol" ? 1 : -1) + ids.length) % ids.length];

@@ -73,15 +73,16 @@ final class Gesty implements LifecycleOwner {
     private static final String TAG = "JarvisGesty";
     private static final String MODEL = "gesture_recognizer.task";
 
-    private static final long STABILNY_MS = 400;          // tyle trzeba trzymać gest
+    private static final long STABILNY_MS = 600;          // tyle trzeba trzymać gest
     private static final long PRZERWA_MS = 1000;          // po rozpoznaniu: przerwa na kolejny
     private static final long PO_DOTYKU_MS = 1500;        // ręka sięgająca do ekranu to nie machnięcie
     private static final long OKNO_MACHNIECIA_MS = 800;
     private static final long LUKA_MS = 350;              // tyle moze brakowac gestu w srodku przytrzymania
     private static final long PRZERWA_TORU_MS = 500;
-    private static final long POWROT_MS = 1800;           // po machnieciu ruch w przeciwna strone = powrot reki, nie gest      // dluzszy brak dloni = koniec ruchu
+    private static final long POWROT_MS = 1800;
+    private static final boolean MACHNIECIA = false;      // machniecia w powietrzu zawodne (powrot reki) - zakladki zmienia wskazanie palcem w bok           // po machnieciu ruch w przeciwna strone = powrot reki, nie gest      // dluzszy brak dloni = koniec ruchu
     private static final float KIERUNEK_X = -1f;          // przednia kamera: ruch w prawo uzytkownika = x maleje
-    private static final float PROG_WYNIKU = 0.5f;
+    private static final float PROG_WYNIKU = 0.6f;
     private static final float PROG_MACHNIECIA = 0.22f;   // czesc szerokosci kadru
     private static final float MAX_RUCH_STATYCZNY = 0.10f;
     private static final long CO_MS_AKTYWNY = 60;         // kazda klatka (15/s) - wiecej probek w szybkim ruchu
@@ -375,6 +376,8 @@ final class Gesty implements LifecycleOwner {
                 Category c = r.gestures().get(0).get(0);
                 if (c.score() >= PROG_WYNIKU) nazwa = NAZWY.get(c.categoryName());
             }
+            String wsk = wskazanieWBok(lm);
+            if (wsk != null) nazwa = wsk;
             // model slabo lapie kciuk w dol - gdy sie waha albo widzi piesc, sprawdzamy sami po punktach dloni
             if ((nazwa == null || "piesc".equals(nazwa)) && kciukWDol(lm)) nazwa = "kciuk_dol";
         }
@@ -385,6 +388,23 @@ final class Gesty implements LifecycleOwner {
             Log.d(TAG, "dlon x=" + fmt(x) + " y=" + fmt(y) + " gest=" + surowy + (uspiony ? " (uspiony)" : ""));
         }
         analizuj(t, nazwa, x, y);
+    }
+
+    /** Palec wskazujacy wyprostowany poziomo, srodkowy/serdeczny/maly zgiete -> "prawo" / "lewo" (z punktu widzenia uzytkownika). */
+    private static String wskazanieWBok(List<NormalizedLandmark> lm) {
+        if (lm.size() < 21) return null;
+        NormalizedLandmark nadgarstek = lm.get(0);
+        NormalizedLandmark mcp = lm.get(5);
+        NormalizedLandmark tip = lm.get(8);
+        if (odl(tip, nadgarstek) < odl(lm.get(6), nadgarstek) * 1.2f) return null;   // wskazujacy wyprostowany
+        float dx = tip.x() - mcp.x();
+        float dy = tip.y() - mcp.y();
+        if (Math.abs(dx) < 0.08f || Math.abs(dx) < 1.5f * Math.abs(dy)) return null;   // wyraznie w bok
+        int[][] palce = {{12, 10}, {16, 14}, {20, 18}};
+        for (int[] p : palce) {
+            if (odl(lm.get(p[0]), nadgarstek) > odl(lm.get(p[1]), nadgarstek) * 1.05f) return null;   // reszta zgieta
+        }
+        return dx * KIERUNEK_X > 0 ? "prawo" : "lewo";
     }
 
     /** Kciuk wyraznie w dol (czubek ponizej nasady i ponizej knykcia palca wskazujacego), pozostale palce zgiete. */
@@ -420,7 +440,7 @@ final class Gesty implements LifecycleOwner {
         }
         boolean jest = y >= 0;
         // machniecie w bok (tylko przy swiecacym ekranie). Pojedyncza zgubiona klatka (rozmazana dlon) NIE kasuje toru.
-        if (!uspiony) {
+        if (MACHNIECIA && !uspiony) {
             if (jest) {
                 ostatniaDlon = t;
                 tor.addLast(new float[]{t, x, y});
