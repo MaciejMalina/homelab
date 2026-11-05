@@ -369,11 +369,59 @@ public class MainActivity extends Activity {
         l.addView(jasnosc);
         l.addView(gestyPole);
         l.addView(glosPole);
+
+        // głos JARVIS-a: lista polskich głosów (wybór od razu odtwarza próbkę) + tempo mowy
+        final String glosZapisany = prefs.getString("glos_tts", "");
+        final float tempoZapisane = prefs.getFloat("glos_tempo", 1.0f);
+        java.util.List<android.speech.tts.Voice> glosy = glos != null ? glos.glosyPl() : new java.util.ArrayList<>();
+        java.util.List<String> nazwy = new java.util.ArrayList<>();
+        java.util.List<String> etykiety = new java.util.ArrayList<>();
+        nazwy.add("");
+        etykiety.add("Domyślny polski");
+        for (android.speech.tts.Voice v : glosy) {
+            nazwy.add(v.getName());
+            etykiety.add(v.getName().replace("pl-pl-x-", "").replace("-local", " (w telefonie)")
+                    .replace("-network", " (online, naturalniejszy)"));
+        }
+        TextView t4 = new TextView(this);
+        t4.setText("\nGłos JARVIS-a (wybierz, żeby odsłuchać)");
+        android.widget.Spinner glosLista = new android.widget.Spinner(this);
+        glosLista.setAdapter(new android.widget.ArrayAdapter<>(this, android.R.layout.simple_spinner_dropdown_item, etykiety));
+        glosLista.setSelection(Math.max(0, nazwy.indexOf(glosZapisany)));
+        final boolean[] pierwszyWybor = {true};
+        glosLista.setOnItemSelectedListener(new android.widget.AdapterView.OnItemSelectedListener() {
+            @Override public void onItemSelected(android.widget.AdapterView<?> p, View v, int poz, long id) {
+                if (pierwszyWybor[0]) { pierwszyWybor[0] = false; return; }   // ustawienie startowe, nie wybór
+                if (glos != null) { glos.ustawGlos(nazwy.get(poz)); glos.probka(); }
+            }
+            @Override public void onNothingSelected(android.widget.AdapterView<?> p) { }
+        });
+        TextView t5 = new TextView(this);
+        t5.setText("Tempo mowy: " + Math.round(tempoZapisane * 100) + "%");
+        android.widget.SeekBar tempo = new android.widget.SeekBar(this);
+        tempo.setMax(150);                                   // 50–200 %
+        tempo.setProgress(Math.round(tempoZapisane * 100) - 50);
+        tempo.setOnSeekBarChangeListener(new android.widget.SeekBar.OnSeekBarChangeListener() {
+            @Override public void onProgressChanged(android.widget.SeekBar s, int p, boolean odUzytkownika) {
+                t5.setText("Tempo mowy: " + (p + 50) + "%");
+            }
+            @Override public void onStartTrackingTouch(android.widget.SeekBar s) { }
+            @Override public void onStopTrackingTouch(android.widget.SeekBar s) {
+                if (glos != null) { glos.ustawTempo((s.getProgress() + 50) / 100f); glos.probka(); }
+            }
+        });
+        l.addView(t4);
+        l.addView(glosLista);
+        l.addView(t5);
+        l.addView(tempo);
         l.addView(info);
+
+        android.widget.ScrollView przewijanie = new android.widget.ScrollView(this);   // w poziomie nie mieści się bez przewijania
+        przewijanie.addView(l);
 
         new AlertDialog.Builder(this)
                 .setTitle("JARVIS Panel — ustawienia")
-                .setView(l)
+                .setView(przewijanie)
                 .setPositiveButton("Zapisz", (d, w) -> {
                     String u = poleUrl.getText().toString().trim();
                     if (!u.isEmpty() && !u.matches("^https?://.*")) u = "http://" + u;
@@ -391,7 +439,9 @@ public class MainActivity extends Activity {
                     }
                     boolean g = gestyPole.isChecked();
                     boolean gl = glosPole.isChecked();
-                    e.putFloat("jasnosc", val).putBoolean("gesty", g).putBoolean("glos", gl).apply();
+                    e.putFloat("jasnosc", val).putBoolean("gesty", g).putBoolean("glos", gl)
+                            .putString("glos_tts", nazwy.get(Math.max(0, glosLista.getSelectedItemPosition())))
+                            .putFloat("glos_tempo", (tempo.getProgress() + 50) / 100f).apply();
                     poprosOUprawnienia();
                     if (gesty != null) gesty.ustawWlaczone(g);
                     if (glos != null) glos.ustawWlaczone(gl);
@@ -401,7 +451,14 @@ public class MainActivity extends Activity {
                 .setNeutralButton("Ustawienia Androida", (d, w) ->
                         startActivity(new Intent(Settings.ACTION_SETTINGS)))
                 .setNegativeButton("Anuluj", null)
-                .setOnDismissListener(d -> pelnyEkran())
+                .setOnDismissListener(d -> {
+                    pelnyEkran();
+                    // po „Zapisz” to już nowe wartości; po „Anuluj” wraca głos i tempo sprzed odsłuchiwania
+                    if (glos != null) {
+                        glos.ustawGlos(prefs.getString("glos_tts", ""));
+                        glos.ustawTempo(prefs.getFloat("glos_tempo", 1.0f));
+                    }
+                })
                 .show();
     }
 

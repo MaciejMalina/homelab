@@ -98,6 +98,9 @@ final class Glos {
             if (s != TextToSpeech.SUCCESS) return;
             int r = tts.setLanguage(new Locale("pl", "PL"));
             ttsGotowy = r != TextToSpeech.LANG_MISSING_DATA && r != TextToSpeech.LANG_NOT_SUPPORTED;
+            ustawGlos(act.getSharedPreferences("panel", Activity.MODE_PRIVATE).getString("glos_tts", ""));
+            tts.setSpeechRate(act.getSharedPreferences("panel", Activity.MODE_PRIVATE).getFloat("glos_tempo", 1.0f));
+            for (android.speech.tts.Voice v : glosyPl()) Log.i(TAG, "glos: " + v.getName() + (v.isNetworkConnectionRequired() ? " (online)" : ""));
             tts.setAudioAttributes(new AudioAttributes.Builder()
                     .setUsage(AudioAttributes.USAGE_ASSISTANT)
                     .setContentType(AudioAttributes.CONTENT_TYPE_SPEECH).build());
@@ -154,6 +157,42 @@ final class Glos {
         stan = "mówi";
         tts.speak(tekst, TextToSpeech.QUEUE_FLUSH, null, "jarvis-" + SystemClock.uptimeMillis());
         h.postDelayed(wznow, MAX_MOWIENIE_MS);   // zapas, gdyby TTS nie zgłosił końca
+    }
+
+    // ------------------------------------------------------------------ głos JARVIS-a (wybór w ustawieniach appki)
+    /** Polskie głosy syntezatora (Google TTS ma kilka: damskie i męskie, lokalne i online). */
+    java.util.List<android.speech.tts.Voice> glosyPl() {
+        java.util.List<android.speech.tts.Voice> out = new java.util.ArrayList<>();
+        if (!ttsGotowy || tts.getVoices() == null) return out;
+        for (android.speech.tts.Voice v : tts.getVoices()) {
+            if ("pl".equals(v.getLocale().getLanguage()) && !v.getFeatures().contains("notInstalled")) out.add(v);
+        }
+        out.sort((a, b) -> a.getName().compareTo(b.getName()));
+        return out;
+    }
+
+    /** Pusta nazwa = domyślny polski głos. */
+    void ustawGlos(String nazwa) {
+        if (!ttsGotowy) return;
+        if (nazwa == null || nazwa.isEmpty()) {
+            tts.setLanguage(new Locale("pl", "PL"));
+            return;
+        }
+        for (android.speech.tts.Voice v : glosyPl()) {
+            if (v.getName().equals(nazwa)) {
+                tts.setVoice(v);
+                return;
+            }
+        }
+    }
+
+    void ustawTempo(float tempo) {
+        if (ttsGotowy) tts.setSpeechRate(tempo);
+    }
+
+    /** Odsłuch w ustawieniach — bez wstrzymywania nasłuchu (krótka próbka). */
+    void probka() {
+        if (ttsGotowy) tts.speak("Dzień dobry, tak brzmi mój głos. Na zewnątrz jest pięć stopni.", TextToSpeech.QUEUE_FLUSH, null, "probka");
     }
 
     void zamknij() {
