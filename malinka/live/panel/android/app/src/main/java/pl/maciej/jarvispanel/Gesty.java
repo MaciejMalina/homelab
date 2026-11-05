@@ -76,13 +76,15 @@ final class Gesty implements LifecycleOwner {
     private static final long STABILNY_MS = 400;          // tyle trzeba trzymać gest
     private static final long PRZERWA_MS = 1000;          // po rozpoznaniu: przerwa na kolejny
     private static final long PO_DOTYKU_MS = 1500;        // ręka sięgająca do ekranu to nie machnięcie
-    private static final long OKNO_MACHNIECIA_MS = 700;
+    private static final long OKNO_MACHNIECIA_MS = 800;
+    private static final long PRZERWA_TORU_MS = 500;      // dluzszy brak dloni = koniec ruchu
+    private static final float KIERUNEK_X = -1f;          // przednia kamera: ruch w prawo uzytkownika = x maleje
     private static final float PROG_WYNIKU = 0.5f;
-    private static final float PROG_MACHNIECIA = 0.28f;   // część wysokości kadru
+    private static final float PROG_MACHNIECIA = 0.22f;   // czesc szerokosci kadru
     private static final float MAX_RUCH_STATYCZNY = 0.10f;
-    private static final long CO_MS_AKTYWNY = 100;        // ~10 analiz/s
+    private static final long CO_MS_AKTYWNY = 60;         // kazda klatka (15/s) - wiecej probek w szybkim ruchu
     private static final long CO_MS_USPIONY = 333;        // ~3 analizy/s
-    private static final float EV_PLUS = 1.5f;            // rozjaśnienie: dłoń pod światło (okno/lampa za plecami)
+    private static final float EV_PLUS = 1.0f;            // rozjasnienie pod swiatlo; wiecej = dluzsza ekspozycja = rozmazana dlon w ruchu
     private static final long TEMP_CO_MS = 30_000;
     private static final double TEMP_STOP_USPIONY = 38.0;
     private static final double TEMP_STOP_ZAWSZE = 43.0;
@@ -117,13 +119,21 @@ final class Gesty implements LifecycleOwner {
     private volatile long przerwaDo = 0;
     private double ostatniaTemp = 0;
     private long ostatniLog = 0;
+    // diagnostyka: liczniki z ostatnich 10 s (log co 10 s)
+    private final java.util.concurrent.atomic.AtomicInteger nKlatek = new java.util.concurrent.atomic.AtomicInteger();
+    private final java.util.concurrent.atomic.AtomicInteger nWynikow = new java.util.concurrent.atomic.AtomicInteger();
+    private final java.util.concurrent.atomic.AtomicInteger nDloni = new java.util.concurrent.atomic.AtomicInteger();
+    private volatile long ostatniLicznik = 0;
+    private volatile String jasnosc = "?";
 
     // stabilizacja — wywoływane tylko z wątku wyników MediaPipe
     private String kandydat = null;
     private long kandydatOd = 0;
+    private float kandydatX = 0;
     private float kandydatY = 0;
+    private long ostatniaDlon = 0;
     private boolean wyslany = false;
-    private final ArrayDeque<float[]> tor = new ArrayDeque<>();   // {czas ms, y}
+    private final ArrayDeque<float[]> tor = new ArrayDeque<>();   // {czas ms, x, y}
 
     private final Runnable kontrolaTemp = new Runnable() {
         @Override public void run() {
@@ -308,6 +318,14 @@ final class Gesty implements LifecycleOwner {
             if (r == null || teraz - ostatniaKlatka < co) return;
             ostatniaKlatka = teraz;
             Bitmap bm = img.toBitmap();
+            nKlatek.incrementAndGet();
+            if (teraz - ostatniLicznik >= 10_000) {
+                ostatniLicznik = teraz;
+                jasnosc = sredniaJasnosc(bm);
+                Log.d(TAG, "10 s: klatki=" + nKlatek.getAndSet(0) + " wyniki=" + nWynikow.getAndSet(0) + " dlonie=" + nDloni.getAndSet(0)
+                        + " obraz=" + bm.getWidth() + "x" + bm.getHeight() + " rot=" + img.getImageInfo().getRotationDegrees()
+                        + " jasnosc=" + jasnosc + (uspiony ? " (uspiony)" : ""));
+            }
             MPImage mp = new BitmapImageBuilder(bm).build();
             ImageProcessingOptions opcje = ImageProcessingOptions.builder()
                     .setRotationDegrees(img.getImageInfo().getRotationDegrees())
@@ -320,14 +338,34 @@ final class Gesty implements LifecycleOwner {
         }
     }
 
+    /** Średnia jasność kadru 0–255 (próbka co 16 px) — czy obraz nie jest za ciemny / prześwietlony. */
+    private static String sredniaJasnosc(Bitmap bm) {
+        long suma = 0;
+        int n = 0;
+        for (int y = 0; y < bm.getHeight(); y += 16) {
+            for (int x = 0; x < bm.getWidth(); x += 16) {
+                int c = bm.getPixel(x, y);
+                suma += (((c >> 16) & 0xff) * 299 + ((c >> 8) & 0xff) * 587 + (c & 0xff) * 114) / 1000;
+                n++;
+            }
+        }
+        return n == 0 ? "?" : String.valueOf(suma / n);
+    }
+
     // ------------------------------------------------------------------ wyniki (wątek MediaPipe)
     private void wynik(GestureRecognizerResult r) {
         long t = r.timestampMs();
+        nWynikow.incrementAndGet();
         String nazwa = null;
+        float x = -1f;
         float y = -1f;
         if (!r.landmarks().isEmpty()) {
+            nDloni.incrementAndGet();
             List<NormalizedLandmark> lm = r.landmarks().get(0);
-            if (lm.size() > 9) y = (lm.get(0).y() + lm.get(9).y()) / 2f;   // nadgarstek + środek dłoni
+            if (lm.size() > 9) {
+                x = (lm.get(0).x() + lm.get(9).x()) / 2f;   // nadgarstek + srodek dloni
+                y = (lm.get(0).y() + lm.get(9).y()) / 2f;
+            }
             if (!r.gestures().isEmpty() && !r.gestures().get(0).isEmpty()) {
                 Category c = r.gestures().get(0).get(0);
                 if (c.score() >= PROG_WYNIKU) nazwa = NAZWY.get(c.categoryName());
@@ -336,32 +374,46 @@ final class Gesty implements LifecycleOwner {
         if (y >= 0 && t - ostatniLog >= 500) {
             ostatniLog = t;
             String surowy = r.gestures().isEmpty() || r.gestures().get(0).isEmpty() ? "-"
-                    : r.gestures().get(0).get(0).categoryName() + String.format(java.util.Locale.ROOT, " %.2f", r.gestures().get(0).get(0).score());
-            Log.d(TAG, "dlon y=" + String.format(java.util.Locale.ROOT, "%.2f", y) + " gest=" + surowy + (uspiony ? " (uspiony)" : ""));
+                    : r.gestures().get(0).get(0).categoryName() + " " + fmt(r.gestures().get(0).get(0).score());
+            Log.d(TAG, "dlon x=" + fmt(x) + " y=" + fmt(y) + " gest=" + surowy + (uspiony ? " (uspiony)" : ""));
         }
-        analizuj(t, nazwa, y);
+        analizuj(t, nazwa, x, y);
     }
 
-    private void analizuj(long t, String nazwa, float y) {
+    private static String fmt(float v) {
+        return String.format(java.util.Locale.ROOT, "%.2f", v);
+    }
+
+    private void analizuj(long t, String nazwa, float x, float y) {
         if (t < przerwaDo) {
             tor.clear();
             return;
         }
-        // machnięcie góra/dół — tylko przy świecącym ekranie
-        if (y >= 0 && !uspiony) {
-            tor.addLast(new float[]{t, y});
-            while (!tor.isEmpty() && t - tor.peekFirst()[0] > OKNO_MACHNIECIA_MS) tor.removeFirst();
-            float dy = y - tor.peekFirst()[1];
-            if (tor.size() >= 3 && Math.abs(dy) >= PROG_MACHNIECIA) {
-                kandydat = null;
-                wyslij(dy > 0 ? "dol" : "gora", t);
-                return;
+        boolean jest = y >= 0;
+        // machniecie w bok (tylko przy swiecacym ekranie). Pojedyncza zgubiona klatka (rozmazana dlon) NIE kasuje toru.
+        if (!uspiony) {
+            if (jest) {
+                ostatniaDlon = t;
+                tor.addLast(new float[]{t, x, y});
+                while (!tor.isEmpty() && t - tor.peekFirst()[0] > OKNO_MACHNIECIA_MS) tor.removeFirst();
+                float[] p = tor.peekFirst();
+                float dx = x - p[1];
+                float dy = y - p[2];
+                if (tor.size() >= 2 && Math.abs(dx) >= PROG_MACHNIECIA && Math.abs(dx) > 1.5f * Math.abs(dy)) {
+                    Log.d(TAG, "machniecie dx=" + fmt(dx) + " dy=" + fmt(dy) + " probek=" + tor.size());
+                    kandydat = null;
+                    wyslij(dx * KIERUNEK_X > 0 ? "prawo" : "lewo", t);
+                    return;
+                }
+            } else if (t - ostatniaDlon > PRZERWA_TORU_MS) {
+                tor.clear();
             }
         } else {
             tor.clear();
         }
-        // gest statyczny: ten sam przez STABILNY_MS, dłoń prawie w miejscu, raz na jedno pokazanie
-        if (nazwa == null) {
+        // gest statyczny: ten sam przez STABILNY_MS, dlon prawie w miejscu, raz na jedno pokazanie.
+        // Otwarta dlon przy swiecacym ekranie nic nie robi - nie wysylamy jej (blokowalaby machniecie zaraz po niej).
+        if (nazwa == null || (!uspiony && "dlon".equals(nazwa))) {
             kandydat = null;
             wyslany = false;
             return;
@@ -369,13 +421,15 @@ final class Gesty implements LifecycleOwner {
         if (!nazwa.equals(kandydat)) {
             kandydat = nazwa;
             kandydatOd = t;
+            kandydatX = x;
             kandydatY = y;
             wyslany = false;
             return;
         }
         if (wyslany) return;
-        if (Math.abs(y - kandydatY) > MAX_RUCH_STATYCZNY) {
+        if (Math.abs(y - kandydatY) > MAX_RUCH_STATYCZNY || Math.abs(x - kandydatX) > MAX_RUCH_STATYCZNY) {
             kandydatOd = t;
+            kandydatX = x;
             kandydatY = y;
             return;
         }
@@ -385,7 +439,6 @@ final class Gesty implements LifecycleOwner {
             wyslij(nazwa, t);
         }
     }
-
     private void wyslij(String gest, long t) {
         Log.i(TAG, "GEST " + gest);
         przerwaDo = t + PRZERWA_MS;

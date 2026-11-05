@@ -1113,7 +1113,7 @@ document.addEventListener("change", (e) => {
 // Appka rozpoznaje gest na telefonie i woła window.jarvisGest(nazwa). Wszędzie: góra/dół = poprzednia/następna
 // zakładka, ✌️ = Przegląd, ✋ budzi wygaszony ekran. Reszta zależy od zakładki. Żadnych groźnych akcji
 // (usypianie serwera, wyłączanie komputera) — przypadkowy ruch ręką nie może niczego popsuć.
-const GEST_IKONY = { dlon: "✋", piesc: "✊", palec: "☝️", kciuk_gora: "👍", kciuk_dol: "👎", v: "✌️", rock: "🤟", gora: "⬆️", dol: "⬇️" };
+const GEST_IKONY = { dlon: "✋", piesc: "✊", palec: "☝️", kciuk_gora: "👍", kciuk_dol: "👎", v: "✌️", rock: "🤟", gora: "⬆️", dol: "⬇️", prawo: "👉", lewo: "👈" };
 let gestT = 0;
 function pokazGest(g, opis) {
   const el = $("gest");
@@ -1199,9 +1199,10 @@ window.jarvisGest = (g) => {
     return;
   }
   wake(wakeMin);   // gest = aktywność, odsuwa wygaszanie
-  if (g === "gora" || g === "dol") {
+  // machnięcie w prawo = następna zakładka (niżej na pasku), w lewo = poprzednia (gora/dol: starsza wersja appki)
+  if (g === "prawo" || g === "lewo" || g === "gora" || g === "dol") {
     const ids = Object.keys(TABS);
-    const n = ids[(ids.indexOf(aktywna) + (g === "dol" ? 1 : -1) + ids.length) % ids.length];
+    const n = ids[(ids.indexOf(aktywna) + (g === "prawo" || g === "dol" ? 1 : -1) + ids.length) % ids.length];
     przelacz(n);
     pokazGest(g, TABS[n].tytul);
     return;
