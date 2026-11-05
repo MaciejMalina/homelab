@@ -78,7 +78,8 @@ final class Gesty implements LifecycleOwner {
     private static final long PO_DOTYKU_MS = 1500;        // ręka sięgająca do ekranu to nie machnięcie
     private static final long OKNO_MACHNIECIA_MS = 800;
     private static final long LUKA_MS = 350;              // tyle moze brakowac gestu w srodku przytrzymania
-    private static final long PRZERWA_TORU_MS = 500;      // dluzszy brak dloni = koniec ruchu
+    private static final long PRZERWA_TORU_MS = 500;
+    private static final long POWROT_MS = 1800;           // po machnieciu ruch w przeciwna strone = powrot reki, nie gest      // dluzszy brak dloni = koniec ruchu
     private static final float KIERUNEK_X = -1f;          // przednia kamera: ruch w prawo uzytkownika = x maleje
     private static final float PROG_WYNIKU = 0.5f;
     private static final float PROG_MACHNIECIA = 0.22f;   // czesc szerokosci kadru
@@ -134,6 +135,8 @@ final class Gesty implements LifecycleOwner {
     private float kandydatY = 0;
     private long ostatniaDlon = 0;
     private long kandydatOstatnio = 0;
+    private String ostatniKierunek = null;
+    private long ostatnieMachniecie = 0;
     private boolean wyslany = false;
     private final ArrayDeque<float[]> tor = new ArrayDeque<>();   // {czas ms, x, y}
 
@@ -372,6 +375,8 @@ final class Gesty implements LifecycleOwner {
                 Category c = r.gestures().get(0).get(0);
                 if (c.score() >= PROG_WYNIKU) nazwa = NAZWY.get(c.categoryName());
             }
+            // model slabo lapie kciuk w dol - gdy sie waha albo widzi piesc, sprawdzamy sami po punktach dloni
+            if ((nazwa == null || "piesc".equals(nazwa)) && kciukWDol(lm)) nazwa = "kciuk_dol";
         }
         if (y >= 0 && t - ostatniLog >= 500) {
             ostatniLog = t;
@@ -380,6 +385,28 @@ final class Gesty implements LifecycleOwner {
             Log.d(TAG, "dlon x=" + fmt(x) + " y=" + fmt(y) + " gest=" + surowy + (uspiony ? " (uspiony)" : ""));
         }
         analizuj(t, nazwa, x, y);
+    }
+
+    /** Kciuk wyraznie w dol (czubek ponizej nasady i ponizej knykcia palca wskazujacego), pozostale palce zgiete. */
+    private static boolean kciukWDol(List<NormalizedLandmark> lm) {
+        if (lm.size() < 21) return false;
+        NormalizedLandmark nadgarstek = lm.get(0);
+        NormalizedLandmark kMcp = lm.get(2);
+        NormalizedLandmark kTip = lm.get(4);
+        float dy = kTip.y() - kMcp.y();
+        if (dy < 0.06f || Math.abs(kTip.x() - kMcp.x()) > dy) return false;
+        if (kTip.y() <= lm.get(5).y()) return false;
+        int[][] palce = {{8, 6}, {12, 10}, {16, 14}, {20, 18}};   // {czubek, staw PIP}
+        for (int[] p : palce) {
+            if (odl(lm.get(p[0]), nadgarstek) > odl(lm.get(p[1]), nadgarstek) * 1.05f) return false;
+        }
+        return true;
+    }
+
+    private static float odl(NormalizedLandmark a, NormalizedLandmark b) {
+        float dx = a.x() - b.x();
+        float dy = a.y() - b.y();
+        return (float) Math.sqrt(dx * dx + dy * dy);
     }
 
     private static String fmt(float v) {
@@ -402,9 +429,17 @@ final class Gesty implements LifecycleOwner {
                 float dx = x - p[1];
                 float dy = y - p[2];
                 if (tor.size() >= 2 && Math.abs(dx) >= PROG_MACHNIECIA && Math.abs(dx) > 1.5f * Math.abs(dy)) {
+                    String kier = dx * KIERUNEK_X > 0 ? "prawo" : "lewo";
+                    if (ostatniKierunek != null && !kier.equals(ostatniKierunek) && t - ostatnieMachniecie < POWROT_MS) {
+                        Log.d(TAG, "ruch powrotny po " + ostatniKierunek + " - pomijam");
+                        tor.clear();
+                        return;
+                    }
+                    ostatniKierunek = kier;
+                    ostatnieMachniecie = t;
                     Log.d(TAG, "machniecie dx=" + fmt(dx) + " dy=" + fmt(dy) + " probek=" + tor.size());
                     kandydat = null;
-                    wyslij(dx * KIERUNEK_X > 0 ? "prawo" : "lewo", t);
+                    wyslij(kier, t);
                     return;
                 }
             } else if (t - ostatniaDlon > PRZERWA_TORU_MS) {
