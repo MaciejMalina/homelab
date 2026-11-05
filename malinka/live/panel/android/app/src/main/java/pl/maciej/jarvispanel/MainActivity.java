@@ -1,10 +1,12 @@
 package pl.maciej.jarvispanel;
 
+import android.Manifest;
 import android.app.Activity;
 import android.app.AlertDialog;
 import android.content.Intent;
 import android.content.IntentFilter;
 import android.content.SharedPreferences;
+import android.content.pm.PackageManager;
 import android.graphics.Color;
 import android.graphics.Rect;
 import android.os.BatteryManager;
@@ -28,6 +30,7 @@ import android.webkit.WebResourceRequest;
 import android.webkit.WebSettings;
 import android.webkit.WebView;
 import android.webkit.WebViewClient;
+import android.widget.CheckBox;
 import android.widget.EditText;
 import android.widget.FrameLayout;
 import android.widget.LinearLayout;
@@ -55,6 +58,8 @@ public class MainActivity extends Activity {
     private WebView web;
     private SharedPreferences prefs;
     private boolean uspiony = false;
+    private Gesty gesty;
+    private static final int PROSBA_KAMERA = 1;
 
     private final Runnable pokazUstawienia = this::ustawienia;
     private final Runnable ponow = this::zaladuj;
@@ -88,6 +93,30 @@ public class MainActivity extends Activity {
         pelnyEkran();
         zaladuj();
         h.postDelayed(przeladujOkresowo, PRZELADUJ_CO_MS);
+
+        gesty = new Gesty(this, h, this::gestDoStrony);
+        if (prefs.getBoolean("gesty", true)
+                && checkSelfPermission(Manifest.permission.CAMERA) != PackageManager.PERMISSION_GRANTED) {
+            requestPermissions(new String[]{Manifest.permission.CAMERA}, PROSBA_KAMERA);
+        }
+        gesty.ustawWlaczone(prefs.getBoolean("gesty", true));
+    }
+
+    @Override
+    public void onRequestPermissionsResult(int kod, String[] uprawnienia, int[] wyniki) {
+        super.onRequestPermissionsResult(kod, uprawnienia, wyniki);
+        if (kod == PROSBA_KAMERA && gesty != null) gesty.aktualizuj();
+    }
+
+    /** Rozpoznany gest → strona (window.jarvisGest). Gdy strona go nie obsługuje (np. ekran błędu), ✋ i tak budzi. */
+    private void gestDoStrony(String g) {
+        if (web == null) {
+            if ("dlon".equals(g) && uspiony) ustawSen(false);
+            return;
+        }
+        web.evaluateJavascript("(window.jarvisGest?(window.jarvisGest('" + g + "'),1):0)", v -> {
+            if ("0".equals(v) && "dlon".equals(g) && uspiony) ustawSen(false);
+        });
     }
 
     @Override
@@ -115,6 +144,7 @@ public class MainActivity extends Activity {
     @Override
     protected void onDestroy() {
         h.removeCallbacksAndMessages(null);
+        if (gesty != null) gesty.zamknij();
         if (web != null) web.destroy();
         super.onDestroy();
     }
@@ -201,6 +231,7 @@ public class MainActivity extends Activity {
         lp.screenBrightness = sen ? 0f : prefs.getFloat("jasnosc", WindowManager.LayoutParams.BRIGHTNESS_OVERRIDE_NONE);
         getWindow().setAttributes(lp);
         if (!sen) wybudzEkran();
+        if (gesty != null) gesty.ustawSen(sen);
     }
 
     /** Gdy ekran wyłączono przyciskiem zasilania, a JARVIS każe świecić — włącz go. */
@@ -252,6 +283,7 @@ public class MainActivity extends Activity {
         float rog = 72 * getResources().getDisplayMetrics().density;
         switch (ev.getActionMasked()) {
             case MotionEvent.ACTION_DOWN:
+                if (gesty != null) gesty.dotyk();
                 if (ev.getX() < rog && ev.getY() < rog) h.postDelayed(pokazUstawienia, PRZYTRZYMAJ_MS);
                 break;
             case MotionEvent.ACTION_MOVE:
@@ -294,6 +326,10 @@ public class MainActivity extends Activity {
         float j = prefs.getFloat("jasnosc", -1f);
         jasnosc.setText(j < 0 ? "" : String.valueOf(Math.round(j * 100)));
 
+        CheckBox gestyPole = new CheckBox(this);
+        gestyPole.setText("Gesty dłoni (przednia kamera) — teraz: " + (gesty != null ? gesty.stan() : "?"));
+        gestyPole.setChecked(prefs.getBoolean("gesty", true));
+
         TextView info = new TextView(this);
         info.setText("\nWersja " + BuildInfo.WERSJA + ". Żeby wyjść z kiosku: Ustawienia Androida → Aplikacje → "
                 + "Aplikacje domyślne → Ekran główny.");
@@ -304,6 +340,7 @@ public class MainActivity extends Activity {
         l.addView(token);
         l.addView(t3);
         l.addView(jasnosc);
+        l.addView(gestyPole);
         l.addView(info);
 
         new AlertDialog.Builder(this)
@@ -324,7 +361,12 @@ public class MainActivity extends Activity {
                             val = -1f;
                         }
                     }
-                    e.putFloat("jasnosc", val).apply();
+                    boolean g = gestyPole.isChecked();
+                    e.putFloat("jasnosc", val).putBoolean("gesty", g).apply();
+                    if (g && checkSelfPermission(Manifest.permission.CAMERA) != PackageManager.PERMISSION_GRANTED) {
+                        requestPermissions(new String[]{Manifest.permission.CAMERA}, PROSBA_KAMERA);
+                    }
+                    if (gesty != null) gesty.ustawWlaczone(g);
                     ustawSen(false);
                     zaladuj();
                 })
@@ -371,6 +413,7 @@ public class MainActivity extends Activity {
                 o.put("voltage", b.getIntExtra(BatteryManager.EXTRA_VOLTAGE, 0));
                 o.put("health", b.getIntExtra(BatteryManager.EXTRA_HEALTH, BatteryManager.BATTERY_HEALTH_UNKNOWN));
                 o.put("sleeping", uspiony);
+                o.put("kamera", gesty != null ? gesty.stan() : "brak");
             } catch (JSONException e) {
                 return "null";
             }

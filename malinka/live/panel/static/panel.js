@@ -381,7 +381,8 @@ function opisBaterii() {
   const b = bateria();
   if (!b) return ["", "przeglądarka (bez appki)"];
   const kl = b.temp > 42 ? "zle" : b.temp > 38 || (b.level < 20 && !b.plugged) ? "uwaga" : "ok";
-  return [kl, `🔋 ${b.level}% · ${Math.round(b.temp)}°C · ${STATUS_BATERII[b.status] || "?"}${b.plugged ? "" : " · bez zasilacza!"}`];
+  return [kl, `🔋 ${b.level}% · ${Math.round(b.temp)}°C · ${STATUS_BATERII[b.status] || "?"}${b.plugged ? "" : " · bez zasilacza!"}` +
+    (b.kamera ? ` · 📷 ${b.kamera}` : "")];
 }
 
 function renderJarvis(d) {
@@ -1107,6 +1108,110 @@ document.addEventListener("change", (e) => {
   const p = wyslijSuwak(r);
   if (p) p.catch((err) => toast(err.message, true)).finally(() => { blokadaRenderu = Date.now() + 800; });
 });
+
+// ================================================================== gesty dłoni (kamera w appce → window.jarvisGest)
+// Appka rozpoznaje gest na telefonie i woła window.jarvisGest(nazwa). Wszędzie: góra/dół = poprzednia/następna
+// zakładka, ✌️ = Przegląd, ✋ budzi wygaszony ekran. Reszta zależy od zakładki. Żadnych groźnych akcji
+// (usypianie serwera, wyłączanie komputera) — przypadkowy ruch ręką nie może niczego popsuć.
+const GEST_IKONY = { dlon: "✋", piesc: "✊", palec: "☝️", kciuk_gora: "👍", kciuk_dol: "👎", v: "✌️", rock: "🤟", gora: "⬆️", dol: "⬇️" };
+let gestT = 0;
+function pokazGest(g, opis) {
+  const el = $("gest");
+  el.innerHTML = `<span class="ik">${GEST_IKONY[g] || "🖐️"}</span>${opis ? `<span>${esc(opis)}</span>` : ""}`;
+  el.className = "widoczny";
+  clearTimeout(gestT); gestT = setTimeout(() => { el.className = ""; }, 1400);
+}
+function pcNaZakladce() {
+  const w = dane[aktywna] && dane[aktywna].pcs;
+  const lista = w && w.ok && Array.isArray(w.data) ? w.data : [];
+  const pc = lista.find((p) => p.id === wybranyPc);
+  if (!pc || !pc.online) { toast("Komputer offline", true); return null; }
+  return pc;
+}
+function pcGest(cmd, opis, body = {}) {
+  const pc = pcNaZakladce();
+  if (!pc) return null;
+  api(`/api/pc/${encodeURIComponent(pc.id)}/${cmd}`, "POST", body)
+    .then(() => setTimeout(odswiezTeraz, 300)).catch((e) => toast(e.message, true));
+  return opis;
+}
+function glosnoscGest(krok) {
+  const pc = pcNaZakladce();
+  if (!pc || !pc.audio) return null;
+  const v = Math.max(0, Math.min(100, (pc.audio.glosnosc || 0) + krok));
+  pc.audio.glosnosc = v;   // kolejny gest liczy od nowej wartości, zanim przyjdzie odświeżenie
+  return pcGest("audio/glosnosc", `głośność ${v}%`, { wartosc: v });
+}
+function ledGest(body, opis) {
+  const w = dane.swiatlo && dane.swiatlo.wled && dane.swiatlo.wled.ok ? dane.swiatlo.wled.data : null;
+  if (!w) { toast("Pasek LED niepodłączony", true); return null; }
+  const b = typeof body === "function" ? body(w) : body;
+  api("/api/swiatlo", "POST", b).then(() => setTimeout(odswiezTeraz, 300)).catch((e) => toast(e.message, true));
+  return typeof opis === "function" ? opis(w) : opis;
+}
+const PRZERWY = [60, 90, 120, 180, 240];
+const GESTY = {
+  przeglad: {
+    palec: () => { otworzWidok("pogoda"); return "pogoda"; },
+    piesc: () => { forcedUntil = 0; awakeUntil = 0; setTimeout(goSleep, 600); return "wygaszam"; },
+  },
+  muzyka: {
+    piesc: () => pcGest("media/toggle", "pauza / wznów"),
+    palec: () => pcGest("media/nastepny", "następny utwór"),
+    kciuk_gora: () => glosnoscGest(10),
+    kciuk_dol: () => glosnoscGest(-10),
+  },
+  pc: {
+    kciuk_gora: () => glosnoscGest(10),
+    kciuk_dol: () => glosnoscGest(-10),
+    piesc: () => pcGest("audio/wycisz", "wycisz / przywróć"),
+  },
+  discord: {
+    piesc: () => pcGest("discord/mikrofon", "mikrofon"),
+    kciuk_dol: () => pcGest("discord/sluchawki", "słuchawki"),
+  },
+  trening: {
+    piesc: () => {
+      if (minutnik.koniec) { minutnik.koniec = null; }
+      else {
+        minutnik.koniec = Date.now() + minutnik.dl * 1000; minutnik.zagrany = false;
+        try { audioCtx = audioCtx || new (window.AudioContext || window.webkitAudioContext)(); } catch (e) { /* bez dźwięku */ }
+      }
+      if (dane.trening) renderuj("trening", dane.trening, true);
+      tickMinutnik();
+      return minutnik.koniec ? `przerwa ${czasTrwania(minutnik.dl)}` : "stop";
+    },
+    palec: () => {
+      minutnik.dl = PRZERWY[(PRZERWY.indexOf(minutnik.dl) + 1) % PRZERWY.length];
+      if (dane.trening) renderuj("trening", dane.trening, true);
+      return `przerwa ${czasTrwania(minutnik.dl)}`;
+    },
+  },
+  swiatlo: {
+    piesc: () => ledGest((w) => ({ on: !w.on }), (w) => (w.on ? "wyłączam" : "włączam")),
+    kciuk_gora: () => ledGest((w) => ({ bri: Math.min(255, (w.bri || 0) + 40) }), "jaśniej"),
+    kciuk_dol: () => ledGest((w) => ({ bri: Math.max(1, (w.bri || 0) - 40) }), "ciemniej"),
+  },
+};
+window.jarvisGest = (g) => {
+  if (sleeping) {
+    if (g === "dlon") { wake(wakeMin); pokazGest(g, ""); }
+    return;
+  }
+  wake(wakeMin);   // gest = aktywność, odsuwa wygaszanie
+  if (g === "gora" || g === "dol") {
+    const ids = Object.keys(TABS);
+    const n = ids[(ids.indexOf(aktywna) + (g === "dol" ? 1 : -1) + ids.length) % ids.length];
+    przelacz(n);
+    pokazGest(g, TABS[n].tytul);
+    return;
+  }
+  if (g === "v") { przelacz("przeglad"); pokazGest(g, "Przegląd"); return; }
+  const fn = (GESTY[aktywna] || {})[g];
+  let opis = "";
+  if (fn) { try { opis = fn() || ""; } catch (e) { toast(e.message, true); } }
+  pokazGest(g, opis);
+};
 
 async function heartbeat() {
   // stan telefonu zgłasza tylko appka; zwykła przeglądarka z otwartym panelem nie może go nadpisywać

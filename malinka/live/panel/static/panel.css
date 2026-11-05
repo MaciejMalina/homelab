@@ -210,6 +210,13 @@ li.zrobione .t { text-decoration: line-through; color: var(--przyg); }
   border: 1px solid var(--ramka-jasna); padding: 9px 16px; border-radius: 12px; font-size: 13px; max-width: 80vw;
   box-shadow: var(--polysk), var(--cien); opacity: 0; transition: opacity .2s; pointer-events: none; }
 #toast.widoczny { opacity: 1; } #toast.zle { border-color: var(--zle); }
+/* znaczek rozpoznanego gestu (kamera w appce) */
+#gest { position: fixed; left: 50%; top: 42%; z-index: 40; display: flex; align-items: center; gap: 12px; padding: 12px 22px;
+  border-radius: 22px; background: rgba(20,26,44,.80); border: 1px solid var(--ramka-jasna); font-size: 18px; font-weight: 600;
+  -webkit-backdrop-filter: blur(14px); backdrop-filter: blur(14px); box-shadow: var(--polysk), var(--cien);
+  transform: translate(-50%, -50%) scale(.9); opacity: 0; transition: opacity .15s, transform .15s; pointer-events: none; }
+#gest.widoczny { opacity: 1; transform: translate(-50%, -50%) scale(1); }
+#gest .ik { font-size: 44px; line-height: 1; }
 #offline { position: fixed; left: 0; right: 0; bottom: 0; z-index: 25; background: rgba(95,18,26,.92); color: #ffd5d9; text-align: center; font-size: 12px; padding: 3px; }
 #sen { position: fixed; inset: 0; z-index: 100; background: #000; }
 

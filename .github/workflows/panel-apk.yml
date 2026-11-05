@@ -42,6 +42,13 @@ jobs:
             echo "Podpis: klucz debug (każda wersja wymaga odinstalowania poprzedniej)"
           fi
 
+      - name: Model gestów (MediaPipe Gesture Recognizer)
+        run: |
+          mkdir -p malinka/live/panel/android/app/src/main/assets
+          curl -fsSL --retry 3 -o malinka/live/panel/android/app/src/main/assets/gesture_recognizer.task \
+            https://storage.googleapis.com/mediapipe-models/gesture_recognizer/gesture_recognizer/float16/latest/gesture_recognizer.task
+          ls -l malinka/live/panel/android/app/src/main/assets
+
       - name: Build
         run: gradle --no-daemon -p malinka/live/panel/android assembleDebug
 

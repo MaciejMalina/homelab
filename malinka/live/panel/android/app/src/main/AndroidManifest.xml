@@ -3,6 +3,9 @@
 
     <uses-permission android:name="android.permission.INTERNET" />
     <uses-permission android:name="android.permission.WAKE_LOCK" />
+    <!-- gesty dłoni: przednia kamera, obraz analizowany tylko na telefonie (Gesty.java) -->
+    <uses-permission android:name="android.permission.CAMERA" />
+    <uses-feature android:name="android.hardware.camera.front" android:required="false" />
 
     <!-- usesCleartextTraffic: panel jest na http://192.168.254.10:8084 w LAN-ie -->
     <application
