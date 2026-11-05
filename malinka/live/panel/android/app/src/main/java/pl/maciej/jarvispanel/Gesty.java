@@ -19,8 +19,13 @@ import android.util.Size;
 import androidx.annotation.NonNull;
 import androidx.camera.camera2.interop.Camera2CameraInfo;
 import androidx.camera.camera2.interop.Camera2Interop;
+import androidx.camera.core.Camera;
 import androidx.camera.core.CameraInfo;
 import androidx.camera.core.CameraSelector;
+import androidx.camera.core.ExposureState;
+import androidx.camera.core.FocusMeteringAction;
+import androidx.camera.core.MeteringPoint;
+import androidx.camera.core.SurfaceOrientedMeteringPointFactory;
 import androidx.camera.core.ImageAnalysis;
 import androidx.camera.core.ImageProxy;
 import androidx.camera.core.resolutionselector.ResolutionSelector;
@@ -68,15 +73,16 @@ final class Gesty implements LifecycleOwner {
     private static final String TAG = "JarvisGesty";
     private static final String MODEL = "gesture_recognizer.task";
 
-    private static final long STABILNY_MS = 500;          // tyle trzeba trzymać gest
+    private static final long STABILNY_MS = 400;          // tyle trzeba trzymać gest
     private static final long PRZERWA_MS = 1000;          // po rozpoznaniu: przerwa na kolejny
     private static final long PO_DOTYKU_MS = 1500;        // ręka sięgająca do ekranu to nie machnięcie
     private static final long OKNO_MACHNIECIA_MS = 700;
-    private static final float PROG_WYNIKU = 0.6f;
+    private static final float PROG_WYNIKU = 0.5f;
     private static final float PROG_MACHNIECIA = 0.28f;   // część wysokości kadru
     private static final float MAX_RUCH_STATYCZNY = 0.10f;
     private static final long CO_MS_AKTYWNY = 100;        // ~10 analiz/s
     private static final long CO_MS_USPIONY = 333;        // ~3 analizy/s
+    private static final float EV_PLUS = 1.5f;            // rozjaśnienie: dłoń pod światło (okno/lampa za plecami)
     private static final long TEMP_CO_MS = 30_000;
     private static final double TEMP_STOP_USPIONY = 38.0;
     private static final double TEMP_STOP_ZAWSZE = 43.0;
@@ -110,6 +116,7 @@ final class Gesty implements LifecycleOwner {
     private volatile long ostatniaKlatka = 0;
     private volatile long przerwaDo = 0;
     private double ostatniaTemp = 0;
+    private long ostatniLog = 0;
 
     // stabilizacja — wywoływane tylko z wątku wyników MediaPipe
     private String kandydat = null;
@@ -229,9 +236,30 @@ final class Gesty implements LifecycleOwner {
         ImageAnalysis ia = b.build();
         ia.setAnalyzer(analiza, this::klatka);
         dostawca.unbindAll();
-        dostawca.bindToLifecycle(this, CameraSelector.DEFAULT_FRONT_CAMERA, ia);
+        Camera kam = dostawca.bindToLifecycle(this, CameraSelector.DEFAULT_FRONT_CAMERA, ia);
         cykl.handleLifecycleEvent(Lifecycle.Event.ON_RESUME);
-        stan = "aktywne" + (fps != null ? " (" + fps.getUpper() + " kl/s)" : "");
+        String ev = ustawEkspozycje(kam);
+        stan = "aktywne" + (fps != null ? " (" + fps.getUpper() + " kl/s" + ev + ")" : "");
+    }
+
+    /** Pod światło (jasne tło za plecami) automatyka ciemni dłoń do konturu: rozjaśniamy o EV_PLUS i mierzymy na środku kadru. */
+    private String ustawEkspozycje(Camera kam) {
+        String opis = "";
+        try {
+            ExposureState es = kam.getCameraInfo().getExposureState();
+            if (es.isExposureCompensationSupported()) {
+                float krok = es.getExposureCompensationStep().floatValue();
+                int idx = Math.min(es.getExposureCompensationRange().getUpper(), Math.round(EV_PLUS / krok));
+                kam.getCameraControl().setExposureCompensationIndex(idx);
+                opis = String.format(java.util.Locale.ROOT, ", %+.1f EV", idx * krok);
+            }
+            MeteringPoint p = new SurfaceOrientedMeteringPointFactory(1f, 1f).createPoint(0.5f, 0.5f, 0.5f);
+            kam.getCameraControl().startFocusAndMetering(
+                    new FocusMeteringAction.Builder(p, FocusMeteringAction.FLAG_AE).disableAutoCancel().build());
+        } catch (Exception e) {
+            Log.w(TAG, "ekspozycja", e);
+        }
+        return opis;
     }
 
     /** Najniższy zakres klatek przedniej kamery z górną granicą >= 10 — mniej ciepła, dłuższa ekspozycja w półmroku. */
@@ -262,9 +290,9 @@ final class Gesty implements LifecycleOwner {
                 .setBaseOptions(base)
                 .setRunningMode(RunningMode.LIVE_STREAM)
                 .setNumHands(1)
-                .setMinHandDetectionConfidence(0.5f)
-                .setMinHandPresenceConfidence(0.5f)
-                .setMinTrackingConfidence(0.5f)
+                .setMinHandDetectionConfidence(0.4f)
+                .setMinHandPresenceConfidence(0.4f)
+                .setMinTrackingConfidence(0.4f)
                 .setResultListener((wynik, obraz) -> wynik(wynik))
                 .setErrorListener(e -> Log.w(TAG, "mediapipe", e))
                 .build();
@@ -304,6 +332,12 @@ final class Gesty implements LifecycleOwner {
                 Category c = r.gestures().get(0).get(0);
                 if (c.score() >= PROG_WYNIKU) nazwa = NAZWY.get(c.categoryName());
             }
+        }
+        if (y >= 0 && t - ostatniLog >= 500) {
+            ostatniLog = t;
+            String surowy = r.gestures().isEmpty() || r.gestures().get(0).isEmpty() ? "-"
+                    : r.gestures().get(0).get(0).categoryName() + String.format(java.util.Locale.ROOT, " %.2f", r.gestures().get(0).get(0).score());
+            Log.d(TAG, "dlon y=" + String.format(java.util.Locale.ROOT, "%.2f", y) + " gest=" + surowy + (uspiony ? " (uspiony)" : ""));
         }
         analizuj(t, nazwa, y);
     }
@@ -353,6 +387,7 @@ final class Gesty implements LifecycleOwner {
     }
 
     private void wyslij(String gest, long t) {
+        Log.i(TAG, "GEST " + gest);
         przerwaDo = t + PRZERWA_MS;
         tor.clear();
         h.post(() -> odbiorca.gest(gest));
