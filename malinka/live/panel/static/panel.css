@@ -119,7 +119,7 @@ input[type=range]::-webkit-slider-thumb { -webkit-appearance: none; width: 20px;
 .suwak button { min-height: 28px; width: 32px; padding: 0; flex: none; }
 
 /* ---------------------------------------------------------------- Przegląd: pogoda | TO DO | JARVIS */
-#t-przeglad .siatka { grid-template-columns: 1.2fr 1fr 1fr; grid-template-rows: minmax(0, 1fr); grid-template-areas: "czas todo jarvis"; }
+#t-przeglad .siatka { grid-template-columns: 1.1fr 1fr 1.1fr; grid-template-rows: minmax(0, 1fr); grid-template-areas: "czas todo jarvis"; }
 #czas { grid-area: czas; overflow: hidden; } #todo { grid-area: todo; } #jarvis { grid-area: jarvis; }
 #zegar { font-size: 60px; font-weight: 200; line-height: 1; letter-spacing: -.02em; font-variant-numeric: tabular-nums;
   background: linear-gradient(180deg, #fff, #c9d8ff); -webkit-background-clip: text; background-clip: text; color: transparent; }
@@ -154,11 +154,13 @@ li.zrobione .t { text-decoration: line-through; color: var(--przyg); }
 #nowe button { min-height: 0; width: 44px; font-size: 22px; line-height: 1; padding: 0; }
 #jarvis .stany { flex: 1; min-height: 0; overflow-y: auto; scrollbar-width: none; }
 #jarvis .stany::-webkit-scrollbar { display: none; }
-#jarvis .wiersz { font-size: 13px; }
-#jarvis .wiersz .k { width: 58px; }
+#jarvis .wiersz { font-size: 12.5px; padding: 4px 0; }
+#jarvis .wiersz .k { width: 54px; }
+/* długie opisy (np. lista leżących usług w Kumie) — max 2 linie, reszta „…” */
+#jarvis .wiersz .v.zawijaj { display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden; }
 .jarvis-przyciski { margin-top: 6px; }
-.jarvis-przyciski button { min-height: 44px; }
-#pc-budzenie button { display: inline-flex; align-items: center; justify-content: center; gap: 7px; }
+.jarvis-przyciski button { min-height: 42px; font-size: 12.5px; padding: 6px 4px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+#pc-budzenie button { display: inline-flex; align-items: center; justify-content: center; gap: 6px; }
 #pc-budzenie button:disabled { opacity: .75; }
 
 /* ---------------------------------------------------------------- PC / Muzyka / Discord */
@@ -182,8 +184,8 @@ li.zrobione .t { text-decoration: line-through; color: var(--przyg); }
 .duze-przyciski button.wylaczony { border-color: rgba(255,122,133,.6); color: var(--zle); }
 
 /* ---------------------------------------------------------------- Trening */
-.tydzien { display: grid; grid-template-columns: repeat(7, 1fr); gap: 5px; flex: none; }
-.tydzien .dzien { border-radius: 13px; padding: 4px 5px; min-height: 58px; text-align: center; }
+.tydzien { display: grid; grid-template-columns: repeat(7, minmax(0, 1fr)); gap: 5px; flex: none; }
+.tydzien .dzien { border-radius: 13px; padding: 4px 5px; min-height: 58px; min-width: 0; text-align: center; }
 .tydzien .dzien.dzis { border-color: rgba(255,154,92,.7); box-shadow: var(--polysk), 0 0 12px rgba(255,154,92,.35); }
 .tydzien .dzien .d { font-size: 10px; font-weight: 700; color: var(--przyg); text-transform: uppercase; }
 .tydzien .dzien .p { font-size: 17px; line-height: 1.2; }
