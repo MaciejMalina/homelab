@@ -77,6 +77,7 @@ final class Gesty implements LifecycleOwner {
     private static final long PRZERWA_MS = 1000;          // po rozpoznaniu: przerwa na kolejny
     private static final long PO_DOTYKU_MS = 1500;        // ręka sięgająca do ekranu to nie machnięcie
     private static final long OKNO_MACHNIECIA_MS = 800;
+    private static final long LUKA_MS = 350;              // tyle moze brakowac gestu w srodku przytrzymania
     private static final long PRZERWA_TORU_MS = 500;      // dluzszy brak dloni = koniec ruchu
     private static final float KIERUNEK_X = -1f;          // przednia kamera: ruch w prawo uzytkownika = x maleje
     private static final float PROG_WYNIKU = 0.5f;
@@ -132,6 +133,7 @@ final class Gesty implements LifecycleOwner {
     private float kandydatX = 0;
     private float kandydatY = 0;
     private long ostatniaDlon = 0;
+    private long kandydatOstatnio = 0;
     private boolean wyslany = false;
     private final ArrayDeque<float[]> tor = new ArrayDeque<>();   // {czas ms, x, y}
 
@@ -414,6 +416,8 @@ final class Gesty implements LifecycleOwner {
         // gest statyczny: ten sam przez STABILNY_MS, dlon prawie w miejscu, raz na jedno pokazanie.
         // Otwarta dlon przy swiecacym ekranie nic nie robi - nie wysylamy jej (blokowalaby machniecie zaraz po niej).
         if (nazwa == null || (!uspiony && "dlon".equals(nazwa))) {
+            // krotka luka (model na chwile zgubil dlon albo dal None) nie przerywa liczenia czasu gestu
+            if (kandydat != null && t - kandydatOstatnio <= LUKA_MS) return;
             kandydat = null;
             wyslany = false;
             return;
@@ -421,11 +425,13 @@ final class Gesty implements LifecycleOwner {
         if (!nazwa.equals(kandydat)) {
             kandydat = nazwa;
             kandydatOd = t;
+            kandydatOstatnio = t;
             kandydatX = x;
             kandydatY = y;
             wyslany = false;
             return;
         }
+        kandydatOstatnio = t;
         if (wyslany) return;
         if (Math.abs(y - kandydatY) > MAX_RUCH_STATYCZNY || Math.abs(x - kandydatX) > MAX_RUCH_STATYCZNY) {
             kandydatOd = t;
