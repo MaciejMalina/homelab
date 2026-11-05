@@ -294,9 +294,10 @@ function renderPogoda(p) {
   const w = p.data, [ik, opis] = WMO[w.code] || ["🌡️", ""];
   const ikona = w.code === 0 && w.is_day === 0 ? "🌙" : ik;
   const dzis = (w.days || [])[0] || {};
-  const kolejne = (w.days || []).slice(1).map((d) => {
+  const kolejne = (w.days || []).slice(1, 5).map((d) => {
     const dz = DNI_KROTKO[new Date(d.date + "T12:00").getDay()];
-    return `<span>${dz} ${(WMO[d.code] || ["", ""])[0]} <b>${st(d.max)}</b>/${st(d.min)}${d.pp ? ` · ${d.pp}%` : ""}</span>`;
+    return `<div class="dzien-mini"><span class="dz">${dz}</span><span class="ik">${(WMO[d.code] || ["", ""])[0]}</span>` +
+      `<span class="mx">${st(d.max)}</span><span class="mn">${st(d.min)}</span><span class="pp ${d.pp >= 50 ? "mokro" : ""}">${d.pp ? d.pp + "%" : ""}</span></div>`;
   }).join("");
   el.className = "";
   el.innerHTML = `
@@ -304,17 +305,8 @@ function renderPogoda(p) {
       <div><div class="temp">${st(w.temp)}</div><div class="opis">${esc(opis)} · odczuw. ${st(w.feels)}</div></div></div>
     <div class="dni"><span>dziś <b>${st(dzis.max)}</b>/${st(dzis.min)}${dzis.pp ? ` · opady ${dzis.pp}%` : ""}</span>
       <span>wiatr ${w.wind != null ? Math.round(w.wind) : "–"} km/h</span>
-      <span>☀ ${esc(dzis.sunrise || "–")}–${esc(dzis.sunset || "–")}</span>${kolejne}</div>`;
-}
-
-function renderTreningSkrot(t) {
-  const el = $("trening-tresc");
-  if (!t || !t.ok) { el.innerHTML = `<span class="przyg">Appka trener nie odpowiada</span>`; return; }
-  const lines = t.data.lines || [];
-  el.className = "przewijane";
-  el.innerHTML = lines.length
-    ? lines.map((l) => `<div class="linia">${esc(l).replace(/\*\*(.+?)\*\*/g, "<b>$1</b>")}</div>`).join("")
-    : `<span class="przyg">Brak danych</span>`;
+      <span>☀ ${esc(dzis.sunrise || "–")}–${esc(dzis.sunset || "–")}</span></div>
+    <div class="dni-lista">${kolejne}</div>`;
 }
 
 function fmtTermin(due) {
@@ -398,11 +390,24 @@ function renderJarvis(d) {
     [m.load != null ? `load ${m.load.toFixed(2)}` : null, m.temp != null ? `${m.temp}°C` : null,
       m.mem_used_pct != null ? `RAM ${m.mem_used_pct}%` : null].filter(Boolean).join(" · ") || "działa");
   ustaw("kuma", ...opisKumy(d.kuma));
-  ustaw("panel", ...opisBaterii());
+  renderBudzeniePc(d.pcs);
   $("odswiezone").textContent = godzMin(d.now);
   // czerwona kropka na pasku: coś leży w Kumie
   const zleKuma = d.kuma && d.kuma.ok && d.kuma.data.down && d.kuma.data.down.length;
   znacznik("serwery", zleKuma);
+}
+
+// Przegląd: przycisk „Obudź” dla każdego komputera z PCS (WoL); działający komputer = zielona kropka, przycisk nieaktywny
+function renderBudzeniePc(w) {
+  const el = $("pc-budzenie");
+  const pcs = w && w.ok ? w.data : null;
+  if (!Array.isArray(pcs) || !pcs.length) { el.innerHTML = ""; return; }
+  if (el.querySelector(".potwierdz") || Date.now() < blokadaRenderu) return;
+  el.innerHTML = pcs.map((p) => {
+    const tekst = p.online ? `${esc(p.nazwa)} działa` : p.wol ? `Obudź ${esc(p.nazwa)}` : `${esc(p.nazwa)}: brak MAC`;
+    return `<button data-akcja="pc-cmd" data-pc="${esc(p.id)}" data-cmd="wol" ${p.online || !p.wol ? "disabled" : ""}>` +
+      `<span class="kropka ${p.online ? "ok" : ""}"></span>${tekst}</button>`;
+  }).join("");
 }
 
 function znacznik(tab, wlacz) {
@@ -421,7 +426,7 @@ async function loadDash() {
     const d = await api("/api/dash");
     $("offline").hidden = true;
     if (d.config && typeof d.config.wake_min === "number") wakeMin = d.config.wake_min;
-    renderPogoda(d.pogoda); renderTreningSkrot(d.trening); renderTodo(d.todo); renderJarvis(d);
+    renderPogoda(d.pogoda); renderTodo(d.todo); renderJarvis(d);
   } catch (e) { $("offline").hidden = false; }
   finally { dashTrwa = false; }
 }
@@ -1099,6 +1104,8 @@ document.addEventListener("change", (e) => {
 });
 
 async function heartbeat() {
+  // stan telefonu zgłasza tylko appka; zwykła przeglądarka z otwartym panelem nie może go nadpisywać
+  if (!B) return;
   try { await api("/api/heartbeat", "POST", { battery: bateria(), sleeping }); } catch (e) { /* offline */ }
 }
 

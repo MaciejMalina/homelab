@@ -138,7 +138,7 @@ cache = Cache()
 # --------------------------------------------------------------------------- źródła: Przegląd
 def pogoda():
     q = urllib.parse.urlencode({
-        "latitude": LAT, "longitude": LON, "timezone": "Europe/Warsaw", "forecast_days": 3,
+        "latitude": LAT, "longitude": LON, "timezone": "Europe/Warsaw", "forecast_days": 5,
         "current": "temperature_2m,apparent_temperature,weather_code,wind_speed_10m,precipitation,is_day",
         "daily": "weather_code,temperature_2m_max,temperature_2m_min,precipitation_probability_max,sunrise,sunset",
     })
@@ -509,7 +509,7 @@ def dash():
         "serwer": cache.get("serwer", 10, serwer),
         "malinka": cache.get("malinka", 30, malinka),
         "todo": cache.get("todo", 20, todo),
-        "trening": cache.get("trening", 300, trening_brief),
+        "pcs": cache.get("dash-pcs", 15, Z.pc_online),
         "panel": panel,
     }
 

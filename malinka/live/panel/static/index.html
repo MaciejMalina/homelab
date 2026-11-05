@@ -3,13 +3,12 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no, viewport-fit=cover">
-<meta name="theme-color" content="#05070a">
+<meta name="theme-color" content="#070912">
 <title>JARVIS — panel</title>
 <link rel="stylesheet" href="panel.css">
 </head>
 <body>
 <div id="szkielet">
-  <nav id="rail"></nav>
   <main id="tresc">
     <header id="naglowek"><h1 id="tytul">Przegląd</h1><div class="info" id="naglowek-info"></div><span id="zegarek">--:--</span></header>
 
@@ -21,31 +20,26 @@
           <div id="data"></div>
           <div id="pogoda" class="przyg">Pogoda…</div>
         </div>
-        <div id="trening-skrot" class="karta">
-          <h2>Trening dziś</h2>
-          <div id="trening-tresc" class="przewijane przyg">…</div>
-        </div>
         <div id="todo" class="karta">
           <h2><span>TO DO</span><span id="todo-licznik" class="prawo"></span></h2>
           <div class="przewijane" data-scroll="todo"><ul id="lista"></ul></div>
           <form id="nowe" autocomplete="off">
             <input id="nowe-tytul" placeholder="Nowe zadanie…" maxlength="300" enterkeyhint="done">
-            <button class="glowny" type="submit" aria-label="Dodaj" style="min-height:0;width:44px">＋</button>
+            <button class="glowny" type="submit" aria-label="Dodaj">+</button>
           </form>
         </div>
         <div id="jarvis" class="karta">
           <h2><span>JARVIS</span><span id="odswiezone" class="prawo"></span></h2>
-          <div class="przewijane">
+          <div class="stany">
             <div class="wiersz"><span class="kropka" id="k-serwer"></span><span class="k">Serwer</span><span class="v zawijaj" id="v-serwer">…</span></div>
             <div class="wiersz"><span class="kropka" id="k-malinka"></span><span class="k">Malinka</span><span class="v zawijaj" id="v-malinka">…</span></div>
             <div class="wiersz"><span class="kropka" id="k-kuma"></span><span class="k">Kuma</span><span class="v zawijaj" id="v-kuma">…</span></div>
-            <div class="wiersz"><span class="kropka" id="k-panel"></span><span class="k">Panel</span><span class="v zawijaj" id="v-panel">…</span></div>
           </div>
-          <div class="przyciski" style="margin-top:auto;padding-top:6px">
+          <div class="przyciski jarvis-przyciski">
             <button id="b-wake" class="glowny" data-akcja="serwer" data-cmd="wake">Obudź serwer</button>
             <button id="b-sleep" class="groznie" data-akcja="serwer" data-cmd="sleep" data-potwierdz>Uśpij serwer</button>
-            <button data-akcja="serwer" data-cmd="sync">Synchronizuj treningi</button>
-            <button data-akcja="ekran-off">Wygaś ekran</button>
+            <div id="pc-budzenie" class="przyciski pelna"></div>
+            <button class="pelna" data-akcja="ekran-off">Wygaś ekran</button>
           </div>
         </div>
       </div>
@@ -62,9 +56,10 @@
       <div id="widok-tresc"></div>
     </div>
   </main>
+  <nav id="rail"></nav>
 </div>
 
-<div id="alert" hidden><span id="alert-tekst"></span><button class="x" id="alert-x" aria-label="Zamknij">✕</button></div>
+<div id="alert" hidden><span id="alert-tekst"></span><button class="x" id="alert-x" aria-label="Zamknij">×</button></div>
 <div id="toast"></div>
 <div id="offline" hidden>Brak połączenia z malinką — ponawiam…</div>
 <div id="sen" hidden></div>

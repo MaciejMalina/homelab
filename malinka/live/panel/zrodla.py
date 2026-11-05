@@ -146,6 +146,21 @@ def pc_stan(czesci=("stan", "audio")):
     return list(pula.map(jeden, pcs)) if pcs else []
 
 
+def pc_online():
+    """Przegląd: tylko czy agent odpowiada (lekki /api/health) + czy da się obudzić (MAC w PCS)."""
+    def jeden(pc):
+        wynik = {"id": pc["id"], "nazwa": pc["nazwa"], "wol": bool(pc["mac"])}
+        try:
+            agent(pc, "/api/health", timeout=1.5)
+            wynik["online"] = True
+        except Exception:  # noqa: BLE001
+            wynik["online"] = False
+        return wynik
+
+    pcs = lista_pc()
+    return list(pula.map(jeden, pcs)) if pcs else []
+
+
 def pc_discord():
     """Dla każdego komputera: online (health) + stan Discord RPC z agenta (None, gdy RPC wyłączony lub agent starszy)."""
     def jeden(pc):
