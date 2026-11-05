@@ -724,6 +724,7 @@ RENDER.siec = (d) => {
 // ------------------------------------------------------------------ Trening + minutnik przerw
 const minutnik = { koniec: null, dl: 90, zagrany: false };
 RENDER.trening = (d) => {
+  $("naglowek-info").innerHTML = `<button class="maly" data-akcja="serwer" data-cmd="sync" data-dlugie>⟳ Synchronizuj treningi</button>`;
   const [t, et] = zrodlo(d.trening, "Trener");
   if (!t) return et + minutnikHtml();
   const tydz = `<div class="tydzien">${t.dni.map((x) => `<div class="dzien ${x.dzis ? "dzis" : ""}"><div class="d">${esc(x.dzien)} ${esc(x.date.slice(8))}</div>
