@@ -3,11 +3,13 @@ package pl.maciej.jarvispanel;
 import android.Manifest;
 import android.app.Activity;
 import android.content.Intent;
+import android.content.Context;
 import android.content.IntentFilter;
 import android.content.pm.PackageManager;
 import android.graphics.Bitmap;
 import android.hardware.camera2.CameraCharacteristics;
 import android.hardware.camera2.CaptureRequest;
+import android.hardware.display.DisplayManager;
 import android.os.BatteryManager;
 import android.os.Build;
 import android.os.Handler;
@@ -112,6 +114,13 @@ final class Gesty implements LifecycleOwner {
     private final ExecutorService analiza = Executors.newSingleThreadExecutor();
 
     private ProcessCameraProvider dostawca;
+    private ImageAnalysis analizaKamery;
+    // telefon moze sie obrocic miedzy dwoma poziomami (90/270) - obraz do modelu musi isc zawsze w pionie
+    private final DisplayManager.DisplayListener obrot = new DisplayManager.DisplayListener() {
+        @Override public void onDisplayAdded(int id) { }
+        @Override public void onDisplayRemoved(int id) { }
+        @Override public void onDisplayChanged(int id) { ustawObrot(); }
+    };
     private GestureRecognizer rozpoznawanie;
     private boolean wlaczone = false;
     private boolean dziala = false;
@@ -154,6 +163,8 @@ final class Gesty implements LifecycleOwner {
         this.odbiorca = odbiorca;
         cykl.handleLifecycleEvent(Lifecycle.Event.ON_CREATE);
         h.postDelayed(kontrolaTemp, TEMP_CO_MS);
+        DisplayManager dm = (DisplayManager) act.getSystemService(Context.DISPLAY_SERVICE);
+        if (dm != null) dm.registerDisplayListener(obrot, h);
     }
 
     @NonNull
@@ -198,6 +209,8 @@ final class Gesty implements LifecycleOwner {
 
     void zamknij() {
         h.removeCallbacks(kontrolaTemp);
+        DisplayManager dm = (DisplayManager) act.getSystemService(Context.DISPLAY_SERVICE);
+        if (dm != null) dm.unregisterDisplayListener(obrot);
         stop();
         analiza.shutdown();
         if (rozpoznawanie != null) {
@@ -249,13 +262,25 @@ final class Gesty implements LifecycleOwner {
         if (fps != null) {
             new Camera2Interop.Extender<>(b).setCaptureRequestOption(CaptureRequest.CONTROL_AE_TARGET_FPS_RANGE, fps);
         }
+        b.setTargetRotation(obrotEkranu());
         ImageAnalysis ia = b.build();
         ia.setAnalyzer(analiza, this::klatka);
+        analizaKamery = ia;
         dostawca.unbindAll();
         Camera kam = dostawca.bindToLifecycle(this, CameraSelector.DEFAULT_FRONT_CAMERA, ia);
         cykl.handleLifecycleEvent(Lifecycle.Event.ON_RESUME);
         String ev = ustawEkspozycje(kam);
         stan = "aktywne" + (fps != null ? " (" + fps.getUpper() + " kl/s" + ev + ")" : "");
+    }
+
+    @SuppressWarnings("deprecation")
+    private int obrotEkranu() {
+        return act.getWindowManager().getDefaultDisplay().getRotation();
+    }
+
+    private void ustawObrot() {
+        ImageAnalysis ia = analizaKamery;
+        if (ia != null) ia.setTargetRotation(obrotEkranu());
     }
 
     /** Pod światło (jasne tło za plecami) automatyka ciemni dłoń do konturu: rozjaśniamy o EV_PLUS i mierzymy na środku kadru. */
