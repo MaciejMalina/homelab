@@ -1,0 +1,439 @@
+package pl.maciej.jarvispanel;
+
+import android.Manifest;
+import android.app.Activity;
+import android.content.Intent;
+import android.content.pm.PackageManager;
+import android.content.res.AssetFileDescriptor;
+import android.media.AudioAttributes;
+import android.media.AudioFormat;
+import android.media.AudioManager;
+import android.media.AudioRecord;
+import android.media.MediaRecorder;
+import android.media.ToneGenerator;
+import android.os.Bundle;
+import android.os.Handler;
+import android.os.SystemClock;
+import android.speech.RecognitionListener;
+import android.speech.RecognizerIntent;
+import android.speech.SpeechRecognizer;
+import android.speech.tts.TextToSpeech;
+import android.speech.tts.UtteranceProgressListener;
+import android.util.Log;
+
+import org.tensorflow.lite.Interpreter;
+
+import java.io.FileInputStream;
+import java.io.IOException;
+import java.nio.ByteBuffer;
+import java.nio.ByteOrder;
+import java.nio.MappedByteBuffer;
+import java.nio.channels.FileChannel;
+import java.util.ArrayDeque;
+import java.util.ArrayList;
+import java.util.Locale;
+
+/**
+ * JARVIS głosem, w całości na telefonie aż do tekstu polecenia:
+ *  1. słowo-klucz „Hey Jarvis” — openWakeWord (3 małe modele TFLite: melspektrogram → embedding → hey_jarvis),
+ *     mikrofon 16 kHz, analiza co 80 ms; dźwięk nigdzie nie wychodzi,
+ *  2. po wykryciu: sygnał + rozpoznawanie mowy Google (pl-PL) — dopiero to nagranie idzie do Google,
+ *  3. tekst → strona (window.jarvisGlos) → /api/jarvis na malince → odpowiedź → mow() czyta ją na głos.
+ * Mikrofon ma jeden właściciel naraz: na czas rozpoznawania i mówienia nasłuch słowa-klucza jest zatrzymany.
+ */
+final class Glos {
+
+    interface Sluchacz {
+        void zdarzenie(String stan, String tekst);   // wake | czesciowy | tekst | blad
+    }
+
+    private static final String TAG = "JarvisGlos";
+    private static final int RATE = 16000;
+    private static final int CHUNK = 1280;            // 80 ms
+    private static final int OGON = 480;              // openWakeWord: 3 ramki kontekstu z poprzedniego kawałka
+    private static final int MEL_OKNO = 76;           // ramek melspektrogramu na jedno okno embeddingu
+    private static final int MEL_PASMA = 32;
+    private static final int EMB = 96;
+    private static final float PROG = 0.5f;           // próg słowa-klucza (domyślny w openWakeWord)
+    private static final long CZEKAJ_NA_ODPOWIEDZ_MS = 20_000;
+    private static final long MAX_MOWIENIE_MS = 90_000;
+
+    private final Activity act;
+    private final Handler h;
+    private final Sluchacz sluchacz;
+
+    private Interpreter mel;
+    private Interpreter emb;
+    private Interpreter ww;
+    private int melRamek;
+    private int wwRamek;
+    private ByteBuffer melWe;
+    private ByteBuffer melWy;
+    private ByteBuffer embWe;
+    private ByteBuffer embWy;
+    private ByteBuffer wwWe;
+    private ByteBuffer wwWy;
+    private final float[] ogon = new float[OGON];
+    private final ArrayDeque<float[]> melHist = new ArrayDeque<>();
+    private final ArrayDeque<float[]> embHist = new ArrayDeque<>();
+
+    private volatile boolean wlaczone = false;
+    private volatile boolean nasluchuje = false;
+    private Thread watek;
+    private boolean zajety = false;                   // rozpoznawanie / czekanie na odpowiedź / mówienie
+    private volatile String stan = "wyłączony";
+
+    private SpeechRecognizer rozpoznawanie;
+    private TextToSpeech tts;
+    private boolean ttsGotowy = false;
+    private ToneGenerator ton;
+
+    private final Runnable wznow = this::wznowNasluch;
+
+    Glos(Activity act, Handler h, Sluchacz sluchacz) {
+        this.act = act;
+        this.h = h;
+        this.sluchacz = sluchacz;
+        tts = new TextToSpeech(act, s -> {
+            if (s != TextToSpeech.SUCCESS) return;
+            int r = tts.setLanguage(new Locale("pl", "PL"));
+            ttsGotowy = r != TextToSpeech.LANG_MISSING_DATA && r != TextToSpeech.LANG_NOT_SUPPORTED;
+            tts.setAudioAttributes(new AudioAttributes.Builder()
+                    .setUsage(AudioAttributes.USAGE_ASSISTANT)
+                    .setContentType(AudioAttributes.CONTENT_TYPE_SPEECH).build());
+            tts.setOnUtteranceProgressListener(new UtteranceProgressListener() {
+                @Override public void onStart(String id) { }
+                @Override public void onDone(String id) { h.post(wznow); }
+                @Override public void onError(String id) { h.post(wznow); }
+            });
+        });
+    }
+
+    // ------------------------------------------------------------------ sterowanie (wątek główny)
+    void ustawWlaczone(boolean w) {
+        wlaczone = w;
+        aktualizuj();
+    }
+
+    String stan() {
+        return stan;
+    }
+
+    void aktualizuj() {
+        boolean upr = act.checkSelfPermission(Manifest.permission.RECORD_AUDIO) == PackageManager.PERMISSION_GRANTED;
+        if (!wlaczone) {
+            zatrzymajNasluch();
+            stan = "wyłączony";
+        } else if (!upr) {
+            zatrzymajNasluch();
+            stan = "brak uprawnienia do mikrofonu";
+        } else if (!zajety && !nasluchuje) {
+            startNasluch();
+        }
+    }
+
+    /** Przycisk 🎙️ na panelu — mów bez słowa-klucza. */
+    void sluchajTeraz() {
+        if (zajety) return;
+        if (act.checkSelfPermission(Manifest.permission.RECORD_AUDIO) != PackageManager.PERMISSION_GRANTED) {
+            sluchacz.zdarzenie("blad", "Brak uprawnienia do mikrofonu");
+            return;
+        }
+        rozpocznijPolecenie();
+    }
+
+    /** Odpowiedź na głos. Nasłuch słowa-klucza wraca po skończeniu mówienia (żeby JARVIS nie obudził sam siebie). */
+    void mow(String tekst) {
+        h.removeCallbacks(wznow);
+        if (!ttsGotowy || tekst == null || tekst.trim().isEmpty()) {
+            wznowNasluch();
+            return;
+        }
+        zajety = true;
+        zatrzymajNasluch();
+        stan = "mówi";
+        tts.speak(tekst, TextToSpeech.QUEUE_FLUSH, null, "jarvis-" + SystemClock.uptimeMillis());
+        h.postDelayed(wznow, MAX_MOWIENIE_MS);   // zapas, gdyby TTS nie zgłosił końca
+    }
+
+    void zamknij() {
+        h.removeCallbacks(wznow);
+        zatrzymajNasluch();
+        if (rozpoznawanie != null) rozpoznawanie.destroy();
+        if (tts != null) tts.shutdown();
+        if (ton != null) ton.release();
+        for (Interpreter i : new Interpreter[]{mel, emb, ww}) if (i != null) i.close();
+    }
+
+    // ------------------------------------------------------------------ słowo-klucz
+    private void startNasluch() {
+        try {
+            if (mel == null) wczytajModele();
+        } catch (Exception e) {
+            stan = "błąd modelu: " + e.getMessage();
+            Log.e(TAG, "modele", e);
+            return;
+        }
+        nasluchuje = true;
+        watek = new Thread(this::petla, "jarvis-nasluch");
+        watek.start();
+    }
+
+    private void zatrzymajNasluch() {
+        nasluchuje = false;
+        Thread w = watek;
+        if (w != null) {
+            try {
+                w.join(400);   // pętla oddaje mikrofon najpóźniej po jednym kawałku (80 ms)
+            } catch (InterruptedException ignored) {
+                Thread.currentThread().interrupt();
+            }
+        }
+        watek = null;
+    }
+
+    private void wznowNasluch() {
+        h.removeCallbacks(wznow);
+        zajety = false;
+        aktualizuj();
+    }
+
+    private void petla() {
+        AudioRecord ar = null;
+        try {
+            int min = AudioRecord.getMinBufferSize(RATE, AudioFormat.CHANNEL_IN_MONO, AudioFormat.ENCODING_PCM_16BIT);
+            ar = new AudioRecord(MediaRecorder.AudioSource.VOICE_RECOGNITION, RATE, AudioFormat.CHANNEL_IN_MONO,
+                    AudioFormat.ENCODING_PCM_16BIT, Math.max(min, CHUNK * 2 * 4));
+            if (ar.getState() != AudioRecord.STATE_INITIALIZED) {
+                stan = "mikrofon niedostępny";
+                return;
+            }
+            ar.startRecording();
+            stan = "nasłuchuje „Hey Jarvis”";
+            resetModelu();
+            short[] buf = new short[CHUNK];
+            float maks = 0f;
+            long ostLog = SystemClock.uptimeMillis();
+            while (nasluchuje) {
+                int n = 0;
+                while (n < CHUNK && nasluchuje) {
+                    int r = ar.read(buf, n, CHUNK - n);
+                    if (r < 0) throw new IOException("AudioRecord.read " + r);
+                    n += r;
+                }
+                if (!nasluchuje) break;
+                float s = przetworz(buf);
+                maks = Math.max(maks, s);
+                long t = SystemClock.uptimeMillis();
+                if (t - ostLog >= 10_000) {
+                    Log.d(TAG, String.format(Locale.ROOT, "10 s: max wynik %.3f", maks));
+                    maks = 0f;
+                    ostLog = t;
+                }
+                if (s >= PROG) {
+                    Log.i(TAG, String.format(Locale.ROOT, "WAKE %.3f", s));
+                    nasluchuje = false;
+                    h.post(this::poSlowieKluczu);
+                    break;
+                }
+            }
+        } catch (Exception e) {
+            stan = "błąd mikrofonu: " + e.getMessage();
+            Log.e(TAG, "petla", e);
+        } finally {
+            if (ar != null) {
+                try {
+                    ar.stop();
+                } catch (Exception ignored) {
+                    // nie nagrywał
+                }
+                ar.release();
+            }
+        }
+    }
+
+    private void poSlowieKluczu() {
+        if (zajety) return;
+        rozpocznijPolecenie();
+    }
+
+    // ------------------------------------------------------------------ polecenie (Google, pl-PL)
+    private void rozpocznijPolecenie() {
+        zajety = true;
+        zatrzymajNasluch();
+        stan = "słucha polecenia";
+        sluchacz.zdarzenie("wake", "");
+        try {
+            if (ton == null) ton = new ToneGenerator(AudioManager.STREAM_MUSIC, 70);
+            ton.startTone(ToneGenerator.TONE_PROP_BEEP, 120);
+        } catch (Exception ignored) {
+            // bez sygnału
+        }
+        h.postDelayed(this::rozpoznawaj, 200);
+    }
+
+    private void rozpoznawaj() {
+        if (!SpeechRecognizer.isRecognitionAvailable(act)) {
+            sluchacz.zdarzenie("blad", "Brak rozpoznawania mowy Google na telefonie");
+            wznowNasluch();
+            return;
+        }
+        if (rozpoznawanie == null) {
+            rozpoznawanie = SpeechRecognizer.createSpeechRecognizer(act);
+            rozpoznawanie.setRecognitionListener(new RecognitionListener() {
+                @Override public void onReadyForSpeech(Bundle p) { }
+                @Override public void onBeginningOfSpeech() { }
+                @Override public void onRmsChanged(float rms) { }
+                @Override public void onBufferReceived(byte[] b) { }
+                @Override public void onEndOfSpeech() { }
+                @Override public void onEvent(int typ, Bundle p) { }
+
+                @Override public void onPartialResults(Bundle wyniki) {
+                    String t = pierwszy(wyniki);
+                    if (!t.isEmpty()) sluchacz.zdarzenie("czesciowy", t);
+                }
+
+                @Override public void onResults(Bundle wyniki) {
+                    String t = pierwszy(wyniki);
+                    if (t.isEmpty()) {
+                        sluchacz.zdarzenie("blad", "Nie usłyszałem");
+                        wznowNasluch();
+                        return;
+                    }
+                    Log.i(TAG, "POLECENIE: " + t);
+                    stan = "czeka na odpowiedź";
+                    sluchacz.zdarzenie("tekst", t);
+                    h.removeCallbacks(wznow);
+                    h.postDelayed(wznow, CZEKAJ_NA_ODPOWIEDZ_MS);   // strona zwykle wcześniej woła mow()
+                }
+
+                @Override public void onError(int kod) {
+                    Log.w(TAG, "rozpoznawanie: blad " + kod);
+                    sluchacz.zdarzenie("blad", opisBledu(kod));
+                    wznowNasluch();
+                }
+            });
+        }
+        Intent i = new Intent(RecognizerIntent.ACTION_RECOGNIZE_SPEECH);
+        i.putExtra(RecognizerIntent.EXTRA_LANGUAGE_MODEL, RecognizerIntent.LANGUAGE_MODEL_FREE_FORM);
+        i.putExtra(RecognizerIntent.EXTRA_LANGUAGE, "pl-PL");
+        i.putExtra(RecognizerIntent.EXTRA_PARTIAL_RESULTS, true);
+        i.putExtra(RecognizerIntent.EXTRA_MAX_RESULTS, 1);
+        i.putExtra(RecognizerIntent.EXTRA_CALLING_PACKAGE, act.getPackageName());
+        rozpoznawanie.startListening(i);
+    }
+
+    private static String pierwszy(Bundle wyniki) {
+        ArrayList<String> l = wyniki == null ? null : wyniki.getStringArrayList(SpeechRecognizer.RESULTS_RECOGNITION);
+        return l == null || l.isEmpty() || l.get(0) == null ? "" : l.get(0).trim();
+    }
+
+    private static String opisBledu(int kod) {
+        switch (kod) {
+            case SpeechRecognizer.ERROR_NO_MATCH:
+            case SpeechRecognizer.ERROR_SPEECH_TIMEOUT:
+                return "Nie usłyszałem";
+            case SpeechRecognizer.ERROR_NETWORK:
+            case SpeechRecognizer.ERROR_NETWORK_TIMEOUT:
+                return "Brak internetu do rozpoznawania mowy";
+            case SpeechRecognizer.ERROR_INSUFFICIENT_PERMISSIONS:
+                return "Brak uprawnienia do mikrofonu";
+            case SpeechRecognizer.ERROR_RECOGNIZER_BUSY:
+                return "Rozpoznawanie mowy zajęte";
+            default:
+                return "Błąd rozpoznawania mowy (" + kod + ")";
+        }
+    }
+
+    // ------------------------------------------------------------------ openWakeWord (TFLite)
+    private void wczytajModele() throws IOException {
+        // melspektrogram ma wejście o zmiennej długości [1, -1] — domyślny delegat XNNPACK próbuje je przygotować
+        // przed resizeInput i pada (BytesRequired overflowed); model jest malutki, liczymy go zwyklym CPU
+        mel = wczytaj("melspectrogram.tflite", false);
+        mel.resizeInput(0, new int[]{1, OGON + CHUNK});
+        mel.allocateTensors();
+        int[] ms = mel.getOutputTensor(0).shape();     // [1, 1, ramki, 32]
+        melRamek = ms[ms.length - 2];
+        emb = wczytaj("embedding_model.tflite", true);
+        ww = wczytaj("hey_jarvis_v0.1.tflite", true);
+        wwRamek = ww.getInputTensor(0).shape()[1];     // 16 embeddingów
+        melWe = bufor(OGON + CHUNK);
+        melWy = bufor(iloczyn(ms));
+        embWe = bufor(MEL_OKNO * MEL_PASMA);
+        embWy = bufor(iloczyn(emb.getOutputTensor(0).shape()));
+        wwWe = bufor(wwRamek * EMB);
+        wwWy = bufor(iloczyn(ww.getOutputTensor(0).shape()));
+        Log.i(TAG, "modele: mel ramek/kawałek=" + melRamek + " ww ramek=" + wwRamek);
+    }
+
+    private Interpreter wczytaj(String plik, boolean xnnpack) throws IOException {
+        try (AssetFileDescriptor fd = act.getAssets().openFd(plik);
+             FileInputStream in = new FileInputStream(fd.getFileDescriptor())) {
+            MappedByteBuffer mb = in.getChannel().map(FileChannel.MapMode.READ_ONLY, fd.getStartOffset(), fd.getDeclaredLength());
+            Interpreter.Options o = new Interpreter.Options();
+            o.setNumThreads(1);
+            o.setUseXNNPACK(xnnpack);
+            return new Interpreter(mb, o);
+        }
+    }
+
+    private static ByteBuffer bufor(int floaty) {
+        return ByteBuffer.allocateDirect(floaty * 4).order(ByteOrder.nativeOrder());
+    }
+
+    private static int iloczyn(int[] s) {
+        int n = 1;
+        for (int v : s) n *= v;
+        return n;
+    }
+
+    /** Jak w openWakeWord: bufor melspektrogramu startuje z jedynek, historia embeddingów pusta. */
+    private void resetModelu() {
+        melHist.clear();
+        embHist.clear();
+        for (int i = 0; i < MEL_OKNO; i++) {
+            float[] r = new float[MEL_PASMA];
+            java.util.Arrays.fill(r, 1f);
+            melHist.addLast(r);
+        }
+        java.util.Arrays.fill(ogon, 0f);
+    }
+
+    /** Jeden kawałek 80 ms → wynik słowa-klucza 0..1 (0, dopóki historia się nie zapełni ~1,3 s). */
+    private float przetworz(short[] kawalek) {
+        melWe.rewind();
+        for (float v : ogon) melWe.putFloat(v);
+        for (short s : kawalek) melWe.putFloat(s);           // surowe wartości int16 jako float — tak uczono model
+        for (int i = 0; i < OGON; i++) ogon[i] = kawalek[CHUNK - OGON + i];
+        melWe.rewind();
+        melWy.rewind();
+        mel.run(melWe, melWy);
+        melWy.rewind();
+        for (int f = 0; f < melRamek; f++) {
+            float[] r = new float[MEL_PASMA];
+            for (int k = 0; k < MEL_PASMA; k++) r[k] = melWy.getFloat() / 10f + 2f;
+            melHist.addLast(r);
+            if (melHist.size() > MEL_OKNO) melHist.removeFirst();
+        }
+
+        embWe.rewind();
+        for (float[] r : melHist) for (float v : r) embWe.putFloat(v);
+        embWe.rewind();
+        embWy.rewind();
+        emb.run(embWe, embWy);
+        embWy.rewind();
+        float[] e = new float[EMB];
+        for (int k = 0; k < EMB; k++) e[k] = embWy.getFloat();
+        embHist.addLast(e);
+        if (embHist.size() > wwRamek) embHist.removeFirst();
+        if (embHist.size() < wwRamek) return 0f;
+
+        wwWe.rewind();
+        for (float[] r : embHist) for (float v : r) wwWe.putFloat(v);
+        wwWe.rewind();
+        wwWy.rewind();
+        ww.run(wwWe, wwWy);
+        wwWy.rewind();
+        return wwWy.getFloat();
+    }
+}

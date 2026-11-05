@@ -7,3 +7,4 @@ local.properties
 *.jks
 # model gestów MediaPipe — pobierany przy budowaniu (workflow panel-apk.yml), nie trzymamy go w repo
 app/src/main/assets/*.task
+app/src/main/assets/*.tflite

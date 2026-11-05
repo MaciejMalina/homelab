@@ -42,6 +42,7 @@ import socket
 import subprocess
 import threading
 import time
+import unicodedata
 import urllib.error
 import urllib.parse
 import urllib.request
@@ -512,6 +513,172 @@ POLECENIA_PC = re.compile(r"audio/(glosnosc|wycisz|wyjscie|aplikacja)|media/(tog
                           r"|zasilanie/(uspij|wylacz|restart|zablokuj)|discord/(mikrofon|sluchawki|rozlacz)|speedtest")
 
 
+# --------------------------------------------------------------------------- asystent głosowy: POST /api/jarvis {"tekst"}
+# Telefon („Hey Jarvis” + rozpoznawanie mowy Google) przysyła tekst polecenia. Znane komendy wykonujemy od razu,
+# resztę pytamy AI w n8n na serwerze (gdy działa). Celowo BEZ usypiania/wyłączania czegokolwiek — źle usłyszane
+# słowo nie może położyć serwera ani komputera.
+N8N_CHAT = E("N8N_CHAT", "")   # domyślnie http://SERVER_IP:N8N_PORT/webhook/chat
+ZAKLADKI_GLOS = [("przeglad", r"przeglad|glown|start"), ("dzien", r"dzien|kalendarz|plan|mail|faktur"),
+                 ("pc", r"komputer|\bpc\b"), ("muzyka", r"muzyk|piosenk|utwor"), ("discord", r"discord"),
+                 ("media", r"media|pobier|torrent|film|serial"), ("serwery", r"serwer|kontener|docker"),
+                 ("siec", r"siec|internet|router|speedtest|lacz"), ("trening", r"trening|silowni|cwicz"),
+                 ("swiatlo", r"swiatl|led")]
+
+
+def _bez_ogonkow(s):
+    """Małe litery bez polskich znaków, znak w znak (ta sama długość — indeksy pasują do oryginału)."""
+    return "".join("l" if c == "ł" else unicodedata.normalize("NFD", c)[0] for c in s.lower())
+
+
+def _stopnie(v, dopelniacz=False):
+    """Odmiana: 'Teraz 2 stopnie' (mianownik), 'od 2 stopni do 1 stopnia' (dopelniacz po od/do)."""
+    n = round(v)
+    a = abs(n)
+    if dopelniacz:
+        return f"{'minus ' if n < 0 else ''}{a} {'stopnia' if a == 1 else 'stopni'}"
+    slowo = "stopień" if a == 1 else "stopnie" if a % 10 in (2, 3, 4) and a % 100 not in (12, 13, 14) else "stopni"
+    return f"{'minus ' if n < 0 else ''}{a} {slowo}"
+
+
+def _pogoda_opis(kod):
+    if kod is None:
+        return ""
+    for od, do, opis in ((0, 0, "bezchmurnie"), (1, 1, "przeważnie pogodnie"), (2, 2, "częściowe zachmurzenie"),
+                         (3, 3, "pochmurno"), (45, 48, "mgła"), (51, 57, "mżawka"), (61, 67, "deszcz"),
+                         (71, 77, "śnieg"), (80, 82, "przelotne opady"), (85, 86, "przelotny śnieg"), (95, 99, "burza")):
+        if od <= kod <= do:
+            return opis
+    return ""
+
+
+def _godzina():
+    try:
+        from zoneinfo import ZoneInfo
+        import datetime
+        return datetime.datetime.now(ZoneInfo("Europe/Warsaw")).strftime("%H:%M")
+    except Exception:  # noqa: BLE001  brak tzdata w obrazie
+        return time.strftime("%H:%M")
+
+
+def _pc_glos():
+    """Komputer do poleceń głosowych: ten, na którym coś gra; inaczej pierwszy włączony."""
+    pcs = [p for p in Z.pc_stan(("media", "audio")) if p.get("online")]
+    if not pcs:
+        raise ValueError("żaden komputer nie jest włączony")
+    gra = [p for p in pcs if (p.get("media") or {}).get("stan") == "gra"]
+    return (gra or pcs)[0]
+
+
+def _pc_cmd(pc, cmd, body=None):
+    Z.agent(Z.pc_po_id(pc["id"]), f"/api/{cmd}", method="POST", body=body or {}, timeout=6)
+    cache.drop("pc", "muzyka")
+
+
+def _do_mowy(tekst):
+    """Odpowiedź do czytania na głos: bez znaczników markdown, najwyżej ~500 znaków (urwane na końcu zdania)."""
+    t = re.sub(r"[*_`#>|]", "", tekst or "")
+    t = re.sub(r"\s+", " ", t).strip()
+    if len(t) > 500:
+        cut = max(t.rfind(". ", 0, 500), t.rfind("! ", 0, 500), t.rfind("? ", 0, 500))
+        t = t[:cut + 1] if cut > 100 else t[:500] + "…"
+    return t
+
+
+def jarvis(tekst):
+    src = (tekst or "").strip().strip(" .!?")
+    t = _bez_ogonkow(src)
+    if not t:
+        raise ValueError("puste polecenie")
+
+    # ekran i zakładki
+    if re.search(r"\b(wygas|zgas)\w*\s+ekran|\bwylacz\w*\s+ekran", t):
+        return {"odp": "Wygaszam ekran.", "akcja": {"ekran": "sleep"}}
+    if m := re.search(r"\b(nastepn|poprzedn)\w*\s+zakladk", t):
+        return {"odp": "Już.", "akcja": {"zakladka_krok": 1 if m.group(1) == "nastepn" else -1}}
+    if m := re.search(r"\b(pokaz|otworz|przejdz do|wlacz zakladke|idz do)\s+(.+)", t):
+        for zid, wzor in ZAKLADKI_GLOS:
+            if re.search(wzor, m.group(2)):
+                return {"odp": "Już pokazuję.", "akcja": {"zakladka": zid}}
+
+    # serwer i komputery (tylko budzenie)
+    if re.search(r"\bobudz\w*\s+(serwer|server)", t):
+        akcja_wake()
+        return {"odp": "Budzę serwer. Będzie gotowy za minutę, dwie."}
+    if m := re.search(r"\bobudz\w*\s+(komputer|gaming|pc|laptop)", t):
+        pc = Z.pc_po_id("laptop" if m.group(1).startswith("laptop") else "gaming")
+        wol(pc["mac"])
+        return {"odp": f"Budzę {pc['nazwa']}."}
+
+    # lista zadań
+    if m := re.search(r"\b(dodaj|zapisz)\s+(?:mi\s+)?(?:zadanie|do listy|na liste|do zrobienia|przypomnienie)?\s*:?\s*(.+)", t):
+        tytul = src[m.start(2):m.end(2)].strip()
+        tytul = tytul[:1].upper() + tytul[1:]
+        http_json(f"{TODO_URL}/api/todos", method="POST", body={"title": tytul})
+        cache.drop("todo")
+        return {"odp": f"Dodałem do listy: {tytul}."}
+
+    # pogoda i godzina
+    if re.search(r"pogod|temperatur|ile stopni|czy (bedzie )?pada", t):
+        p = cache.get("pogoda", 900, pogoda)
+        if not p.get("ok"):
+            return {"odp": "Nie mam teraz prognozy pogody."}
+        w = p["data"]
+        dni = w.get("days") or []
+        if "jutro" in t and len(dni) > 1:
+            d = dni[1]
+            odp = f"Jutro od {_stopnie(d['min'], True)} do {_stopnie(d['max'], True)}, {_pogoda_opis(d['code'])}"
+            odp += f", szansa opadów {d['pp']} procent." if d.get("pp") else "."
+            return {"odp": odp}
+        odp = f"Teraz {_stopnie(w['temp'])}, {_pogoda_opis(w['code'])}."
+        if dni:
+            d = dni[0]
+            odp += f" Dziś od {_stopnie(d['min'], True)} do {_stopnie(d['max'], True)}"
+            odp += f", szansa opadów {d['pp']} procent." if d.get("pp") else "."
+        return {"odp": odp}
+    if re.search(r"\b(ktora|jaka) (jest )?godzin", t):
+        return {"odp": f"Jest {_godzina()}."}
+
+    # muzyka i głośność na komputerze
+    if re.search(r"\b(glosniej|ciszej|wycisz|glosnosc)", t):
+        pc = _pc_glos()
+        if "wycisz" in t:
+            _pc_cmd(pc, "audio/wycisz")
+            return {"odp": "Wyciszam."}
+        teraz_v = (pc.get("audio") or {}).get("glosnosc") or 0
+        if m := re.search(r"glosnosc\D*(\d{1,3})", t):
+            v = int(m.group(1))
+        else:
+            v = teraz_v + (10 if "glosniej" in t else -10)
+        v = max(0, min(100, v))
+        _pc_cmd(pc, "audio/glosnosc", {"wartosc": v})
+        return {"odp": f"Głośność {v} procent."}
+    if re.search(r"\b(pauza|zatrzymaj|wstrzymaj|stop)\b|\b(wznow|graj|pusc)", t):
+        _pc_cmd(_pc_glos(), "media/toggle")
+        return {"odp": "Wznawiam." if re.search(r"\b(wznow|graj|pusc)", t) else "Pauza."}
+    if re.search(r"\b(nastepn|przewin|dalej)", t):
+        _pc_cmd(_pc_glos(), "media/nastepny")
+        return {"odp": "Następny utwór."}
+    if re.search(r"\bpoprzedni", t):
+        _pc_cmd(_pc_glos(), "media/poprzedni")
+        return {"odp": "Poprzedni utwór."}
+
+    # reszta: AI w n8n na serwerze
+    if not serwer_up():
+        return {"odp": "Serwer śpi, więc nie zapytam AI. Powiedz: obudź serwer, i spróbuj za dwie minuty."}
+    url = N8N_CHAT or f"http://{SERVER_IP}:{N8N_PORT}/webhook/chat"
+    _, d = http_json(url, method="POST", body={"prompt": src}, timeout=90)
+    return {"odp": (d or {}).get("reply") or "Nie dostałem odpowiedzi od AI.", "ai": True}
+
+
+def jarvis_api(tekst):
+    try:
+        w = jarvis(tekst)
+    except Exception as e:  # noqa: BLE001  odpowiedź ma być zawsze do przeczytania
+        w = {"odp": f"Nie udało się: {e}", "blad": True}
+    w["mow"] = _do_mowy(w["odp"])
+    return w
+
+
 # --------------------------------------------------------------------------- zakładki
 def dash():
     with stan_lock:
@@ -764,6 +931,8 @@ class H(BaseHTTPRequestHandler):
             Z.wled_ustaw(b)
             cache.drop("wled")
             return self.odpowiedz(200, {"ok": True})
+        if sc == "/api/jarvis":
+            return self.odpowiedz(200, jarvis_api(b.get("tekst")))
         if sc == "/api/todo":
             st, d = http_json(f"{TODO_URL}/api/todos", method="POST",
                               body={"title": b.get("title"), "due": b.get("due")})

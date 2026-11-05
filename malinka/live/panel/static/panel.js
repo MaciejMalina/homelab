@@ -1044,6 +1044,9 @@ document.addEventListener("click", (e) => {
   switch (b.dataset.akcja) {
     case "zakladka": przelacz(b.dataset.tab); break;
     case "ekran-off": forcedUntil = 0; awakeUntil = 0; goSleep(); break;
+    case "sluchaj":
+      if (B && B.sluchaj) B.sluchaj(); else toast("Mikrofon działa tylko w appce na telefonie", true);
+      break;
     case "serwer": akcjaPost(b, `/api/serwer/${b.dataset.cmd}`); break;
     case "wybierz-pc": wybranyPc = b.dataset.pc; lsSet("pc", wybranyPc); if (dane[aktywna]) renderuj(aktywna, dane[aktywna], true); odswiezTeraz(); break;
     case "pc-cmd":
@@ -1212,6 +1215,46 @@ window.jarvisGest = (g) => {
   let opis = "";
   if (fn) { try { opis = fn() || ""; } catch (e) { toast(e.message, true); } }
   pokazGest(g, opis);
+};
+
+// ================================================================== JARVIS głosem (mikrofon w appce → window.jarvisGlos)
+// Appka: „Hey Jarvis” (albo przycisk 🎙️) → rozpoznawanie mowy Google → tutaj tekst → /api/jarvis na malince
+// → odpowiedź w dymku + B.mow() czyta ją na głos.
+let glosT = 0;
+function pokazGlos(pytanie, odp, mysli = false) {
+  const el = $("glos");
+  el.innerHTML = `<div class="pyt">🎙️ ${esc(pytanie)}</div>` +
+    (mysli ? `<div class="odp przyg">JARVIS myśli…</div>` : odp ? `<div class="odp">${esc(odp)}</div>` : "");
+  el.hidden = false;
+  clearTimeout(glosT);
+}
+function schowajGlos(poMs) {
+  clearTimeout(glosT);
+  glosT = setTimeout(() => { $("glos").hidden = true; }, poMs);
+}
+async function zapytajJarvisa(tekst) {
+  pokazGlos(tekst, null, true);
+  let r;
+  try { r = await api("/api/jarvis", "POST", { tekst }); }
+  catch (e) { r = { odp: "Nie mogę połączyć się z malinką: " + e.message, mow: "Nie mogę połączyć się z malinką." }; }
+  wake(wakeMin);
+  pokazGlos(tekst, r.odp);
+  if (B && B.mow) try { B.mow(r.mow || r.odp); } catch (e) { /* stara appka */ }
+  const a = r.akcja || {};
+  if (a.zakladka) przelacz(a.zakladka);
+  if (a.zakladka_krok) {
+    const ids = Object.keys(TABS);
+    przelacz(ids[(ids.indexOf(aktywna) + a.zakladka_krok + ids.length) % ids.length]);
+  }
+  if (a.ekran === "sleep") setTimeout(() => { $("glos").hidden = true; forcedUntil = 0; awakeUntil = 0; goSleep(); }, 2500);
+  setTimeout(odswiezTeraz, 800);
+  schowajGlos(Math.min(40000, 6000 + (r.odp || "").length * 60));
+}
+window.jarvisGlos = (stan, tekst) => {
+  if (stan === "wake") { wake(wakeMin); pokazGlos("Słucham…"); return; }
+  if (stan === "czesciowy") { wake(wakeMin); pokazGlos(tekst + "…"); return; }
+  if (stan === "tekst") { zapytajJarvisa(tekst); return; }
+  if (stan === "blad") { pokazGlos(tekst || "Nie usłyszałem"); schowajGlos(2500); }
 };
 
 async function heartbeat() {

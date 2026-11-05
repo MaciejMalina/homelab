@@ -217,6 +217,14 @@ li.zrobione .t { text-decoration: line-through; color: var(--przyg); }
   transform: translate(-50%, -50%) scale(.9); opacity: 0; transition: opacity .15s, transform .15s; pointer-events: none; }
 #gest.widoczny { opacity: 1; transform: translate(-50%, -50%) scale(1); }
 #gest .ik { font-size: 44px; line-height: 1; }
+/* dymek rozmowy z JARVIS-em (mikrofon w appce) */
+#glos { position: fixed; left: 50%; bottom: 14px; transform: translateX(-50%); z-index: 35; width: min(640px, 72vw);
+  max-height: 60vh; overflow-y: auto; scrollbar-width: none; padding: 12px 16px; border-radius: 20px;
+  background: rgba(16,22,40,.88); border: 1px solid rgba(92,200,255,.45); -webkit-backdrop-filter: blur(16px); backdrop-filter: blur(16px);
+  box-shadow: var(--polysk), 0 10px 30px rgba(0,0,0,.45), 0 0 22px rgba(92,200,255,.18); }
+#glos::-webkit-scrollbar { display: none; }
+#glos .pyt { font-size: 15px; font-weight: 600; color: #d8e7ff; }
+#glos .odp { font-size: 15px; margin-top: 6px; line-height: 1.4; white-space: pre-wrap; }
 #offline { position: fixed; left: 0; right: 0; bottom: 0; z-index: 25; background: rgba(95,18,26,.92); color: #ffd5d9; text-align: center; font-size: 12px; padding: 3px; }
 #sen { position: fixed; inset: 0; z-index: 100; background: #000; }
 

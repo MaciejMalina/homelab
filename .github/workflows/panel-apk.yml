@@ -42,11 +42,19 @@ jobs:
             echo "Podpis: klucz debug (każda wersja wymaga odinstalowania poprzedniej)"
           fi
 
-      - name: Model gestów (MediaPipe Gesture Recognizer)
+      - name: Modele (gesty MediaPipe + Hey Jarvis openWakeWord)
         run: |
           mkdir -p malinka/live/panel/android/app/src/main/assets
           curl -fsSL --retry 3 -o malinka/live/panel/android/app/src/main/assets/gesture_recognizer.task \
             https://storage.googleapis.com/mediapipe-models/gesture_recognizer/gesture_recognizer/float16/latest/gesture_recognizer.task
+          for m in melspectrogram embedding_model hey_jarvis_v0.1; do
+            curl -fsSL --retry 3 -o malinka/live/panel/android/app/src/main/assets/$m.tflite \
+              https://github.com/dscripka/openWakeWord/releases/download/v0.5.1/$m.tflite
+          done
+          # melspektrogram: stała długość wejścia 1760 (80 ms + kontekst) — patrz narzedzia/melspec_dlugosc.py
+          pip install --quiet tflite
+          python malinka/live/panel/android/narzedzia/melspec_dlugosc.py \
+            malinka/live/panel/android/app/src/main/assets/melspectrogram.tflite 1760
           ls -l malinka/live/panel/android/app/src/main/assets
 
       - name: Build

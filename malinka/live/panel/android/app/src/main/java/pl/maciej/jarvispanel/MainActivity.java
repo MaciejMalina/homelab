@@ -59,6 +59,7 @@ public class MainActivity extends Activity {
     private SharedPreferences prefs;
     private boolean uspiony = false;
     private Gesty gesty;
+    private Glos glos;
     private static final int PROSBA_KAMERA = 1;
 
     private final Runnable pokazUstawienia = this::ustawienia;
@@ -95,17 +96,38 @@ public class MainActivity extends Activity {
         h.postDelayed(przeladujOkresowo, PRZELADUJ_CO_MS);
 
         gesty = new Gesty(this, h, this::gestDoStrony);
-        if (prefs.getBoolean("gesty", true)
-                && checkSelfPermission(Manifest.permission.CAMERA) != PackageManager.PERMISSION_GRANTED) {
-            requestPermissions(new String[]{Manifest.permission.CAMERA}, PROSBA_KAMERA);
-        }
+        glos = new Glos(this, h, this::glosDoStrony);
+        poprosOUprawnienia();
         gesty.ustawWlaczone(prefs.getBoolean("gesty", true));
+        glos.ustawWlaczone(prefs.getBoolean("glos", true));
     }
 
     @Override
     public void onRequestPermissionsResult(int kod, String[] uprawnienia, int[] wyniki) {
         super.onRequestPermissionsResult(kod, uprawnienia, wyniki);
-        if (kod == PROSBA_KAMERA && gesty != null) gesty.aktualizuj();
+        if (kod == PROSBA_KAMERA) {
+            if (gesty != null) gesty.aktualizuj();
+            if (glos != null) glos.aktualizuj();
+        }
+    }
+
+    /** Kamera (gesty) i mikrofon (Hey Jarvis) — jedna prośba o oba, tylko o te włączone i jeszcze nienadane. */
+    private void poprosOUprawnienia() {
+        java.util.ArrayList<String> brak = new java.util.ArrayList<>();
+        if (prefs.getBoolean("gesty", true) && checkSelfPermission(Manifest.permission.CAMERA) != PackageManager.PERMISSION_GRANTED) {
+            brak.add(Manifest.permission.CAMERA);
+        }
+        if (prefs.getBoolean("glos", true) && checkSelfPermission(Manifest.permission.RECORD_AUDIO) != PackageManager.PERMISSION_GRANTED) {
+            brak.add(Manifest.permission.RECORD_AUDIO);
+        }
+        if (!brak.isEmpty()) requestPermissions(brak.toArray(new String[0]), PROSBA_KAMERA);
+    }
+
+    /** Zdarzenie głosowe → strona (window.jarvisGlos). Bez strony (ekran błędu) przynajmniej zapal ekran. */
+    private void glosDoStrony(String stan, String tekst) {
+        if ("wake".equals(stan) && uspiony) ustawSen(false);
+        if (web == null) return;
+        web.evaluateJavascript("window.jarvisGlos&&window.jarvisGlos(" + JSONObject.quote(stan) + "," + JSONObject.quote(tekst) + ")", null);
     }
 
     /** Rozpoznany gest → strona (window.jarvisGest). Gdy strona go nie obsługuje (np. ekran błędu), ✋ i tak budzi. */
@@ -145,6 +167,7 @@ public class MainActivity extends Activity {
     protected void onDestroy() {
         h.removeCallbacksAndMessages(null);
         if (gesty != null) gesty.zamknij();
+        if (glos != null) glos.zamknij();
         if (web != null) web.destroy();
         super.onDestroy();
     }
@@ -330,6 +353,10 @@ public class MainActivity extends Activity {
         gestyPole.setText("Gesty dłoni (przednia kamera) — teraz: " + (gesty != null ? gesty.stan() : "?"));
         gestyPole.setChecked(prefs.getBoolean("gesty", true));
 
+        CheckBox glosPole = new CheckBox(this);
+        glosPole.setText("Hey Jarvis (mikrofon) — teraz: " + (glos != null ? glos.stan() : "?"));
+        glosPole.setChecked(prefs.getBoolean("glos", true));
+
         TextView info = new TextView(this);
         info.setText("\nWersja " + BuildInfo.WERSJA + ". Żeby wyjść z kiosku: Ustawienia Androida → Aplikacje → "
                 + "Aplikacje domyślne → Ekran główny.");
@@ -341,6 +368,7 @@ public class MainActivity extends Activity {
         l.addView(t3);
         l.addView(jasnosc);
         l.addView(gestyPole);
+        l.addView(glosPole);
         l.addView(info);
 
         new AlertDialog.Builder(this)
@@ -362,11 +390,11 @@ public class MainActivity extends Activity {
                         }
                     }
                     boolean g = gestyPole.isChecked();
-                    e.putFloat("jasnosc", val).putBoolean("gesty", g).apply();
-                    if (g && checkSelfPermission(Manifest.permission.CAMERA) != PackageManager.PERMISSION_GRANTED) {
-                        requestPermissions(new String[]{Manifest.permission.CAMERA}, PROSBA_KAMERA);
-                    }
+                    boolean gl = glosPole.isChecked();
+                    e.putFloat("jasnosc", val).putBoolean("gesty", g).putBoolean("glos", gl).apply();
+                    poprosOUprawnienia();
                     if (gesty != null) gesty.ustawWlaczone(g);
+                    if (glos != null) glos.ustawWlaczone(gl);
                     ustawSen(false);
                     zaladuj();
                 })
@@ -382,6 +410,18 @@ public class MainActivity extends Activity {
         @JavascriptInterface
         public void setSleep(boolean sen) {
             h.post(() -> ustawSen(sen));
+        }
+
+        /** Strona: przeczytaj odpowiedź JARVIS-a na głos. */
+        @JavascriptInterface
+        public void mow(String tekst) {
+            h.post(() -> { if (glos != null) glos.mow(tekst); });
+        }
+
+        /** Strona: przycisk 🎙️ — słuchaj polecenia bez słowa-klucza. */
+        @JavascriptInterface
+        public void sluchaj() {
+            h.post(() -> { if (glos != null) glos.sluchajTeraz(); });
         }
 
         @JavascriptInterface
@@ -414,6 +454,7 @@ public class MainActivity extends Activity {
                 o.put("health", b.getIntExtra(BatteryManager.EXTRA_HEALTH, BatteryManager.BATTERY_HEALTH_UNKNOWN));
                 o.put("sleeping", uspiony);
                 o.put("kamera", gesty != null ? gesty.stan() : "brak");
+                o.put("mikrofon", glos != null ? glos.stan() : "brak");
             } catch (JSONException e) {
                 return "null";
             }
