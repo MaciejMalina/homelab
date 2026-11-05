@@ -380,15 +380,30 @@ class Szyna:
 szyna = Szyna()
 
 
+def wake_min():
+    """Po ilu minutach bez dotyku ekran gaśnie: ustawione z Discorda (/ekran auto minuty:N, trzymane w pamiec.json),
+    a gdy nie ustawiono — WAKE_MIN z .env."""
+    try:
+        v = float(Z.pamiec_get("wake_min", WAKE_MIN))
+        return v if 0 < v <= 240 else WAKE_MIN
+    except (TypeError, ValueError):
+        return WAKE_MIN
+
+
 def stan_ekranu():
     with stan_lock:
         s = dict(EKRAN)
-    return {**s, "now": teraz(), "wake_min": WAKE_MIN}
+    return {**s, "now": teraz(), "wake_min": wake_min()}
 
 
 def ustaw_ekran(mode, minutes=None):
     if mode not in ("on", "sleep", "auto"):
         raise ValueError("mode: on | sleep | auto")
+    if mode == "auto" and minutes not in (None, ""):
+        m = float(minutes)
+        if not 0.5 <= m <= 240:
+            raise ValueError("minutes przy auto: 0.5..240 (po ilu minutach bez dotyku ekran gaśnie)")
+        Z.pamiec_set("wake_min", m)
     until = 0
     if mode == "on":
         m = float(minutes) if minutes not in (None, "") else 0
@@ -503,7 +518,7 @@ def dash():
         panel = dict(PANEL)
     return {
         "now": teraz(),
-        "config": {"wake_min": WAKE_MIN},
+        "config": {"wake_min": wake_min()},
         "pogoda": cache.get("pogoda", 900, pogoda),
         "kuma": cache.get("kuma", 30, kuma),
         "serwer": cache.get("serwer", 10, serwer),

@@ -145,7 +145,11 @@ document.addEventListener("pointerdown", () => { if (!sleeping) wake(wakeMin); }
 document.addEventListener("keydown", () => { if (!sleeping) wake(wakeMin); }, true);
 
 function zastosujEkran(s) {
-  if (typeof s.wake_min === "number") wakeMin = s.wake_min;
+  if (typeof s.wake_min === "number" && s.wake_min !== wakeMin) {
+    // nowy czas wygaszania z /ekran auto minuty:N — obowiązuje od razu (krótszy skraca bieżące odliczanie)
+    wakeMin = s.wake_min;
+    awakeUntil = Math.min(awakeUntil, Date.now() + wakeMin * 60e3);
+  }
   if (s.ver !== screenVer) {
     const pierwszy = screenVer === null;
     screenVer = s.ver;

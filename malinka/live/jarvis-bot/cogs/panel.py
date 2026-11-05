@@ -75,21 +75,30 @@ class Panel(commands.Cog):
 
     @app_commands.command(name="ekran", description="Włącza albo wygasza ekran panelu (telefon)")
     @app_commands.describe(stan="włącz / wygaś / auto (dotyk budzi, potem gaśnie)",
-                           minuty="Na ile minut włączyć (0 = do odwołania); tylko przy 'włącz'")
+                           minuty="włącz: na ile minut (domyślnie 10, 0 = do odwołania); "
+                                  "auto: po ilu minutach bez dotyku gaśnie (zapamiętane)")
     @app_commands.choices(stan=[
         app_commands.Choice(name="włącz", value="on"),
         app_commands.Choice(name="wygaś", value="sleep"),
         app_commands.Choice(name="auto", value="auto"),
     ])
     @app_commands.default_permissions(administrator=True)
-    async def ekran(self, interaction: discord.Interaction, stan: app_commands.Choice[str], minuty: int = 10):
+    async def ekran(self, interaction: discord.Interaction, stan: app_commands.Choice[str],
+                    minuty: app_commands.Range[int, 0, 1440] | None = None):
+        if stan.value == "on":
+            minuty = 10 if minuty is None else minuty
+        elif stan.value == "auto" and minuty == 0:
+            await interaction.response.send_message("❌ Przy 'auto' minuty muszą być ≥ 1 (po tylu minutach bez dotyku ekran gaśnie)",
+                                                    ephemeral=True)
+            return
         try:
-            await self.api("/api/screen", {"mode": stan.value, "minutes": minuty if stan.value == "on" else None})
+            await self.api("/api/screen", {"mode": stan.value, "minutes": minuty if stan.value in ("on", "auto") else None})
         except Exception as e:  # noqa: BLE001
             await interaction.response.send_message(f"❌ Panel nie odpowiada: {e}", ephemeral=True)
             return
         opis = {"on": f"włączony{f' na {minuty} min' if minuty else ' do odwołania'}",
-                "sleep": "wygaszony", "auto": "w trybie auto"}[stan.value]
+                "sleep": "wygaszony",
+                "auto": f"w trybie auto — gaśnie po {minuty} min bez dotyku" if minuty else "w trybie auto"}[stan.value]
         await interaction.response.send_message(f"📱 Ekran panelu {opis}", ephemeral=True)
 
     @app_commands.command(name="panel_alert", description="Wyświetla komunikat na panelu i zapala ekran")
