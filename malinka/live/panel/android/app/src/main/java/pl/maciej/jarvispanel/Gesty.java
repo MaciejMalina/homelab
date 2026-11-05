@@ -83,7 +83,7 @@ final class Gesty implements LifecycleOwner {
     private static final long PRZERWA_TORU_MS = 500;
     private static final long POWROT_MS = 1800;
     private static final boolean MACHNIECIA = false;      // machniecia w powietrzu zawodne (powrot reki) - zakladki zmienia wskazanie palcem w bok           // po machnieciu ruch w przeciwna strone = powrot reki, nie gest      // dluzszy brak dloni = koniec ruchu
-    private static final float KIERUNEK_X = -1f;          // przednia kamera: ruch w prawo uzytkownika = x maleje
+    private static final float KIERUNEK_X = 1f;           // sprawdzone na telefonie: wskazanie w prawo uzytkownika = x rosnie
     private static final float PROG_WYNIKU = 0.6f;
     private static final float PROG_MACHNIECIA = 0.22f;   // czesc szerokosci kadru
     private static final float MAX_RUCH_STATYCZNY = 0.10f;
@@ -440,7 +440,11 @@ final class Gesty implements LifecycleOwner {
         NormalizedLandmark kTip = lm.get(4);
         float dy = kTip.y() - kMcp.y();
         if (dy < 0.06f || Math.abs(kTip.x() - kMcp.x()) > dy) return false;
-        if (kTip.y() <= lm.get(5).y()) return false;
+        // kciuk WYPROSTOWANY (w piesci jest zawiniety i krotki) ...
+        if (odl(kTip, kMcp) < 0.8f * odl(nadgarstek, lm.get(5))) return false;
+        // ... i wyraznie ponizej WSZYSTKICH knykci (w piesci lezy na wysokosci palcow)
+        float najnizszyKnykiec = Math.max(Math.max(lm.get(5).y(), lm.get(9).y()), Math.max(lm.get(13).y(), lm.get(17).y()));
+        if (kTip.y() < najnizszyKnykiec + 0.03f) return false;
         int[][] palce = {{8, 6}, {12, 10}, {16, 14}, {20, 18}};   // {czubek, staw PIP}
         for (int[] p : palce) {
             if (odl(lm.get(p[0]), nadgarstek) > odl(lm.get(p[1]), nadgarstek) * 1.05f) return false;
