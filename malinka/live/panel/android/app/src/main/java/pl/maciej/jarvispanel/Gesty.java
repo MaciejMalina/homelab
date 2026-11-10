@@ -94,6 +94,9 @@ final class Gesty implements LifecycleOwner {
     private static final double TEMP_STOP_USPIONY = 38.0;
     private static final double TEMP_STOP_ZAWSZE = 43.0;
     private static final double TEMP_WZNOW = 36.0;
+    private static final long BRAK_KLATEK_MS = 15_000;   // kamera "podpieta", a klatek brak = system ja odebral
+    private static final int PROB_DO_RESTARTU = 3;         // tyle nieudanych podpiec przy appce na wierzchu -> restart procesu
+    private static final long RESTART_NIE_CZESCIEJ_MS = 30 * 60_000L;
 
     private static final Map<String, String> NAZWY = new HashMap<>();
 
@@ -123,6 +126,8 @@ final class Gesty implements LifecycleOwner {
     };
     private GestureRecognizer rozpoznawanie;
     private boolean wlaczone = false;
+    private boolean widoczna = true;   // appka na wierzchu (onStart..onStop); w tle Android i tak odbiera kamere
+    private int nieudanePodpiecia = 0;
     private boolean dziala = false;
     private boolean pauzaTermiczna = false;
     private volatile boolean uspiony = false;
@@ -153,6 +158,7 @@ final class Gesty implements LifecycleOwner {
     private final Runnable kontrolaTemp = new Runnable() {
         @Override public void run() {
             sprawdzTemperature();
+            sprawdzKamere();
             h.postDelayed(this, TEMP_CO_MS);
         }
     };
@@ -179,6 +185,13 @@ final class Gesty implements LifecycleOwner {
         aktualizuj();
     }
 
+    /** onStart/onStop aktywnosci: w tle sami zamykamy kamere, zanim system ja zablokuje (po blokadzie CameraX nie wraca). */
+    void ustawWidoczna(boolean w) {
+        widoczna = w;
+        nieudanePodpiecia = 0;
+        aktualizuj();
+    }
+
     void ustawSen(boolean sen) {
         uspiony = sen;   // historia ruchu czyści się sama w wątku wyników (przy uśpieniu nie liczymy machnięć)
         sprawdzTemperature();
@@ -199,12 +212,48 @@ final class Gesty implements LifecycleOwner {
 
     void aktualizuj() {
         boolean uprawnienie = act.checkSelfPermission(Manifest.permission.CAMERA) == PackageManager.PERMISSION_GRANTED;
-        boolean powinno = wlaczone && uprawnienie && !pauzaTermiczna;
+        boolean powinno = wlaczone && uprawnienie && !pauzaTermiczna && widoczna;
         if (powinno && !dziala) start();
         else if (!powinno && dziala) stop();
         if (!wlaczone) stan = "wyłączone";
+        else if (!widoczna) stan = "pauza: appka w tle";
         else if (!uprawnienie) stan = "brak uprawnienia do kamery";
         else if (pauzaTermiczna) stan = String.format(java.util.Locale.ROOT, "pauza: bateria %.1f°C", ostatniaTemp);
+    }
+
+    /** Straznik: Android zabiera kamere appce w tle i CameraX jej sam nie odzyskuje - brak klatek = podpinamy od nowa. */
+    private void sprawdzKamere() {
+        if (!dziala || dostawca == null) return;
+        long teraz = SystemClock.uptimeMillis();
+        if (teraz - ostatniaKlatka < BRAK_KLATEK_MS) {
+            nieudanePodpiecia = 0;
+            return;
+        }
+        if (++nieudanePodpiecia > PROB_DO_RESTARTU) {
+            restartProcesu();
+            return;
+        }
+        Log.w(TAG, "brak klatek od " + (teraz - ostatniaKlatka) + " ms - podpinam kamere od nowa (proba " + nieudanePodpiecia + ")");
+        try {
+            podepnijKamere();
+        } catch (Exception e) {
+            stan = "błąd kamery: " + e.getMessage();
+            Log.e(TAG, "ponowne podpiecie", e);
+        }
+    }
+
+    /** CameraX potrafi utknac po ERROR_CAMERA_DISABLED (stan REOPENING) - pomaga tylko nowy proces. Appka jest ekranem
+     *  glownym, wiec system sam ja uruchomi od nowa. Najwyzej raz na RESTART_NIE_CZESCIEJ_MS, zeby nie krecic petli. */
+    private void restartProcesu() {
+        android.content.SharedPreferences p = act.getSharedPreferences("jarvis_gesty", Context.MODE_PRIVATE);
+        long teraz = System.currentTimeMillis();
+        if (teraz - p.getLong("restart", 0) < RESTART_NIE_CZESCIEJ_MS) {
+            stan = "kamera nie wraca - uruchom appkę ponownie";
+            return;
+        }
+        p.edit().putLong("restart", teraz).commit();
+        Log.e(TAG, "kamera nie wraca po " + PROB_DO_RESTARTU + " probach - restart procesu");
+        android.os.Process.killProcess(android.os.Process.myPid());
     }
 
     void zamknij() {
@@ -251,6 +300,7 @@ final class Gesty implements LifecycleOwner {
     }
 
     private void podepnijKamere() {
+        ostatniaKlatka = SystemClock.uptimeMillis();   // start odliczania dla straznika (sprawdzKamere)
         ImageAnalysis.Builder b = new ImageAnalysis.Builder()
                 .setResolutionSelector(new ResolutionSelector.Builder()
                         .setResolutionStrategy(new ResolutionStrategy(new Size(320, 240),

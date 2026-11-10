@@ -142,6 +142,18 @@ public class MainActivity extends Activity {
     }
 
     @Override
+    protected void onStart() {
+        super.onStart();
+        if (gesty != null) gesty.ustawWidoczna(true);
+    }
+
+    @Override
+    protected void onStop() {
+        if (gesty != null) gesty.ustawWidoczna(false);
+        super.onStop();
+    }
+
+    @Override
     protected void onResume() {
         super.onResume();
         pelnyEkran();
