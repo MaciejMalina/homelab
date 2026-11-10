@@ -438,6 +438,7 @@ async function loadDash() {
 
 // ================================================================== wspólne: wybór komputera
 let wybranyPc = lsGet("pc") || "";
+let pcRecznieDo = 0;   // świeży wybór chipem wygrywa z automatem (np. podgląd wyłączonego laptopa, żeby go obudzić)
 function chipyPc(pcs, opisFn) {
   $("naglowek-info").innerHTML = `<div class="chipy">${pcs.map((p) =>
     `<button class="chip ${p.id === wybranyPc ? "aktywny" : ""}" data-akcja="wybierz-pc" data-pc="${esc(p.id)}">` +
@@ -445,8 +446,10 @@ function chipyPc(pcs, opisFn) {
 }
 function wybierzPc(pcs, preferuj) {
   let pc = pcs.find((p) => p.id === wybranyPc);
-  if (preferuj) pc = pcs.find(preferuj) || pc;
-  if (!pc || (!pc.online && pcs.some((p) => p.online))) pc = pcs.find((p) => p.online) || pc || pcs[0];
+  if (!pc || Date.now() >= pcRecznieDo) {
+    if (preferuj) pc = pcs.find(preferuj) || pc;
+    if (!pc || (!pc.online && pcs.some((p) => p.online))) pc = pcs.find((p) => p.online) || pc || pcs[0];
+  }
   if (pc) wybranyPc = pc.id;
   return pc;
 }
@@ -1048,7 +1051,7 @@ document.addEventListener("click", (e) => {
       if (B && B.sluchaj) B.sluchaj(); else toast("Mikrofon działa tylko w appce na telefonie", true);
       break;
     case "serwer": akcjaPost(b, `/api/serwer/${b.dataset.cmd}`); break;
-    case "wybierz-pc": wybranyPc = b.dataset.pc; lsSet("pc", wybranyPc); if (dane[aktywna]) renderuj(aktywna, dane[aktywna], true); odswiezTeraz(); break;
+    case "wybierz-pc": wybranyPc = b.dataset.pc; pcRecznieDo = Date.now() + 10 * 60 * 1000; lsSet("pc", wybranyPc); if (dane[aktywna]) renderuj(aktywna, dane[aktywna], true); odswiezTeraz(); break;
     case "pc-cmd":
       akcjaPost(b, `/api/pc/${encodeURIComponent(b.dataset.pc)}/${b.dataset.cmd}`, body, (r) => {
         if (b.dataset.cmd === "speedtest") { wynikiSpeedPc[b.dataset.pc] = r; toast(`PC: ↓ ${r.pobieranieMbps} · ↑ ${r.wysylanieMbps} Mb/s`); }

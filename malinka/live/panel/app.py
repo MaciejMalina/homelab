@@ -600,14 +600,23 @@ def jarvis(tekst):
             if re.search(wzor, m.group(2)):
                 return {"odp": "Już pokazuję.", "akcja": {"zakladka": zid}}
 
-    # serwer i komputery (tylko budzenie)
-    if re.search(r"\bobudz\w*\s+(serwer|server)", t):
+    # serwer i komputery (tylko włączanie = WoL; „obudź” zostaje jako stara forma)
+    if re.search(r"\b(wlacz|uruchom|odpal|obudz)\w*\s+(serwer|server)", t):
         akcja_wake()
-        return {"odp": "Budzę serwer. Będzie gotowy za minutę, dwie."}
-    if m := re.search(r"\bobudz\w*\s+(komputer|gaming|pc|laptop)", t):
-        pc = Z.pc_po_id("laptop" if m.group(1).startswith("laptop") else "gaming")
+        return {"odp": "Włączam serwer. Będzie gotowy za minutę, dwie."}
+    if m := re.search(r"\b(wlacz|uruchom|odpal|obudz)\w*\s+(komp\w*|gaming|pc|laptop)", t):
+        laptop = m.group(2).startswith("laptop")
+        pc = Z.pc_po_id("laptop" if laptop else "gaming")
+        kto = "laptop" if laptop else "komputer"
+        try:
+            Z.agent(pc, "/api/health", timeout=1.5)
+            return {"odp": f"{kto.capitalize()} już działa."}
+        except Exception:  # noqa: BLE001 - nie odpowiada = wyłączony, budzimy
+            pass
+        if not pc["mac"]:
+            return {"odp": f"Nie mam adresu MAC dla {pc['nazwa']}, nie włączę go zdalnie."}
         wol(pc["mac"])
-        return {"odp": f"Budzę {pc['nazwa']}."}
+        return {"odp": f"Włączam {kto}. Za chwilę powinien wstać."}
 
     # lista zadań
     if m := re.search(r"\b(dodaj|zapisz)\s+(?:mi\s+)?(?:zadanie|do listy|na liste|do zrobienia|przypomnienie)?\s*:?\s*(.+)", t):
@@ -664,7 +673,7 @@ def jarvis(tekst):
 
     # reszta: AI w n8n na serwerze
     if not serwer_up():
-        return {"odp": "Serwer śpi, więc nie zapytam AI. Powiedz: obudź serwer, i spróbuj za dwie minuty."}
+        return {"odp": "Serwer śpi, więc nie zapytam AI. Powiedz: włącz serwer, i spróbuj za dwie minuty."}
     url = N8N_CHAT or f"http://{SERVER_IP}:{N8N_PORT}/webhook/chat"
     _, d = http_json(url, method="POST", body={"prompt": src}, timeout=90)
     return {"odp": (d or {}).get("reply") or "Nie dostałem odpowiedzi od AI.", "ai": True}
