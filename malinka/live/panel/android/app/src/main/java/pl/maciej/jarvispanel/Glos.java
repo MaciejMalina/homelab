@@ -54,7 +54,9 @@ final class Glos {
     private static final int MEL_OKNO = 76;           // ramek melspektrogramu na jedno okno embeddingu
     private static final int MEL_PASMA = 32;
     private static final int EMB = 96;
-    private static final float PROG = 0.5f;           // próg słowa-klucza (domyślny w openWakeWord)
+    private static final float PROG = 0.4f;           // próg słowa-klucza (openWakeWord ma 0.5; zmierzone 2026-11-10: mowa z daleka 0.45-0.5, cisza < 0.1)
+    private static final float WZM_MAX = 8f;          // maks. automatyczne wzmocnienie (mikrofon VOICE_RECOGNITION w Redmi jest ~20 dB za cichy)
+    private static final float CEL_SZCZYT = 16000f;   // AGC: szczyt mowy po wzmocnieniu ok. -6 dBFS
     private static final long CZEKAJ_NA_ODPOWIEDZ_MS = 20_000;
     private static final long MAX_MOWIENIE_MS = 90_000;
 
@@ -240,9 +242,18 @@ final class Glos {
     private void petla() {
         AudioRecord ar = null;
         try {
+            // strojenie bez przebudowy (prefs "panel"): mic_zrodlo 0=VOICE_RECOGNITION 1=MIC 2=VOICE_COMMUNICATION 3=UNPROCESSED,
+            // mic_wzm = maks. automatyczne wzmocnienie przed modelem (1 = bez wzmacniania), mic_prog = próg słowa-klucza
+            android.content.SharedPreferences pr = act.getSharedPreferences("panel", Activity.MODE_PRIVATE);
+            int[] zrodla = {MediaRecorder.AudioSource.VOICE_RECOGNITION, MediaRecorder.AudioSource.MIC,
+                    MediaRecorder.AudioSource.VOICE_COMMUNICATION, MediaRecorder.AudioSource.UNPROCESSED};
+            int zr = Math.max(0, Math.min(zrodla.length - 1, pr.getInt("mic_zrodlo", 0)));
+            float wzm = Math.max(1f, Math.min(16f, pr.getFloat("mic_wzm", WZM_MAX)));
+            float prog = Math.max(0.1f, Math.min(0.95f, pr.getFloat("mic_prog", PROG)));
             int min = AudioRecord.getMinBufferSize(RATE, AudioFormat.CHANNEL_IN_MONO, AudioFormat.ENCODING_PCM_16BIT);
-            ar = new AudioRecord(MediaRecorder.AudioSource.VOICE_RECOGNITION, RATE, AudioFormat.CHANNEL_IN_MONO,
+            ar = new AudioRecord(zrodla[zr], RATE, AudioFormat.CHANNEL_IN_MONO,
                     AudioFormat.ENCODING_PCM_16BIT, Math.max(min, CHUNK * 2 * 4));
+            Log.i(TAG, String.format(Locale.ROOT, "mikrofon: zrodlo=%d wzm=%.1f prog=%.2f", zr, wzm, prog));
             if (ar.getState() != AudioRecord.STATE_INITIALIZED) {
                 stan = "mikrofon niedostępny";
                 return;
@@ -252,6 +263,12 @@ final class Glos {
             resetModelu();
             short[] buf = new short[CHUNK];
             float maks = 0f;
+            double sumaKw = 0;
+            long probek = 0;
+            int szczyt = 0;
+            float obwiednia = 0f;   // AGC: szczyt z ostatniej ~1 s (opada o 10% na kawałek 80 ms)
+            float wzmSuma = 0f;
+            int kawalkow = 0;
             long ostLog = SystemClock.uptimeMillis();
             while (nasluchuje) {
                 int n = 0;
@@ -261,15 +278,41 @@ final class Glos {
                     n += r;
                 }
                 if (!nasluchuje) break;
+                int szczytKaw = 0;
+                for (int i = 0; i < CHUNK; i++) {
+                    int v = buf[i];
+                    sumaKw += (double) v * v;
+                    szczytKaw = Math.max(szczytKaw, Math.abs(v));
+                }
+                szczyt = Math.max(szczyt, szczytKaw);
+                probek += CHUNK;
+                // AGC: cichy głos z daleka dostaje do wzm razy więcej, głośny z bliska mniej - bez przesterowania
+                obwiednia = Math.max(szczytKaw, obwiednia * 0.9f);
+                float g = Math.min(wzm, Math.max(1f, CEL_SZCZYT / Math.max(obwiednia, 1f)));
+                wzmSuma += g;
+                kawalkow++;
+                if (g > 1.001f) {
+                    for (int i = 0; i < CHUNK; i++) buf[i] = (short) Math.max(-32768, Math.min(32767, Math.round(buf[i] * g)));
+                }
                 float s = przetworz(buf);
                 maks = Math.max(maks, s);
+                if (s >= 0.1f) Log.d(TAG, String.format(Locale.ROOT, "wynik %.3f", s));
                 long t = SystemClock.uptimeMillis();
                 if (t - ostLog >= 10_000) {
-                    Log.d(TAG, String.format(Locale.ROOT, "10 s: max wynik %.3f", maks));
+                    // poziom SUROWY (przed wzmocnieniem), dBFS: 0 = pełna skala, cisza w pokoju zwykle -60..-45
+                    double rms = Math.sqrt(sumaKw / Math.max(1, probek));
+                    Log.d(TAG, String.format(Locale.ROOT, "10 s: max wynik %.3f, poziom sr %.1f dBFS, szczyt %.1f dBFS, wzm sr x%.1f",
+                            maks, 20 * Math.log10(Math.max(rms, 1) / 32768.0), 20 * Math.log10(Math.max(szczyt, 1) / 32768.0),
+                            wzmSuma / Math.max(1, kawalkow)));
+                    wzmSuma = 0f;
+                    kawalkow = 0;
                     maks = 0f;
+                    sumaKw = 0;
+                    probek = 0;
+                    szczyt = 0;
                     ostLog = t;
                 }
-                if (s >= PROG) {
+                if (s >= prog) {
                     Log.i(TAG, String.format(Locale.ROOT, "WAKE %.3f", s));
                     nasluchuje = false;
                     h.post(this::poSlowieKluczu);

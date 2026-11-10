@@ -10,8 +10,8 @@ android {
         applicationId 'pl.maciej.jarvispanel'
         minSdk 26
         targetSdk 35
-        versionCode 4
-        versionName '1.3'
+        versionCode 5
+        versionName '1.4'
         // MediaPipe ma natywne biblioteki na każdą architekturę — Redmi Note 9 Pro to arm64, reszty nie pakujemy
         ndk { abiFilters 'arm64-v8a' }
     }
