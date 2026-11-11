@@ -20,6 +20,7 @@ API (JSON):
   POST /api/serwer/<wake|sleep|reboot> (stare: /api/action/wake|sleep|sync)
   POST /api/pc/<id>/wol                WoL komputera z PCS
   POST /api/gniazdo/<id>/<on|off|toggle>  para gniazd w przedłużaczu ESPHome (GNIAZDA w .env)
+  POST /api/obecnosc                   {"twarz": bool}  <- telefon: ktoś przy biurku (twarz/dłoń w kamerze) -> monitor
   POST /api/pc/<id>/<polecenie>        przekazane do agenta C# (audio/…, media/…, zasilanie/…, discord/…, speedtest)
   GET  /api/pc/<id>/okladka/<oid>      okładka z agenta
   POST /api/discord                    {"kanaly": [...]}  <- cog panel.py w bocie (tylko z 127.0.0.1)
@@ -457,6 +458,7 @@ def wyczysc_alert():
 def heartbeat(b):
     with stan_lock:
         PANEL.update(ts=teraz(), battery=b.get("battery"), sleeping=b.get("sleeping"))
+    obecnosc((b.get("battery") or {}).get("twarz"))   # co 60 s potwierdzenie stanu z kamery
     if KUMA_PUSH_PANEL and teraz() - _ostatni_push["ts"] > 55:
         _ostatni_push["ts"] = teraz()
 
@@ -466,6 +468,57 @@ def heartbeat(b):
             except Exception:  # noqa: BLE001
                 pass
         threading.Thread(target=push, daemon=True).start()
+
+
+# --------------------------------------------------------------------------- obecność przy biurku -> monitor
+# Telefon (kamera panelu) zgłasza, czy przy biurku jest twarz albo dłoń. Pojawienie się = włącz gniazdo monitora.
+# Wyłączanie: domyślnie TYLKO ręcznie („wyłącz stanowisko”, przycisk). Opcjonalnie OBECNOSC_WYLACZ_MIN > 0 = wyłącz po
+# tylu minutach braku obecności, i to tylko gdy telefon świeżo (< 3 min) potwierdza brak (padnięty telefon nic nie gasi).
+OBECNOSC_GNIAZDO = E("OBECNOSC_GNIAZDO", "monitor")      # id z GNIAZDA; puste = automat wyłączony
+OBECNOSC_WYLACZ_MIN = float(E("OBECNOSC_WYLACZ_MIN", "0"))   # 0 = nigdy samo (decyzja 2026-11-11)
+# „włącz / wyłącz stanowisko” (głos): te gniazda z GNIAZDA, po przecinku; później dojdzie LED
+STANOWISKO = [g.strip() for g in E("STANOWISKO", "monitor").split(",") if g.strip()]
+OBECNOSC = {"jest": None, "od": 0, "ts": 0, "wylaczone_po": 0}
+
+
+def _obecnosc_gniazdo(akcja, powod):
+    try:
+        w = Z.gniazdo_ustaw(OBECNOSC_GNIAZDO, akcja)
+        cache.drop("dash-gniazda")
+        print(f"obecnosc: {powod} -> {w['msg']}", flush=True)
+    except Exception as e:  # noqa: BLE001
+        print(f"obecnosc: {powod} -> {akcja} NIEUDANE: {e}", flush=True)
+
+
+def obecnosc(jest):
+    if not isinstance(jest, bool):
+        return
+    t = teraz()
+    with stan_lock:
+        zmiana = jest != OBECNOSC["jest"]
+        if zmiana:
+            OBECNOSC.update(jest=jest, od=t)
+        OBECNOSC["ts"] = t
+    if zmiana:
+        print(f"obecnosc: {'ktoś przy biurku' if jest else 'nikogo przy biurku'}", flush=True)
+        if jest and OBECNOSC_GNIAZDO:
+            threading.Thread(target=_obecnosc_gniazdo, args=("on", "obecność"), daemon=True).start()
+
+
+def straznik_obecnosci():
+    while True:
+        time.sleep(30)
+        if not OBECNOSC_GNIAZDO or OBECNOSC_WYLACZ_MIN <= 0:
+            continue
+        t = teraz()
+        with stan_lock:
+            o = dict(OBECNOSC)
+            wylacz = (o["jest"] is False and t - o["ts"] < 180 and t - o["od"] >= OBECNOSC_WYLACZ_MIN * 60
+                      and o["wylaczone_po"] != o["od"])
+            if wylacz:
+                OBECNOSC["wylaczone_po"] = o["od"]   # raz na jedną nieobecność
+        if wylacz:
+            _obecnosc_gniazdo("off", f"brak obecności od {int((t - o['od']) // 60)} min")
 
 
 # --------------------------------------------------------------------------- akcje
@@ -615,6 +668,14 @@ def jarvis(tekst):
         for zid, wzor in ZAKLADKI_GLOS:
             if re.search(wzor, m.group(2)):
                 return {"odp": "Już pokazuję.", "akcja": {"zakladka": zid}}
+
+    # stanowisko przy biurku (gniazda z STANOWISKO, dziś monitor): włącz / wyłącz na żądanie
+    if m := re.search(r"\b(wlacz|uruchom|odpal|wylacz|zgas)\w*\s+(?:cale\s+|moje\s+)?stanowisk", t):
+        akcja = "off" if m.group(1) in ("wylacz", "zgas") else "on"
+        for g in STANOWISKO:
+            Z.gniazdo_ustaw(g, akcja)
+        cache.drop("dash-gniazda")
+        return {"odp": "Wyłączam stanowisko." if akcja == "off" else "Włączam stanowisko."}
 
     # serwer i komputery (tylko włączanie = WoL; „obudź” zostaje jako stara forma)
     if re.search(r"\b(wlacz|uruchom|odpal|obudz)\w*\s+(serwer|server)", t):
@@ -959,6 +1020,9 @@ class H(BaseHTTPRequestHandler):
             return self.odpowiedz(200, {"ok": True})
         if sc == "/api/jarvis":
             return self.odpowiedz(200, jarvis_api(b.get("tekst")))
+        if sc == "/api/obecnosc":
+            obecnosc(b.get("twarz"))
+            return self.odpowiedz(204)
         if m := re.fullmatch(r"/api/gniazdo/([\w-]+)/(on|off|toggle)", sc):
             w = Z.gniazdo_ustaw(m.group(1), m.group(2))
             cache.drop("dash-gniazda")
@@ -990,4 +1054,5 @@ if __name__ == "__main__":
     print(f"jarvis-panel: port {PORT}, serwer {SERVER_IP or '(brak SERVER_IP)'}, "
           f"Kuma {'klucz' if KUMA_API_KEY else KUMA_STATUS_SLUG or 'nie'}, komputery {len(Z.lista_pc())}, "
           f"token {'tak' if PANEL_TOKEN else 'nie'}", flush=True)
+    threading.Thread(target=straznik_obecnosci, daemon=True).start()
     ThreadingHTTPServer(("0.0.0.0", PORT), H).serve_forever()

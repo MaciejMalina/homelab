@@ -1281,6 +1281,9 @@ window.jarvisGlos = (stan, tekst) => {
   if (stan === "blad") { pokazGlos(tekst || "Nie usłyszałem"); schowajGlos(2500); }
 };
 
+// kamera panelu: ktoś usiadł przy biurku / odszedł (twarz albo dłoń) -> malinka steruje gniazdem monitora
+window.jarvisObecnosc = (jest) => { api("/api/obecnosc", "POST", { twarz: !!jest }).catch(() => { /* offline */ }); };
+
 async function heartbeat() {
   // stan telefonu zgłasza tylko appka; zwykła przeglądarka z otwartym panelem nie może go nadpisywać
   if (!B) return;
