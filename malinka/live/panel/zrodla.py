@@ -585,6 +585,61 @@ def trening():
     return zadanie(f"{TRENER_URL}/api/panel", timeout=10)
 
 
+# --------------------------------------------------------------------------- gniazda (przedłużacze ESPHome, REST web_server)
+# GNIAZDA=monitor|Monitor|http://192.168.254.40|Monitor;drukarka|Drukarka|http://192.168.254.40|Drukarka
+#   id | nazwa w panelu | adres przedłużacza | nazwa przełącznika w ESPHome.  GNIAZDA_HASLO = web_password (login admin)
+GNIAZDA_HASLO = E("GNIAZDA_HASLO", "")
+
+
+def lista_gniazd():
+    out = []
+    for wpis in (E("GNIAZDA", "") or "").split(";"):
+        cz = [c.strip() for c in wpis.split("|")]
+        if len(cz) >= 4 and all(cz[:4]):
+            out.append({"id": cz[0], "nazwa": cz[1], "url": cz[2].rstrip("/"), "esp": cz[3]})
+    return out
+
+
+def _gniazdo_url(g, akcja=""):
+    return f"{g['url']}/switch/{urllib.parse.quote(g['esp'])}" + (f"/{akcja}" if akcja else "")
+
+
+def _gniazdo_wl(g, timeout):
+    d = zadanie(_gniazdo_url(g), headers=basic("admin", GNIAZDA_HASLO), timeout=timeout)
+    return isinstance(d, dict) and d.get("state") == "ON"
+
+
+def gniazda_stan():
+    """Przegląd: dla każdego gniazda z GNIAZDA - czy przedłużacz odpowiada i czy para ma prąd."""
+    def jeden(g):
+        w = {"id": g["id"], "nazwa": g["nazwa"]}
+        try:
+            w["on"] = _gniazdo_wl(g, 2)
+            w["online"] = True
+        except Exception as e:  # noqa: BLE001
+            w["online"] = False
+            w["error"] = f"{type(e).__name__}: {e}"[:160]
+        return w
+
+    gn = lista_gniazd()
+    return list(pula.map(jeden, gn)) if gn else []
+
+
+def gniazdo_ustaw(gid, akcja):
+    """akcja: on | off | toggle -> stan po zmianie."""
+    sciezka = {"on": "turn_on", "off": "turn_off", "toggle": "toggle"}.get(akcja)
+    if not sciezka:
+        raise ValueError("akcja: on | off | toggle")
+    g = next((x for x in lista_gniazd() if x["id"] == gid), None)
+    if not g:
+        raise ValueError(f"nie ma gniazda {gid}")
+    # body=b"" -> POST z Content-Length: 0 (ESPHome nie potrzebuje treści)
+    zadanie(_gniazdo_url(g, sciezka), method="POST", body=b"", headers=basic("admin", GNIAZDA_HASLO), timeout=4)
+    on = _gniazdo_wl(g, 3)
+    return {"id": g["id"], "nazwa": g["nazwa"], "on": on,
+            "msg": f"{g['nazwa']}: zasilanie {'włączone' if on else 'wyłączone'}"}
+
+
 def wled():
     if not WLED_URL:
         return {"disabled": True}

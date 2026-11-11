@@ -396,6 +396,7 @@ function renderJarvis(d) {
       m.mem_used_pct != null ? `RAM ${m.mem_used_pct}%` : null].filter(Boolean).join(" · ") || "działa");
   ustaw("kuma", ...opisKumy(d.kuma));
   renderBudzeniePc(d.pcs);
+  renderGniazda(d.gniazda);
   $("odswiezone").textContent = godzMin(d.now);
   // czerwona kropka na pasku: coś leży w Kumie
   const zleKuma = d.kuma && d.kuma.ok && d.kuma.data.down && d.kuma.data.down.length;
@@ -412,6 +413,19 @@ function renderBudzeniePc(w) {
     const tekst = p.online ? `${esc(p.nazwa)} działa` : p.wol ? `Obudź ${esc(p.nazwa)}` : `${esc(p.nazwa)}: brak MAC`;
     return `<button data-akcja="pc-cmd" data-pc="${esc(p.id)}" data-cmd="wol" ${p.online || !p.wol ? "disabled" : ""}>` +
       `<span class="kropka ${p.online ? "ok" : ""}"></span>${tekst}</button>`;
+  }).join("");
+}
+
+// Przegląd: zasilanie z przedłużaczy ESPHome (GNIAZDA w .env): „Włącz monitor” / „Wyłącz monitor”; zielona kropka = jest prąd
+function renderGniazda(w) {
+  const el = $("gniazda");
+  const gn = w && w.ok ? w.data : null;
+  if (!Array.isArray(gn) || !gn.length) { el.innerHTML = ""; return; }
+  if (Date.now() < blokadaRenderu) return;
+  el.innerHTML = gn.map((g) => {
+    const tekst = !g.online ? `${esc(g.nazwa)}: przedłużacz offline` : `${g.on ? "Wyłącz" : "Włącz"} ${esc(g.nazwa.toLowerCase())}`;
+    return `<button data-akcja="gniazdo" data-gniazdo="${esc(g.id)}" ${g.online ? "" : "disabled"}>` +
+      `<span class="kropka ${g.on ? "ok" : ""}"></span>${tekst}</button>`;
   }).join("");
 }
 
@@ -1051,6 +1065,7 @@ document.addEventListener("click", (e) => {
       if (B && B.sluchaj) B.sluchaj(); else toast("Mikrofon działa tylko w appce na telefonie", true);
       break;
     case "serwer": akcjaPost(b, `/api/serwer/${b.dataset.cmd}`); break;
+    case "gniazdo": akcjaPost(b, `/api/gniazdo/${encodeURIComponent(b.dataset.gniazdo)}/toggle`); break;
     case "wybierz-pc": wybranyPc = b.dataset.pc; pcRecznieDo = Date.now() + 10 * 60 * 1000; lsSet("pc", wybranyPc); if (dane[aktywna]) renderuj(aktywna, dane[aktywna], true); odswiezTeraz(); break;
     case "pc-cmd":
       akcjaPost(b, `/api/pc/${encodeURIComponent(b.dataset.pc)}/${b.dataset.cmd}`, body, (r) => {

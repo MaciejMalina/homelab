@@ -19,6 +19,7 @@ API (JSON):
   POST /api/heartbeat                  {"battery": {...}, "sleeping": bool}           <- telefon co 60 s
   POST /api/serwer/<wake|sleep|reboot> (stare: /api/action/wake|sleep|sync)
   POST /api/pc/<id>/wol                WoL komputera z PCS
+  POST /api/gniazdo/<id>/<on|off|toggle>  para gniazd w przedłużaczu ESPHome (GNIAZDA w .env)
   POST /api/pc/<id>/<polecenie>        przekazane do agenta C# (audio/…, media/…, zasilanie/…, discord/…, speedtest)
   GET  /api/pc/<id>/okladka/<oid>      okładka z agenta
   POST /api/discord                    {"kanaly": [...]}  <- cog panel.py w bocie (tylko z 127.0.0.1)
@@ -701,6 +702,7 @@ def dash():
         "malinka": cache.get("malinka", 30, malinka),
         "todo": cache.get("todo", 20, todo),
         "pcs": cache.get("dash-pcs", 15, Z.pc_online),
+        "gniazda": cache.get("dash-gniazda", 5, Z.gniazda_stan),
         "panel": panel,
     }
 
@@ -942,6 +944,10 @@ class H(BaseHTTPRequestHandler):
             return self.odpowiedz(200, {"ok": True})
         if sc == "/api/jarvis":
             return self.odpowiedz(200, jarvis_api(b.get("tekst")))
+        if m := re.fullmatch(r"/api/gniazdo/([\w-]+)/(on|off|toggle)", sc):
+            w = Z.gniazdo_ustaw(m.group(1), m.group(2))
+            cache.drop("dash-gniazda")
+            return self.odpowiedz(200, w)
         if sc == "/api/todo":
             st, d = http_json(f"{TODO_URL}/api/todos", method="POST",
                               body={"title": b.get("title"), "due": b.get("due")})
