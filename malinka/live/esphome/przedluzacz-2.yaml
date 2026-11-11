@@ -1,0 +1,10 @@
+# Przedluzacz 2 przy biurku
+substitutions:
+  nazwa: przedluzacz-2
+  opis: Przedluzacz 2
+  ip: 192.168.254.41
+  para_a: Para A
+  para_b: Para B
+
+packages:
+  wspolne: !include przedluzacz-wspolne.yaml

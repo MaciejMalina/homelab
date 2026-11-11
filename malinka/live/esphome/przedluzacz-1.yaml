@@ -1,0 +1,10 @@
+# Przedluzacz 1 przy biurku: para A = monitor, para B = drukarka
+substitutions:
+  nazwa: przedluzacz-1
+  opis: Przedluzacz 1
+  ip: 192.168.254.40
+  para_a: Monitor
+  para_b: Drukarka
+
+packages:
+  wspolne: !include przedluzacz-wspolne.yaml
