@@ -46,6 +46,8 @@ import com.google.mediapipe.tasks.components.containers.NormalizedLandmark;
 import com.google.mediapipe.tasks.core.BaseOptions;
 import com.google.mediapipe.tasks.vision.core.ImageProcessingOptions;
 import com.google.mediapipe.tasks.vision.core.RunningMode;
+import com.google.mediapipe.tasks.vision.facedetector.FaceDetector;
+import com.google.mediapipe.tasks.vision.facedetector.FaceDetectorResult;
 import com.google.mediapipe.tasks.vision.gesturerecognizer.GestureRecognizer;
 import com.google.mediapipe.tasks.vision.gesturerecognizer.GestureRecognizerResult;
 
@@ -72,8 +74,16 @@ final class Gesty implements LifecycleOwner {
         void gest(String nazwa);
     }
 
+    /** Obecność przy biurku: twarz albo dłoń w kadrze (zmiana stanu -> strona -> malinka -> monitor). */
+    interface Obecnosc {
+        void zmiana(boolean jest);
+    }
+
     private static final String TAG = "JarvisGesty";
     private static final String MODEL = "gesture_recognizer.task";
+    private static final String MODEL_TWARZ = "blaze_face_short_range.tflite";
+    private static final long TWARZ_CO_MS = 1000;           // wykrywanie twarzy raz na sekundę (oszczędnie)
+    private static final long OBECNOSC_PAMIEC_MS = 5000;    // twarz/dłoń widziana w ostatnich 5 s = ktoś jest
 
     private static final long STABILNY_MS = 600;          // tyle trzeba trzymać gest
     private static final long PRZERWA_MS = 1000;          // po rozpoznaniu: przerwa na kolejny
@@ -113,6 +123,13 @@ final class Gesty implements LifecycleOwner {
     private final Activity act;
     private final Handler h;
     private final Odbiorca odbiorca;
+    private final Obecnosc obecnoscCb;
+    private FaceDetector twarze;
+    private boolean twarzeBlad = false;
+    private long ostatniaAnalizaTwarzy = 0;
+    private volatile long ostatniaTwarz = 0;
+    private volatile long ostatniaDlonObecnosc = 0;
+    private volatile boolean obecny = false;
     private final LifecycleRegistry cykl = new LifecycleRegistry(this);
     private final ExecutorService analiza = Executors.newSingleThreadExecutor();
 
@@ -163,10 +180,11 @@ final class Gesty implements LifecycleOwner {
         }
     };
 
-    Gesty(Activity act, Handler h, Odbiorca odbiorca) {
+    Gesty(Activity act, Handler h, Odbiorca odbiorca, Obecnosc obecnoscCb) {
         this.act = act;
         this.h = h;
         this.odbiorca = odbiorca;
+        this.obecnoscCb = obecnoscCb;
         cykl.handleLifecycleEvent(Lifecycle.Event.ON_CREATE);
         h.postDelayed(kontrolaTemp, TEMP_CO_MS);
         DisplayManager dm = (DisplayManager) act.getSystemService(Context.DISPLAY_SERVICE);
@@ -208,6 +226,11 @@ final class Gesty implements LifecycleOwner {
 
     double temperatura() {
         return ostatniaTemp;
+    }
+
+    /** Dla sygnału „żyję” do malinki: true/false, a null gdy kamera nie działa (wtedy nic nie wiemy). */
+    Boolean obecnosc() {
+        return dziala ? obecny : null;
     }
 
     void aktualizuj() {
@@ -266,6 +289,10 @@ final class Gesty implements LifecycleOwner {
             rozpoznawanie.close();
             rozpoznawanie = null;
         }
+        if (twarze != null) {
+            twarze.close();
+            twarze = null;
+        }
         cykl.handleLifecycleEvent(Lifecycle.Event.ON_DESTROY);
     }
 
@@ -277,6 +304,18 @@ final class Gesty implements LifecycleOwner {
                 stan = "błąd modelu: " + e.getMessage();
                 Log.e(TAG, "model", e);
                 return;
+            }
+        }
+        if (twarze == null && !twarzeBlad) {
+            try {
+                twarze = FaceDetector.createFromOptions(act, FaceDetector.FaceDetectorOptions.builder()
+                        .setBaseOptions(BaseOptions.builder().setModelAssetPath(MODEL_TWARZ).build())
+                        .setRunningMode(RunningMode.IMAGE)
+                        .setMinDetectionConfidence(0.6f)
+                        .build());
+            } catch (Exception e) {
+                twarzeBlad = true;   // bez modelu twarzy gesty działają dalej, tylko bez obecności
+                Log.e(TAG, "model twarzy", e);
             }
         }
         dziala = true;
@@ -405,18 +444,35 @@ final class Gesty implements LifecycleOwner {
                 jasnosc = sredniaJasnosc(bm);
                 Log.d(TAG, "10 s: klatki=" + nKlatek.getAndSet(0) + " wyniki=" + nWynikow.getAndSet(0) + " dlonie=" + nDloni.getAndSet(0)
                         + " obraz=" + bm.getWidth() + "x" + bm.getHeight() + " rot=" + img.getImageInfo().getRotationDegrees()
-                        + " jasnosc=" + jasnosc + (uspiony ? " (uspiony)" : ""));
+                        + " jasnosc=" + jasnosc + " obecnosc=" + obecny + (twarze == null ? " (bez modelu twarzy)" : "")
+                        + (uspiony ? " (uspiony)" : ""));
             }
             MPImage mp = new BitmapImageBuilder(bm).build();
             ImageProcessingOptions opcje = ImageProcessingOptions.builder()
                     .setRotationDegrees(img.getImageInfo().getRotationDegrees())
                     .build();
             r.recognizeAsync(mp, opcje, teraz);
+            FaceDetector fd = twarze;
+            if (fd != null && teraz - ostatniaAnalizaTwarzy >= TWARZ_CO_MS) {
+                ostatniaAnalizaTwarzy = teraz;
+                FaceDetectorResult fr = fd.detect(new BitmapImageBuilder(bm).build(), opcje);
+                if (!fr.detections().isEmpty()) ostatniaTwarz = teraz;
+                aktualizujObecnosc(teraz);
+            }
         } catch (Exception e) {
             Log.w(TAG, "klatka", e);
         } finally {
             img.close();
         }
+    }
+
+    /** Twarz albo dłoń widziana w ostatnich OBECNOSC_PAMIEC_MS - zmiana stanu idzie od razu do strony. */
+    private void aktualizujObecnosc(long teraz) {
+        boolean jest = teraz - ostatniaTwarz < OBECNOSC_PAMIEC_MS || teraz - ostatniaDlonObecnosc < OBECNOSC_PAMIEC_MS;
+        if (jest == obecny) return;
+        obecny = jest;
+        Log.i(TAG, "OBECNOSC " + (jest ? "jest" : "brak"));
+        if (obecnoscCb != null) h.post(() -> obecnoscCb.zmiana(jest));
     }
 
     /** Średnia jasność kadru 0–255 (próbka co 16 px) — czy obraz nie jest za ciemny / prześwietlony. */
@@ -442,6 +498,7 @@ final class Gesty implements LifecycleOwner {
         float y = -1f;
         if (!r.landmarks().isEmpty()) {
             nDloni.incrementAndGet();
+            ostatniaDlonObecnosc = t;
             List<NormalizedLandmark> lm = r.landmarks().get(0);
             if (lm.size() > 9) {
                 x = (lm.get(0).x() + lm.get(9).x()) / 2f;   // nadgarstek + srodek dloni

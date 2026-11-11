@@ -95,7 +95,7 @@ public class MainActivity extends Activity {
         zaladuj();
         h.postDelayed(przeladujOkresowo, PRZELADUJ_CO_MS);
 
-        gesty = new Gesty(this, h, this::gestDoStrony);
+        gesty = new Gesty(this, h, this::gestDoStrony, this::obecnoscDoStrony);
         glos = new Glos(this, h, this::glosDoStrony);
         poprosOUprawnienia();
         gesty.ustawWlaczone(prefs.getBoolean("gesty", true));
@@ -131,6 +131,11 @@ public class MainActivity extends Activity {
     }
 
     /** Rozpoznany gest → strona (window.jarvisGest). Gdy strona go nie obsługuje (np. ekran błędu), ✋ i tak budzi. */
+    /** Twarz/dłoń przy biurku pojawiła się albo zniknęła -> strona wysyła to na malinkę (POST /api/obecnosc). */
+    private void obecnoscDoStrony(boolean jest) {
+        if (web != null) web.evaluateJavascript("window.jarvisObecnosc&&window.jarvisObecnosc(" + jest + ")", null);
+    }
+
     private void gestDoStrony(String g) {
         if (web == null) {
             if ("dlon".equals(g) && uspiony) ustawSen(false);
@@ -523,6 +528,8 @@ public class MainActivity extends Activity {
                 o.put("health", b.getIntExtra(BatteryManager.EXTRA_HEALTH, BatteryManager.BATTERY_HEALTH_UNKNOWN));
                 o.put("sleeping", uspiony);
                 o.put("kamera", gesty != null ? gesty.stan() : "brak");
+                Boolean tw = gesty != null ? gesty.obecnosc() : null;
+                o.put("twarz", tw != null ? tw : JSONObject.NULL);
                 o.put("mikrofon", glos != null ? glos.stan() : "brak");
             } catch (JSONException e) {
                 return "null";
