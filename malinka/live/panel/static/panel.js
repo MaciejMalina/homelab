@@ -438,6 +438,7 @@ function znacznik(tab, wlacz) {
 }
 
 let dashTrwa = false;
+let wersjaUi = null;   // skrót plików strony z pierwszego /api/dash po załadowaniu
 async function loadDash() {
   if (dashTrwa) return;
   dashTrwa = true;
@@ -445,6 +446,11 @@ async function loadDash() {
     const d = await api("/api/dash");
     $("offline").hidden = true;
     if (d.config && typeof d.config.wake_min === "number") wakeMin = d.config.wake_min;
+    // nowa wersja strony na malince (wdrożenie) -> przeładuj, zamiast czekać na odświeżenie appki co 6 h
+    if (d.config && d.config.ui) {
+      if (wersjaUi && d.config.ui !== wersjaUi) { location.reload(); return; }
+      wersjaUi = d.config.ui;
+    }
     renderPogoda(d.pogoda); renderTodo(d.todo); renderJarvis(d);
   } catch (e) { $("offline").hidden = false; }
   finally { dashTrwa = false; }

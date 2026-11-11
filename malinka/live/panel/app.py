@@ -54,6 +54,21 @@ import zrodla as Z
 E = os.environ.get
 PORT = int(E("PORT", "8084"))
 STATIC = os.path.join(os.path.dirname(os.path.abspath(__file__)), "static")
+
+
+def _wersja_ui():
+    """Skrót plików strony - telefon porównuje go w /api/dash i po wdrożeniu nowej wersji sam przeładowuje stronę."""
+    import hashlib
+    h = hashlib.sha1()
+    for nazwa in sorted(os.listdir(STATIC)):
+        p = os.path.join(STATIC, nazwa)
+        if os.path.isfile(p):
+            with open(p, "rb") as f:
+                h.update(nazwa.encode() + f.read())
+    return h.hexdigest()[:12]
+
+
+WERSJA_UI = _wersja_ui()
 DATA_DIR = E("DATA_DIR", "/data")
 
 TODO_URL = E("TODO_URL", "http://127.0.0.1:8083").rstrip("/")
@@ -695,7 +710,7 @@ def dash():
         panel = dict(PANEL)
     return {
         "now": teraz(),
-        "config": {"wake_min": wake_min()},
+        "config": {"wake_min": wake_min(), "ui": WERSJA_UI},
         "pogoda": cache.get("pogoda", 900, pogoda),
         "kuma": cache.get("kuma", 30, kuma),
         "serwer": cache.get("serwer", 10, serwer),
