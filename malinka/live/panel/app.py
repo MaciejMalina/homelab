@@ -28,6 +28,7 @@ API (JSON):
   POST /api/media/qbit/<hash>/<start|stop>
   GET  /api/siec/speedtest        ostatni wynik (ts, ts_ms, ping, dol, gora) - dla kafelka w Homepage
 POST /api/siec/speedtest
+  SSE "przypomnienie" {"mow", "tekst"}    minutnik / przypomnienie głosowe (do tego alert budzi ekran)
   POST /api/swiatlo                    {"on"?, "bri"?, "kolor"?: [r,g,b], "ps"?}  -> WLED
   POST /api/todo, PATCH /api/todo/<id> -> jarvis_todo
   GET  /api/health
@@ -613,7 +614,7 @@ def brief_tekst():
     n = _teraz_pl()
     out = [f"{'Dzień dobry' if 5 <= n.hour < 18 else 'Dobry wieczór'}. Jest {n.hour}:{n.minute:02d}, "
            f"{DNI_TYG[n.weekday()]} {n.day} {MIESIACE[n.month - 1]}."]
-    for fn in (_pogoda_zdanie, _brief_kalendarz, _brief_poczta, _brief_trening, _brief_uslugi):
+    for fn in (_pogoda_zdanie, _brief_kalendarz, _brief_przypomnienia, _brief_poczta, _brief_trening, _brief_uslugi):
         try:
             z = fn()
             if z:
@@ -640,6 +641,205 @@ def brief_auto():
     t = brief_tekst()
     print(f"brief: pierwsze siadanie dziś ({len(t)} znaków)", flush=True)
     return {"odp": t, "mow": _do_mowy(t, BRIEF_ZNAKI)}
+
+
+# --------------------------------------------------------------------------- minutniki i przypomnienia głosowe
+# „ustaw minutnik na 10 minut”, „przypomnij mi o 18 o praniu”, „przypomnij mi za 20 minut wyjąć pranie”,
+# „jakie mam przypomnienia”, „anuluj minutnik / przypomnienie / wszystkie przypomnienia”.
+# Lista w pamiec.json (przetrwa restart kontenera). O czasie: alert (budzi ekran, baner zostaje) + zdarzenie SSE
+# "przypomnienie" -> telefon pika i czyta tekst na głos.
+_przyp_lock = threading.Lock()
+LICZBY_SLOWA = {"jeden": 1, "jedna": 1, "dwa": 2, "dwie": 2, "trzy": 3, "cztery": 4, "piec": 5, "szesc": 6,
+                "siedem": 7, "osiem": 8, "dziewiec": 9, "dziesiec": 10, "pietnascie": 15, "dwadziescia": 20,
+                "trzydziesci": 30, "czterdziesci": 40, "piecdziesiat": 50}
+
+
+def _odmiana(n, jeden, kilka, wiele):
+    n = abs(int(n))
+    if n == 1:
+        return jeden
+    return kilka if n % 10 in (2, 3, 4) and n % 100 not in (12, 13, 14) else wiele
+
+
+def _cyfry(t):
+    """Liczebniki słowami -> cyframi, z dopełnieniem spacjami do tej samej długości (indeksy pasują do oryginału)."""
+    return re.sub(r"\b(" + "|".join(LICZBY_SLOWA) + r")\b",
+                  lambda m: str(LICZBY_SLOWA[m.group(1)]).ljust(len(m.group(1))), t)
+
+
+def _trwanie(t):
+    """Czas trwania z tekstu bez ogonków: '10 minut', '1 godzine 30 minut', 'pol godziny', 'kwadrans'... -> sekundy."""
+    t = _cyfry(t)
+    suma, spany = 0.0, []
+    for m in re.finditer(r"(\d+(?:[.,]\d+)?)\s*(godzin\w*|godz\w*|minut\w*|min\b|sekund\w*|sek\b)", t):
+        v = float(m.group(1).replace(",", "."))
+        u = m.group(2)
+        suma += v * (3600 if u.startswith("godz") else 60 if u.startswith("min") else 1)
+        spany.append(m.span())
+    for wzor, sek in ((r"\bpoltorej godziny\b", 5400), (r"\bpol godziny\b", 1800), (r"\bkwadrans\w*", 900),
+                      (r"\bgodzine\b", 3600), (r"\bminute\b", 60)):
+        for m in re.finditer(wzor, t):
+            if not any(a < m.end() and m.start() < b for a, b in spany):
+                suma += sek
+                spany.append(m.span())
+    return suma, spany
+
+
+def _czas_opis(sek):
+    sek = int(round(sek))
+    h, m, s = sek // 3600, sek % 3600 // 60, sek % 60
+    czesci = []
+    if h:
+        czesci.append(f"{h} {_odmiana(h, 'godzinę', 'godziny', 'godzin')}")
+    if m:
+        czesci.append(f"{m} {_odmiana(m, 'minutę', 'minuty', 'minut')}")
+    if s and not h:
+        czesci.append(f"{s} {_odmiana(s, 'sekundę', 'sekundy', 'sekund')}")
+    return " i ".join(czesci) or "chwilę"
+
+
+def _kiedy_opis(ts):
+    n = _teraz_pl()
+    d = Z.datetime.fromtimestamp(ts, Z.TZ)
+    godz = f"{d.hour}:{d.minute:02d}"
+    dni = (d.date() - n.date()).days
+    return f"o {godz}" if dni == 0 else f"jutro o {godz}" if dni == 1 else f"{d.day} {MIESIACE[d.month - 1]} o {godz}"
+
+
+def _przyp_lista():
+    return sorted(Z.pamiec_get("przypomnienia", []) or [], key=lambda p: p["ts"])
+
+
+def _przyp_dodaj(p):
+    with _przyp_lock:
+        lista = _przyp_lista()
+        lista.append(p)
+        Z.pamiec_set("przypomnienia", lista)
+
+
+def _przyp_mowa(tekst):
+    tl = _bez_ogonkow(tekst)
+    if not tekst:
+        return "Przypominam."
+    if re.match(r"(ze|zeby|aby|by)\b", tl):
+        return f"Przypominam, {tekst}."
+    if re.match(r"o\b", tl):
+        return f"Przypominam {tekst}."
+    return f"Przypominam: {tekst}."
+
+
+def _przypomnij(src, t, od):
+    """src/t od indeksu `od` (po „przypomnij mi”): czas (o HH[:MM] / za X / jutro) + tekst przypomnienia."""
+    reszta_t = t[od:]
+    spany = []
+    dni = 0
+    if m := re.search(r"\b(jutro|pojutrze)\b", reszta_t):
+        dni = 1 if m.group(1) == "jutro" else 2
+        spany.append(m.span())
+    cel = None
+    if m := re.search(r"\b(?:o|na)\s+(?:godzin\w*\s+)?(\d{1,2})(?:[:.\s](\d{2}))?\b", reszta_t):
+        h, mi = int(m.group(1)), int(m.group(2) or 0)
+        if h <= 23 and mi <= 59:
+            n = _teraz_pl()
+            c = n.replace(hour=h, minute=mi, second=0, microsecond=0) + Z.timedelta(days=dni)
+            if dni == 0 and c <= n:
+                c += Z.timedelta(hours=12) if h < 12 and c + Z.timedelta(hours=12) > n else Z.timedelta(days=1)
+            cel = c.timestamp()
+            spany.append(m.span())
+    if cel is None and (m := re.search(r"\bza\s+", reszta_t)):
+        ogon = reszta_t[m.end():]
+        koniec = re.search(r"\s(?:ze|zeby|aby|by|o(?!\s*\d))\s|,", ogon)
+        kawalek = ogon[:koniec.start()] if koniec else ogon
+        sek, sp = _trwanie(kawalek)
+        if sek > 0:
+            cel = teraz() + sek
+            spany.append((m.start(), m.end() + max(b for _, b in sp)))   # tylko „za X”, reszta to tekst
+    if cel is None:
+        return {"odp": "Kiedy przypomnieć? Powiedz na przykład: przypomnij mi o 18 o praniu, albo za 20 minut wyjąć pranie."}
+    reszta = src[od:]
+    for a, b in sorted(spany, reverse=True):
+        reszta = reszta[:a] + " " + reszta[b:]
+    tekst = re.sub(r"\s+", " ", reszta).strip(" ,.:")
+    tekst = re.sub(r"^(?:mi|mnie)\s+", "", tekst, flags=re.I)
+    _przyp_dodaj({"id": os.urandom(6).hex(), "ts": cel, "typ": "przypomnienie", "tekst": tekst or "przypomnienie",
+                  "mow": _przyp_mowa(tekst)})
+    print(f"przypomnienie: {_kiedy_opis(cel)} - {tekst}", flush=True)
+    return {"odp": f"Dobrze, przypomnę {_kiedy_opis(cel)}" + (f": {tekst}." if tekst else ".")}
+
+
+def _minutnik(t):
+    sek, _ = _trwanie(t)
+    if not 1 <= sek <= 24 * 3600:
+        return {"odp": "Na ile ustawić minutnik? Powiedz na przykład: minutnik na 10 minut."}
+    opis = _czas_opis(sek)
+    cel = teraz() + sek
+    _przyp_dodaj({"id": os.urandom(6).hex(), "ts": cel, "typ": "minutnik", "tekst": f"Minutnik na {opis}",
+                  "mow": f"Minutnik na {opis} — koniec."})
+    print(f"minutnik: {opis}", flush=True)
+    return {"odp": f"Minutnik na {opis}, do {_kiedy_opis(cel)[2:]}."}
+
+
+def _przyp_status():
+    lista = _przyp_lista()
+    if not lista:
+        return "Nie masz żadnych minutników ani przypomnień."
+    t = teraz()
+    out = []
+    for p in lista[:5]:
+        if p["typ"] == "minutnik":
+            out.append(f"{p['tekst']}: zostało {_czas_opis(max(0, p['ts'] - t))}")
+        else:
+            out.append(f"{_kiedy_opis(p['ts'])}: {p['tekst']}")
+    return ". ".join(out) + (f". I jeszcze {len(lista) - 5}." if len(lista) > 5 else ".")
+
+
+def _przyp_anuluj(t):
+    minutniki = bool(re.search(r"minutnik|timer", t))
+    wszystkie = bool(re.search(r"\bwszystk", t))
+    with _przyp_lock:
+        lista = _przyp_lista()
+        typ = "minutnik" if minutniki else "przypomnienie"
+        pasujace = [p for p in lista if p["typ"] == typ]
+        if not pasujace:
+            return "Nie ma czego anulować."
+        usun = pasujace if wszystkie else pasujace[:1]   # bez „wszystkie” = najbliższy
+        ids = {p["id"] for p in usun}
+        Z.pamiec_set("przypomnienia", [p for p in lista if p["id"] not in ids])
+    if minutniki:
+        return (f"Anulowałem minutnik, zostało mu {_czas_opis(max(0, usun[0]['ts'] - teraz()))}." if len(usun) == 1
+                else f"Anulowałem wszystkie minutniki ({len(usun)}).")
+    if len(usun) == 1:
+        return f"Anulowałem przypomnienie {_kiedy_opis(usun[0]['ts'])}: {usun[0]['tekst']}."
+    return f"Anulowałem wszystkie przypomnienia ({len(usun)})."
+
+
+def straznik_przypomnien():
+    while True:
+        time.sleep(2)
+        try:
+            t = teraz()
+            with _przyp_lock:
+                lista = _przyp_lista()
+                teraz_do = [p for p in lista if p["ts"] <= t]
+                if teraz_do:
+                    Z.pamiec_set("przypomnienia", [p for p in lista if p["ts"] > t])
+            for p in teraz_do:
+                spoznienie = t - p["ts"]
+                mow = p["mow"] + (f" Z opóźnieniem {_czas_opis(round(spoznienie / 60) * 60)}." if spoznienie > 120 else "")
+                print(f"przypomnienie: TERAZ {p['tekst']} (spóźnienie {int(spoznienie)} s)", flush=True)
+                ustaw_alert(f"⏰ {p['mow']}", "warn", 30)
+                szyna.publikuj("przypomnienie", {"mow": mow, "tekst": p["tekst"]})
+        except Exception as e:  # noqa: BLE001  strażnik ma żyć dalej
+            print(f"przypomnienia: błąd {e}", flush=True)
+
+
+def _brief_przypomnienia():
+    dzis = _teraz_pl().date()
+    lista = [p for p in _przyp_lista() if p["typ"] == "przypomnienie"
+             and Z.datetime.fromtimestamp(p["ts"], Z.TZ).date() == dzis]
+    if not lista:
+        return None
+    return "Przypomnienia: " + ", ".join(f"{_kiedy_opis(p['ts'])} {p['tekst']}" for p in lista[:3]) + "."
 
 
 # --------------------------------------------------------------------------- akcje
@@ -799,6 +999,16 @@ def jarvis(tekst):
     if not t:
         raise ValueError("puste polecenie")
 
+    # minutniki i przypomnienia — NAJPIERW, bo tekst przypomnienia może zawierać inne komendy („…wyłączyć stanowisko”)
+    if re.search(r"\b(anuluj|usun|odwolaj|skasuj|wylacz|zatrzymaj)\w*\s+(?:wszystkie\s+|ten\s+|to\s+)?(minutnik|timer|przypomnien)", t):
+        return {"odp": _przyp_anuluj(t)}
+    if re.search(r"\b(jakie|lista|pokaz)\w*\s+(?:mam\s+)?(?:minutnik|przypomnien)|\bile (?:jeszcze )?zostalo", t):
+        return {"odp": _przyp_status()}
+    if m := re.search(r"\bprzypomnij\w*\s+(?:mi\s+)?", t):
+        return _przypomnij(src, t, m.end())
+    if re.search(r"\b(ustaw|nastaw|wlacz|odpal|daj|odlicz)\w*\s+(?:mi\s+)?(minutnik|timer)|^(minutnik|timer|odlicz)", t):
+        return _minutnik(t)
+
     # ekran i zakładki
     if re.search(r"\b(wygas|zgas)\w*\s+ekran|\bwylacz\w*\s+ekran", t):
         return {"odp": "Wygaszam ekran.", "akcja": {"ekran": "sleep"}}
@@ -836,7 +1046,7 @@ def jarvis(tekst):
         return {"odp": f"Włączam {kto}. Za chwilę powinien wstać."}
 
     # lista zadań
-    if m := re.search(r"\b(dodaj|zapisz)\s+(?:mi\s+)?(?:zadanie|do listy|na liste|do zrobienia|przypomnienie)?\s*:?\s*(.+)", t):
+    if m := re.search(r"\b(dodaj|zapisz|zanotuj)\s+(?:mi\s+)?(?:zadanie|do listy|na liste|do zrobienia|przypomnienie)?\s*:?\s*(.+)", t):
         tytul = src[m.start(2):m.end(2)].strip()
         tytul = tytul[:1].upper() + tytul[1:]
         http_json(f"{TODO_URL}/api/todos", method="POST", body={"title": tytul})
@@ -1188,4 +1398,5 @@ if __name__ == "__main__":
           f"Kuma {'klucz' if KUMA_API_KEY else KUMA_STATUS_SLUG or 'nie'}, komputery {len(Z.lista_pc())}, "
           f"token {'tak' if PANEL_TOKEN else 'nie'}", flush=True)
     threading.Thread(target=straznik_obecnosci, daemon=True).start()
+    threading.Thread(target=straznik_przypomnien, daemon=True).start()
     ThreadingHTTPServer(("0.0.0.0", PORT), H).serve_forever()

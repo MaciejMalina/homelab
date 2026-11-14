@@ -178,6 +178,15 @@ function startStrumien() {
   strumien.addEventListener("ekran", (e) => { zywy(); try { zastosujEkran(JSON.parse(e.data)); } catch (err) { /* uszkodzone zdarzenie */ } });
   strumien.addEventListener("ping", zywy);
   strumien.addEventListener("discord", () => { zywy(); if (aktywna === "discord" && !sleeping) odswiezTeraz(); });
+  // minutnik / przypomnienie głosowe: malinka już ustawiła alert (budzi ekran, baner) — tu sygnał i czytanie na głos
+  strumien.addEventListener("przypomnienie", (e) => {
+    zywy();
+    let p = null;
+    try { p = JSON.parse(e.data); } catch (err) { return; }
+    wake(wakeMin);
+    pikniecie();
+    setTimeout(() => { if (B && B.mow) try { B.mow(p.mow || p.tekst); } catch (err) { /* stara appka */ } }, 900);
+  });
   strumien.onerror = () => { strumienZywy = false; };  // EventSource łączy się ponownie sam
 }
 function pokazAlert(a) {
