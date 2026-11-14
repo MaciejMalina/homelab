@@ -57,6 +57,8 @@ final class Glos {
     private static final float PROG = 0.4f;           // próg słowa-klucza (openWakeWord ma 0.5; zmierzone 2026-11-10: mowa z daleka 0.45-0.5, cisza < 0.1)
     private static final float WZM_MAX = 8f;          // maks. automatyczne wzmocnienie (mikrofon VOICE_RECOGNITION w Redmi jest ~20 dB za cichy)
     private static final float CEL_SZCZYT = 16000f;   // AGC: szczyt mowy po wzmocnieniu ok. -6 dBFS
+    private static final int RAMEK_WAKE = 2;          // tyle KOLEJNYCH kawałków 80 ms musi przekroczyć próg (1 = dawne zachowanie)
+    static final float KLASK_DB = 18f;                // klaśnięcie: o ile dB ponad szum tła (prefs klask_db)
     private static final long CZEKAJ_NA_ODPOWIEDZ_MS = 20_000;
     private static final long MAX_MOWIENIE_MS = 90_000;
 
@@ -91,6 +93,18 @@ final class Glos {
     private ToneGenerator ton;
 
     private final Runnable wznow = this::wznowNasluch;
+
+    // podgląd diagnostyczny (Podglad.java) — zapisywane w wątku nasłuchu, czytane w wątku głównym
+    volatile float diagWynik = 0f;        // wynik „Hey Jarvis” z ostatniego kawałka
+    volatile float diagMax = 0f;          // szczyt z ostatnich ~2 s (opada)
+    volatile float diagPoziom = -90f;     // poziom SUROWY kawałka, dBFS
+    volatile float diagWzm = 1f;          // bieżące wzmocnienie AGC
+    volatile float diagWzmMax = WZM_MAX;
+    volatile float diagProg = PROG;
+    volatile boolean diagKlaski = false;
+    volatile float diagKlaskProg = KLASK_DB;
+    volatile Klaskacz diagKlaskacz = null;
+    volatile String diagZdarzenie = "—";
 
     Glos(Activity act, Handler h, Sluchacz sluchacz) {
         this.act = act;
@@ -134,6 +148,14 @@ final class Glos {
             stan = "brak uprawnienia do mikrofonu";
         } else if (!zajety && !nasluchuje) {
             startNasluch();
+        }
+    }
+
+    /** Po zmianie progów w ustawieniach: pętla czyta je przy starcie, więc uruchamiamy ją od nowa. */
+    void restartNasluch() {
+        if (nasluchuje && !zajety) {
+            zatrzymajNasluch();
+            aktualizuj();
         }
     }
 
@@ -250,10 +272,21 @@ final class Glos {
             int zr = Math.max(0, Math.min(zrodla.length - 1, pr.getInt("mic_zrodlo", 0)));
             float wzm = Math.max(1f, Math.min(16f, pr.getFloat("mic_wzm", WZM_MAX)));
             float prog = Math.max(0.1f, Math.min(0.95f, pr.getFloat("mic_prog", PROG)));
+            boolean klaski = pr.getBoolean("klaski", true);
+            float klaskDb = Math.max(6f, Math.min(40f, pr.getFloat("klask_db", KLASK_DB)));
+            Klaskacz klaskacz = klaski ? new Klaskacz(klaskDb) : null;
+            diagProg = prog;
+            diagWzmMax = wzm;
+            diagKlaski = klaski;
+            diagKlaskProg = klaskDb;
+            diagKlaskacz = klaskacz;
+            int nadProgiem = 0;
+            float pierwszyNad = 0f;
             int min = AudioRecord.getMinBufferSize(RATE, AudioFormat.CHANNEL_IN_MONO, AudioFormat.ENCODING_PCM_16BIT);
             ar = new AudioRecord(zrodla[zr], RATE, AudioFormat.CHANNEL_IN_MONO,
                     AudioFormat.ENCODING_PCM_16BIT, Math.max(min, CHUNK * 2 * 4));
-            Log.i(TAG, String.format(Locale.ROOT, "mikrofon: zrodlo=%d wzm=%.1f prog=%.2f", zr, wzm, prog));
+            Log.i(TAG, String.format(Locale.ROOT, "mikrofon: zrodlo=%d wzm=%.1f prog=%.2f ramek=%d klaski=%s(%.0f dB)",
+                    zr, wzm, prog, RAMEK_WAKE, klaski, klaskDb));
             if (ar.getState() != AudioRecord.STATE_INITIALIZED) {
                 stan = "mikrofon niedostępny";
                 return;
@@ -279,23 +312,37 @@ final class Glos {
                 }
                 if (!nasluchuje) break;
                 int szczytKaw = 0;
+                double kwKaw = 0;
                 for (int i = 0; i < CHUNK; i++) {
                     int v = buf[i];
-                    sumaKw += (double) v * v;
+                    kwKaw += (double) v * v;
                     szczytKaw = Math.max(szczytKaw, Math.abs(v));
                 }
+                sumaKw += kwKaw;
                 szczyt = Math.max(szczyt, szczytKaw);
                 probek += CHUNK;
+                diagPoziom = (float) (20 * Math.log10(Math.max(Math.sqrt(kwKaw / CHUNK), 1) / 32768.0));
+                // podwójne klaśnięcie: na SUROWYM dźwięku (przed wzmocnieniem), działa jak „Hey Jarvis”
+                if (klaskacz != null && klaskacz.kawalek(buf)) {
+                    Log.i(TAG, String.format(Locale.ROOT, "KLASK x2 (+%.0f dB ponad tło)", klaskacz.ostatniDb));
+                    diagZdarzenie = "klaśnięcie ×2 " + godzina();
+                    nasluchuje = false;
+                    h.post(this::poSlowieKluczu);
+                    break;
+                }
                 // AGC: cichy głos z daleka dostaje do wzm razy więcej, głośny z bliska mniej - bez przesterowania
                 obwiednia = Math.max(szczytKaw, obwiednia * 0.9f);
                 float g = Math.min(wzm, Math.max(1f, CEL_SZCZYT / Math.max(obwiednia, 1f)));
                 wzmSuma += g;
                 kawalkow++;
+                diagWzm = g;
                 if (g > 1.001f) {
                     for (int i = 0; i < CHUNK; i++) buf[i] = (short) Math.max(-32768, Math.min(32767, Math.round(buf[i] * g)));
                 }
                 float s = przetworz(buf);
                 maks = Math.max(maks, s);
+                diagWynik = s;
+                diagMax = Math.max(s, diagMax * 0.97f);
                 if (s >= 0.1f) Log.d(TAG, String.format(Locale.ROOT, "wynik %.3f", s));
                 long t = SystemClock.uptimeMillis();
                 if (t - ostLog >= 10_000) {
@@ -312,8 +359,18 @@ final class Glos {
                     szczyt = 0;
                     ostLog = t;
                 }
+                // słowo-klucz dopiero po RAMEK_WAKE kolejnych kawałkach nad progiem — pojedynczy skok (szum, stuk) odpada
                 if (s >= prog) {
-                    Log.i(TAG, String.format(Locale.ROOT, "WAKE %.3f", s));
+                    if (nadProgiem == 0) pierwszyNad = s;
+                    nadProgiem++;
+                } else if (nadProgiem > 0) {
+                    Log.d(TAG, String.format(Locale.ROOT, "odrzucone: %d kawałek nad progiem (%.3f)", nadProgiem, pierwszyNad));
+                    diagZdarzenie = String.format(Locale.ROOT, "odrzucone (%d×80 ms) %.2f %s", nadProgiem, pierwszyNad, godzina());
+                    nadProgiem = 0;
+                }
+                if (nadProgiem >= RAMEK_WAKE) {
+                    Log.i(TAG, String.format(Locale.ROOT, "WAKE %.3f (%d kawałki nad progiem)", s, nadProgiem));
+                    diagZdarzenie = String.format(Locale.ROOT, "Hey Jarvis %.2f %s", s, godzina());
                     nasluchuje = false;
                     h.post(this::poSlowieKluczu);
                     break;
@@ -331,6 +388,107 @@ final class Glos {
                 }
                 ar.release();
             }
+        }
+    }
+
+    private static String godzina() {
+        return new java.text.SimpleDateFormat("HH:mm:ss", Locale.ROOT).format(new java.util.Date());
+    }
+
+    /**
+     * Podwójne klaśnięcie: dwa krótkie, ostre impulsy w odstępie 150–700 ms, z ciszą przed pierwszym (500 ms)
+     * i po drugim (400 ms). Trzeci impuls (oklaski, stukanie) albo dłuższy głośny dźwięk (mowa) kasuje sekwencję.
+     * Liczone w ramkach 10 ms na surowym dźwięku, względem szumu tła, który uczy się sam (~2 s).
+     */
+    static final class Klaskacz {
+        private static final int RAMKA = 160;              // 10 ms przy 16 kHz
+        private static final double MIN_E = 200.0 * 200.0; // bezwzględne minimum energii (cisza cyfrowa nie wyzwala)
+        private final double prog;                         // krotność energii tła
+        private double tlo = -1;
+        private double poprzednia = 0;
+        private long ramka = 0;
+        private long kandOd = -1;                          // kandydat: sprawdzamy, czy po 50–80 ms dźwięk zgasł
+        private double kandSzczyt = 0;
+        private double kandOgon = 0;
+        private long ostatniImpuls = -1000;
+        private long ostatniKlask = -1000;
+        private long pierwszy = -1;
+        private long drugi = -1;
+        volatile float ostatniDb = 0f;                     // podgląd: o ile dB ponad tło był ostatni ostry impuls
+        volatile String ostatni = "—";
+
+        Klaskacz(float db) {
+            prog = Math.pow(10, db / 10.0);
+        }
+
+        /** Kawałek 80 ms surowych próbek → true, gdy właśnie rozpoznano podwójne klaśnięcie. */
+        boolean kawalek(short[] buf) {
+            boolean wynik = false;
+            for (int o = 0; o + RAMKA <= buf.length; o += RAMKA) {
+                double e = 0;
+                for (int i = o; i < o + RAMKA; i++) e += (double) buf[i] * buf[i];
+                if (ramka(e / RAMKA)) wynik = true;
+            }
+            return wynik;
+        }
+
+        private boolean ramka(double e) {
+            long r = ramka++;
+            if (tlo < 0) tlo = Math.max(e, 1);
+            if (kandOd >= 0) {
+                long d = r - kandOd;
+                if (d <= 1) kandSzczyt = Math.max(kandSzczyt, e);
+                else if (d >= 5) kandOgon = Math.max(kandOgon, e);
+                if (d >= 8) {
+                    boolean krotki = kandOgon < kandSzczyt / 16;   // po 50–80 ms co najmniej 12 dB ciszej
+                    if (krotki) {
+                        ostatni = "klask";
+                        klask(kandOd);
+                    } else {
+                        ostatni = "długi dźwięk (nie klask)";
+                        pierwszy = -1;
+                        drugi = -1;
+                        ostatniImpuls = r;
+                    }
+                    kandOd = -1;
+                }
+            } else if (e > tlo * prog && e > MIN_E && poprzednia * 8 < e) {
+                ostatniDb = (float) (10 * Math.log10(e / tlo));     // ostry skok ponad tło = kandydat
+                kandOd = r;
+                kandSzczyt = e;
+                kandOgon = 0;
+            } else {
+                if (e > tlo * prog && e > MIN_E && r - ostatniKlask > 15) {
+                    ostatniImpuls = r;                              // głośno, ale nie ostro (mowa, muzyka)
+                    pierwszy = -1;
+                    drugi = -1;
+                }
+                tlo += (e - tlo) * 0.005;
+            }
+            poprzednia = e;
+            if (pierwszy >= 0 && drugi < 0 && r - pierwszy > 70) pierwszy = -1;
+            if (drugi >= 0 && kandOd < 0 && r - drugi >= 40) {
+                pierwszy = -1;
+                drugi = -1;
+                ostatni = "KLASK ×2";
+                return true;
+            }
+            return false;
+        }
+
+        private void klask(long t) {
+            if (drugi >= 0) {                     // trzeci = oklaski / stukanie
+                pierwszy = -1;
+                drugi = -1;
+            } else if (pierwszy >= 0 && t - pierwszy >= 15 && t - pierwszy <= 70) {
+                drugi = t;
+            } else if (t - ostatniImpuls >= 50) {
+                pierwszy = t;
+            } else {
+                pierwszy = -1;
+            }
+            ostatniImpuls = t;
+            ostatniKlask = t;
         }
     }
 

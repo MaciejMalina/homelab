@@ -7,6 +7,8 @@ import android.content.Context;
 import android.content.IntentFilter;
 import android.content.pm.PackageManager;
 import android.graphics.Bitmap;
+import android.graphics.Matrix;
+import android.graphics.RectF;
 import android.hardware.camera2.CameraCharacteristics;
 import android.hardware.camera2.CaptureRequest;
 import android.hardware.display.DisplayManager;
@@ -42,6 +44,7 @@ import com.google.common.util.concurrent.ListenableFuture;
 import com.google.mediapipe.framework.image.BitmapImageBuilder;
 import com.google.mediapipe.framework.image.MPImage;
 import com.google.mediapipe.tasks.components.containers.Category;
+import com.google.mediapipe.tasks.components.containers.Detection;
 import com.google.mediapipe.tasks.components.containers.NormalizedLandmark;
 import com.google.mediapipe.tasks.core.BaseOptions;
 import com.google.mediapipe.tasks.vision.core.ImageProcessingOptions;
@@ -74,7 +77,8 @@ final class Gesty implements LifecycleOwner {
         void gest(String nazwa);
     }
 
-    /** Obecność przy biurku: twarz albo dłoń w kadrze (zmiana stanu -> strona -> malinka -> monitor). */
+    /** Obecność przy biurku: DUŻA twarz w 3 z 4 sprawdzeń włącza; potem twarz albo dłoń ją podtrzymuje
+     *  (zmiana stanu -> strona -> malinka -> monitor). */
     interface Obecnosc {
         void zmiana(boolean jest);
     }
@@ -83,7 +87,10 @@ final class Gesty implements LifecycleOwner {
     private static final String MODEL = "gesture_recognizer.task";
     private static final String MODEL_TWARZ = "blaze_face_short_range.tflite";
     private static final long TWARZ_CO_MS = 1000;           // wykrywanie twarzy raz na sekundę (oszczędnie)
-    private static final long OBECNOSC_PAMIEC_MS = 5000;    // twarz/dłoń widziana w ostatnich 5 s = ktoś jest
+    private static final long OBECNOSC_PAMIEC_MS = 5000;    // gdy już jest: twarz/dłoń w ostatnich 5 s podtrzymuje obecność
+    static final float TWARZ_MIN = 0.13f;                    // szerokość twarzy / szerokość kadru, od której „siedzisz” (prefs twarz_min)
+    private static final int TRAFIEN_WLACZ = 3;             // tyle z ostatnich 4 sprawdzeń (co 1 s) musi mieć dużą twarz
+    private static final float PODTRZYMANIE = 0.7f;         // gdy już jest: wystarczy twarz >= 70% progu (odchylenie się)
 
     private static final long STABILNY_MS = 600;          // tyle trzeba trzymać gest
     private static final long PRZERWA_MS = 1000;          // po rozpoznaniu: przerwa na kolejny
@@ -130,6 +137,17 @@ final class Gesty implements LifecycleOwner {
     private volatile long ostatniaTwarz = 0;
     private volatile long ostatniaDlonObecnosc = 0;
     private volatile boolean obecny = false;
+    private final boolean[] trafienia = new boolean[4];
+    private int trafIdx = 0;
+    private volatile float twarzMin = TWARZ_MIN;
+    private volatile boolean podglad = false;
+    // podgląd diagnostyczny (Podglad.java)
+    volatile Bitmap diagObraz = null;        // kadr w pionie, tylko gdy podgląd włączony
+    volatile RectF diagRamka = null;         // największa twarz, 0..1 względem diagObraz
+    volatile float diagSzer = 0f;
+    volatile float diagPewnosc = 0f;
+    volatile int diagTrafien = 0;
+    volatile long diagDlon = 0;              // czas ostatniej dłoni w kadrze (uptime)
     private final LifecycleRegistry cykl = new LifecycleRegistry(this);
     private final ExecutorService analiza = Executors.newSingleThreadExecutor();
 
@@ -228,6 +246,23 @@ final class Gesty implements LifecycleOwner {
         return ostatniaTemp;
     }
 
+    void ustawTwarzMin(float f) {
+        twarzMin = f;
+    }
+
+    float twarzMin() {
+        return twarzMin;
+    }
+
+    void ustawPodglad(boolean p) {
+        podglad = p;
+        if (!p) diagObraz = null;
+    }
+
+    boolean obecnyTeraz() {
+        return obecny;
+    }
+
     /** Dla sygnału „żyję” do malinki: true/false, a null gdy kamera nie działa (wtedy nic nie wiemy). */
     Boolean obecnosc() {
         return dziala ? obecny : null;
@@ -318,6 +353,7 @@ final class Gesty implements LifecycleOwner {
                 Log.e(TAG, "model twarzy", e);
             }
         }
+        java.util.Arrays.fill(trafienia, false);
         dziala = true;
         ListenableFuture<ProcessCameraProvider> f = ProcessCameraProvider.getInstance(act);
         f.addListener(() -> {
@@ -444,7 +480,8 @@ final class Gesty implements LifecycleOwner {
                 jasnosc = sredniaJasnosc(bm);
                 Log.d(TAG, "10 s: klatki=" + nKlatek.getAndSet(0) + " wyniki=" + nWynikow.getAndSet(0) + " dlonie=" + nDloni.getAndSet(0)
                         + " obraz=" + bm.getWidth() + "x" + bm.getHeight() + " rot=" + img.getImageInfo().getRotationDegrees()
-                        + " jasnosc=" + jasnosc + " obecnosc=" + obecny + (twarze == null ? " (bez modelu twarzy)" : "")
+                        + " jasnosc=" + jasnosc + " obecnosc=" + obecny + " twarz=" + fmt(diagSzer) + " trafien=" + diagTrafien
+                        + (twarze == null ? " (bez modelu twarzy)" : "")
                         + (uspiony ? " (uspiony)" : ""));
             }
             MPImage mp = new BitmapImageBuilder(bm).build();
@@ -455,9 +492,7 @@ final class Gesty implements LifecycleOwner {
             FaceDetector fd = twarze;
             if (fd != null && teraz - ostatniaAnalizaTwarzy >= TWARZ_CO_MS) {
                 ostatniaAnalizaTwarzy = teraz;
-                FaceDetectorResult fr = fd.detect(new BitmapImageBuilder(bm).build(), opcje);
-                if (!fr.detections().isEmpty()) ostatniaTwarz = teraz;
-                aktualizujObecnosc(teraz);
+                analizaTwarzy(fd, bm, img.getImageInfo().getRotationDegrees(), teraz);
             }
         } catch (Exception e) {
             Log.w(TAG, "klatka", e);
@@ -466,9 +501,50 @@ final class Gesty implements LifecycleOwner {
         }
     }
 
-    /** Twarz albo dłoń widziana w ostatnich OBECNOSC_PAMIEC_MS - zmiana stanu idzie od razu do strony. */
-    private void aktualizujObecnosc(long teraz) {
-        boolean jest = teraz - ostatniaTwarz < OBECNOSC_PAMIEC_MS || teraz - ostatniaDlonObecnosc < OBECNOSC_PAMIEC_MS;
+    /** Twarz raz na sekundę. Kadr obracamy sami do pionu (jak w przykładach MediaPipe), żeby ramka była w tych samych
+     *  współrzędnych co podgląd. Włącza tylko twarz dość duża (= siedzisz przy biurku, a nie stoisz obok). */
+    private void analizaTwarzy(FaceDetector fd, Bitmap bm, int rot, long teraz) {
+        Bitmap pion = bm;
+        if (rot != 0) {
+            Matrix m = new Matrix();
+            m.postRotate(rot);
+            pion = Bitmap.createBitmap(bm, 0, 0, bm.getWidth(), bm.getHeight(), m, true);
+        }
+        FaceDetectorResult fr = fd.detect(new BitmapImageBuilder(pion).build());
+        float szer = 0f;
+        float pewnosc = 0f;
+        RectF ramka = null;
+        float w = pion.getWidth();
+        float hh = pion.getHeight();
+        for (Detection d : fr.detections()) {
+            RectF b = d.boundingBox();
+            float sz = b.width() / w;
+            if (sz > szer) {
+                szer = sz;
+                pewnosc = d.categories().isEmpty() ? 0f : d.categories().get(0).score();
+                ramka = new RectF(b.left / w, b.top / hh, b.right / w, b.bottom / hh);
+            }
+        }
+        float min = twarzMin;
+        trafienia[trafIdx] = szer >= min;
+        trafIdx = (trafIdx + 1) % trafienia.length;
+        int n = 0;
+        for (boolean t : trafienia) if (t) n++;
+        if (n >= TRAFIEN_WLACZ || (obecny && szer >= min * PODTRZYMANIE)) ostatniaTwarz = teraz;
+        diagSzer = szer;
+        diagPewnosc = pewnosc;
+        diagRamka = ramka;
+        diagTrafien = n;
+        if (podglad) diagObraz = pion;
+        aktualizujObecnosc(teraz, n);
+    }
+
+    /** Wejście: duża twarz w TRAFIEN_WLACZ z 4 sprawdzeń. Potem twarz (>= 70% progu) albo dłoń w ostatnich
+     *  OBECNOSC_PAMIEC_MS podtrzymuje. Sama dłoń NIE włącza. Zmiana stanu idzie od razu do strony. */
+    private void aktualizujObecnosc(long teraz, int trafien) {
+        boolean jest = obecny
+                ? teraz - ostatniaTwarz < OBECNOSC_PAMIEC_MS || teraz - ostatniaDlonObecnosc < OBECNOSC_PAMIEC_MS
+                : trafien >= TRAFIEN_WLACZ;
         if (jest == obecny) return;
         obecny = jest;
         Log.i(TAG, "OBECNOSC " + (jest ? "jest" : "brak"));
@@ -499,6 +575,7 @@ final class Gesty implements LifecycleOwner {
         if (!r.landmarks().isEmpty()) {
             nDloni.incrementAndGet();
             ostatniaDlonObecnosc = t;
+            diagDlon = t;
             List<NormalizedLandmark> lm = r.landmarks().get(0);
             if (lm.size() > 9) {
                 x = (lm.get(0).x() + lm.get(9).x()) / 2f;   // nadgarstek + srodek dloni

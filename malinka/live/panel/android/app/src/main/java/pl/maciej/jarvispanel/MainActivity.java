@@ -17,6 +17,7 @@ import android.os.Looper;
 import android.os.PowerManager;
 import android.provider.Settings;
 import android.text.InputType;
+import android.view.Gravity;
 import android.view.MotionEvent;
 import android.view.View;
 import android.view.ViewGroup;
@@ -60,6 +61,7 @@ public class MainActivity extends Activity {
     private boolean uspiony = false;
     private Gesty gesty;
     private Glos glos;
+    private Podglad podglad;
     private static final int PROSBA_KAMERA = 1;
 
     private final Runnable pokazUstawienia = this::ustawienia;
@@ -98,8 +100,42 @@ public class MainActivity extends Activity {
         gesty = new Gesty(this, h, this::gestDoStrony, this::obecnoscDoStrony);
         glos = new Glos(this, h, this::glosDoStrony);
         poprosOUprawnienia();
+        gesty.ustawTwarzMin(prefs.getFloat("twarz_min", Gesty.TWARZ_MIN));
         gesty.ustawWlaczone(prefs.getBoolean("gesty", true));
         glos.ustawWlaczone(prefs.getBoolean("glos", true));
+        ustawPodglad(prefs.getBoolean("podglad", false));
+    }
+
+    /** Nakładka diagnostyczna (twarz, mikrofon, klaśnięcia) w prawym górnym rogu. */
+    private void ustawPodglad(boolean w) {
+        if (gesty != null) gesty.ustawPodglad(w);
+        if (w && podglad == null) {
+            float d = getResources().getDisplayMetrics().density;
+            int m = (int) (8 * d);
+            int szer = Math.min((int) (600 * d), getResources().getDisplayMetrics().widthPixels - 2 * m);
+            FrameLayout.LayoutParams lp = new FrameLayout.LayoutParams(szer, (int) (132 * d), Gravity.TOP | Gravity.END);
+            lp.setMargins(m, m, m, m);
+            podglad = new Podglad(this, gesty, glos);
+            root.addView(podglad, lp);
+        } else if (!w && podglad != null) {
+            root.removeView(podglad);
+            podglad = null;
+        }
+    }
+
+    private static float liczba(EditText e, float domyslna, float min, float max) {
+        try {
+            return Math.max(min, Math.min(max, Float.parseFloat(e.getText().toString().trim().replace(',', '.'))));
+        } catch (NumberFormatException ex) {
+            return domyslna;
+        }
+    }
+
+    private EditText poleLiczby(float v) {
+        EditText e = new EditText(this);
+        e.setInputType(InputType.TYPE_CLASS_NUMBER | InputType.TYPE_NUMBER_FLAG_DECIMAL);
+        e.setText(String.format(java.util.Locale.ROOT, "%.2f", v));
+        return e;
     }
 
     @Override
@@ -374,6 +410,26 @@ public class MainActivity extends Activity {
         glosPole.setText("Hey Jarvis (mikrofon) — teraz: " + (glos != null ? glos.stan() : "?"));
         glosPole.setChecked(prefs.getBoolean("glos", true));
 
+        // strojenie obecności i mikrofonu (wartości widać na żywo w podglądzie)
+        CheckBox podgladPole = new CheckBox(this);
+        podgladPole.setText("Podgląd diagnostyczny (twarz, mikrofon, klaśnięcia)");
+        podgladPole.setChecked(prefs.getBoolean("podglad", false));
+        TextView t6 = new TextView(this);
+        t6.setText("Twarz włącza monitor od: % szerokości kadru (np. 13)");
+        EditText twarzMin = poleLiczby(100 * prefs.getFloat("twarz_min", Gesty.TWARZ_MIN));
+        TextView t7 = new TextView(this);
+        t7.setText("Próg „Hey Jarvis” 0,10–0,95 (wyżej = mniej fałszywych)");
+        EditText micProg = poleLiczby(prefs.getFloat("mic_prog", 0.4f));
+        TextView t8 = new TextView(this);
+        t8.setText("Maks. wzmocnienie mikrofonu 1–16 (niżej = mniej szumu)");
+        EditText micWzm = poleLiczby(prefs.getFloat("mic_wzm", 8f));
+        CheckBox klaskiPole = new CheckBox(this);
+        klaskiPole.setText("Podwójne klaśnięcie = słuchaj polecenia");
+        klaskiPole.setChecked(prefs.getBoolean("klaski", true));
+        TextView t9 = new TextView(this);
+        t9.setText("Klaśnięcie: dB ponad szum tła 6–40 (wyżej = trzeba głośniej)");
+        EditText klaskDb = poleLiczby(prefs.getFloat("klask_db", Glos.KLASK_DB));
+
         TextView info = new TextView(this);
         info.setText("\nWersja " + BuildInfo.WERSJA + ". Żeby wyjść z kiosku: Ustawienia Androida → Aplikacje → "
                 + "Aplikacje domyślne → Ekran główny.");
@@ -431,6 +487,16 @@ public class MainActivity extends Activity {
         l.addView(glosLista);
         l.addView(t5);
         l.addView(tempo);
+        l.addView(podgladPole);
+        l.addView(t6);
+        l.addView(twarzMin);
+        l.addView(t7);
+        l.addView(micProg);
+        l.addView(t8);
+        l.addView(micWzm);
+        l.addView(klaskiPole);
+        l.addView(t9);
+        l.addView(klaskDb);
         l.addView(info);
 
         android.widget.ScrollView przewijanie = new android.widget.ScrollView(this);   // w poziomie nie mieści się bez przewijania
@@ -458,10 +524,23 @@ public class MainActivity extends Activity {
                     boolean gl = glosPole.isChecked();
                     e.putFloat("jasnosc", val).putBoolean("gesty", g).putBoolean("glos", gl)
                             .putString("glos_tts", nazwy.get(Math.max(0, glosLista.getSelectedItemPosition())))
-                            .putFloat("glos_tempo", (tempo.getProgress() + 50) / 100f).apply();
+                            .putFloat("glos_tempo", (tempo.getProgress() + 50) / 100f)
+                            .putBoolean("podglad", podgladPole.isChecked())
+                            .putFloat("twarz_min", liczba(twarzMin, 100 * Gesty.TWARZ_MIN, 3f, 60f) / 100f)
+                            .putFloat("mic_prog", liczba(micProg, 0.4f, 0.1f, 0.95f))
+                            .putFloat("mic_wzm", liczba(micWzm, 8f, 1f, 16f))
+                            .putBoolean("klaski", klaskiPole.isChecked())
+                            .putFloat("klask_db", liczba(klaskDb, Glos.KLASK_DB, 6f, 40f)).apply();
                     poprosOUprawnienia();
-                    if (gesty != null) gesty.ustawWlaczone(g);
-                    if (glos != null) glos.ustawWlaczone(gl);
+                    if (gesty != null) {
+                        gesty.ustawTwarzMin(prefs.getFloat("twarz_min", Gesty.TWARZ_MIN));
+                        gesty.ustawWlaczone(g);
+                    }
+                    if (glos != null) {
+                        glos.ustawWlaczone(gl);
+                        glos.restartNasluch();   // nowe progi mikrofonu / klaśnięć
+                    }
+                    ustawPodglad(podgladPole.isChecked());
                     ustawSen(false);
                     zaladuj();
                 })
