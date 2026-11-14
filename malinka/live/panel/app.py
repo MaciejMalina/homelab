@@ -21,6 +21,7 @@ API (JSON):
   POST /api/pc/<id>/wol                WoL komputera z PCS
   POST /api/gniazdo/<id>/<on|off|toggle>  para gniazd w przedłużaczu ESPHome (GNIAZDA w .env)
   POST /api/obecnosc                   {"twarz": bool}  <- telefon: ktoś przy biurku (twarz/dłoń w kamerze) -> monitor
+                                       pierwsze siadanie danego dnia -> {"brief": {"odp", "mow"}} (strona czyta na głos)
   POST /api/pc/<id>/<polecenie>        przekazane do agenta C# (audio/…, media/…, zasilanie/…, discord/…, speedtest)
   GET  /api/pc/<id>/okladka/<oid>      okładka z agenta
   POST /api/discord                    {"kanaly": [...]}  <- cog panel.py w bocie (tylko z 127.0.0.1)
@@ -235,7 +236,8 @@ def kuma():
             except ValueError:
                 continue
             monitory.append({"nazwa": et.get("monitor_name", "?").replace('\\"', '"'), "typ": et.get("monitor_type"),
-                             "stan": KUMA_STAN.get(st, "pending")})
+                             "stan": KUMA_STAN.get(st, "pending"),
+                             "adres": f"{et.get('monitor_url', '')} {et.get('monitor_hostname', '')}"})
     elif KUMA_STATUS_SLUG:
         _, strona = http_json(f"{KUMA_URL}/api/status-page/{KUMA_STATUS_SLUG}")
         _, bicie = http_json(f"{KUMA_URL}/api/status-page/heartbeat/{KUMA_STATUS_SLUG}")
@@ -478,6 +480,12 @@ OBECNOSC_GNIAZDO = E("OBECNOSC_GNIAZDO", "monitor")      # id z GNIAZDA; puste =
 OBECNOSC_WYLACZ_MIN = float(E("OBECNOSC_WYLACZ_MIN", "0"))   # 0 = nigdy samo (decyzja 2026-11-11)
 # „włącz / wyłącz stanowisko” (głos): te gniazda z GNIAZDA, po przecinku; później dojdzie LED
 STANOWISKO = [g.strip() for g in E("STANOWISKO", "monitor").split(",") if g.strip()]
+# brief dnia: przy PIERWSZYM wykryciu obecności danego dnia (w godzinach BRIEF_OD..BRIEF_DO) JARVIS mówi pogodę,
+# kalendarz, ważne maile, trening i niedziałające usługi. Ręcznie: „dzień dobry”, „co dziś”, „brief”.
+BRIEF_AUTO = E("BRIEF_AUTO", "1").strip().lower() not in ("0", "false", "nie", "")
+BRIEF_OD = int(E("BRIEF_OD", "0"))     # godzina od (włącznie)
+BRIEF_DO = int(E("BRIEF_DO", "24"))    # godzina do (bez) — 0..24 = cały dzień (decyzja 2026-11-14)
+BRIEF_ZNAKI = 900                      # tyle najwyżej czyta na głos (zwykłe odpowiedzi: 500)
 OBECNOSC = {"jest": None, "od": 0, "ts": 0, "wylaczone_po": 0}
 
 
@@ -519,6 +527,119 @@ def straznik_obecnosci():
                 OBECNOSC["wylaczone_po"] = o["od"]   # raz na jedną nieobecność
         if wylacz:
             _obecnosc_gniazdo("off", f"brak obecności od {int((t - o['od']) // 60)} min")
+
+
+# --------------------------------------------------------------------------- brief dnia
+DNI_TYG = ["poniedziałek", "wtorek", "środa", "czwartek", "piątek", "sobota", "niedziela"]
+MIESIACE = ["stycznia", "lutego", "marca", "kwietnia", "maja", "czerwca", "lipca", "sierpnia", "września",
+            "października", "listopada", "grudnia"]
+_brief_lock = threading.Lock()
+
+
+def _teraz_pl():
+    return Z.datetime.now(Z.TZ)
+
+
+def _bez_emoji(s):
+    """Do czytania na głos: bez **pogrubień** i emoji (zostają litery, cyfry i zwykła interpunkcja)."""
+    s = re.sub(r"\*\*", "", str(s or ""))
+    s = re.sub(r"[^\w\s.,:;()/%„”\"'+\-–—…!?]", "", s)
+    return re.sub(r"\s+", " ", s).strip()
+
+
+def _brief_kalendarz():
+    k = _z_pamieci("kalendarz", Z.kalendarz_pobierz)
+    d = (k.get("data") or {}) if k.get("ok") else {}
+    n = _teraz_pl()
+    godz, cale = [], []
+    for w in d.get("wydarzenia") or []:
+        start = Z.datetime.fromisoformat(w["start"]).astimezone(Z.TZ)
+        if start.date() != n.date():
+            continue
+        if w.get("caly_dzien"):
+            cale.append(w.get("tytul") or "wydarzenie")
+            continue
+        koniec = Z.datetime.fromisoformat(w["koniec"]).astimezone(Z.TZ) if w.get("koniec") else start
+        if koniec < n:
+            continue   # już się skończyło
+        godz.append(f"o {start.hour}:{start.minute:02d} {w.get('tytul') or 'wydarzenie'}")
+    czesci = []
+    if godz:
+        czesci.append(", ".join(godz[:4]) + (f" i jeszcze {len(godz) - 4}" if len(godz) > 4 else ""))
+    if cale:
+        czesci.append("cały dzień: " + ", ".join(cale[:2]))
+    return f"W kalendarzu: {'; '.join(czesci)}." if czesci else None
+
+
+def _brief_poczta():
+    p = cache.get("poczta", 30, Z.poczta)
+    d = (p.get("data") or {}) if p.get("ok") else {}
+    wazne = d.get("wazne") or []
+    if not wazne:
+        return None
+    od = list(dict.fromkeys(re.sub(r"\s*<[^>]*>", "", str(m.get("od") or "")).strip().strip('"') or "?" for m in wazne))[:2]
+    n = len(wazne)
+    if n == 1:
+        return f"Czeka jeden ważny nieprzeczytany mail, od {od[0]}."
+    slowo = "ważne nieprzeczytane maile" if n % 10 in (2, 3, 4) and n % 100 not in (12, 13, 14) else "ważnych nieprzeczytanych maili"
+    return f"Czeka {n} {slowo}, między innymi od {', '.join(od)}."
+
+
+def _brief_trening():
+    t = cache.get("trening-brief", 600, trening_brief)
+    lines = ((t.get("data") or {}).get("lines") or []) if t.get("ok") else []
+    if not lines:
+        return None
+    linia = _bez_emoji(lines[0])
+    if not linia or "nic zaplanowanego" in linia:
+        return None
+    return f"Trening: {linia}" + ("" if linia.endswith((".", "!", "?")) else ".")
+
+
+def _brief_uslugi():
+    """Niedziałające monitory Kumy, bez grup. Gdy serwer śpi (normalny stan, budzony WoL), jego usługi pomijamy."""
+    k = cache.get("kuma", 30, kuma)
+    d = (k.get("data") or {}) if k.get("ok") else {}
+    spi = bool(SERVER_IP) and not serwer_up()
+    down = [m["nazwa"] for m in d.get("monitory") or []
+            if m.get("stan") == "down" and m.get("typ") != "group" and not (spi and SERVER_IP in (m.get("adres") or ""))]
+    if not down:
+        return None
+    return "Nie działa: " + ", ".join(down[:4]) + (f" i jeszcze {len(down) - 4}" if len(down) > 4 else "") + "."
+
+
+def brief_tekst():
+    """Każda część osobno: błąd albo brak danych w jednej nie psuje reszty, pusta część jest pomijana."""
+    n = _teraz_pl()
+    out = [f"{'Dzień dobry' if 5 <= n.hour < 18 else 'Dobry wieczór'}. Jest {n.hour}:{n.minute:02d}, "
+           f"{DNI_TYG[n.weekday()]} {n.day} {MIESIACE[n.month - 1]}."]
+    for fn in (_pogoda_zdanie, _brief_kalendarz, _brief_poczta, _brief_trening, _brief_uslugi):
+        try:
+            z = fn()
+            if z:
+                out.append(z)
+        except Exception as e:  # noqa: BLE001
+            print(f"brief: {fn.__name__}: {e}", flush=True)
+    return " ".join(out)
+
+
+def _brief_oznacz_dzis():
+    """True = dziś jeszcze nie było briefu (i od teraz jest oznaczony). Zapis w pamięci przetrwa restart kontenera."""
+    dzis = _teraz_pl().date().isoformat()
+    with _brief_lock:
+        if Z.pamiec_get("brief_dzien") == dzis:
+            return False
+        Z.pamiec_set("brief_dzien", dzis)
+        return True
+
+
+def brief_auto():
+    """Wołane, gdy telefon zgłasza obecność: brief tylko raz dziennie i tylko w oknie BRIEF_OD..BRIEF_DO."""
+    if not BRIEF_AUTO or not BRIEF_OD <= _teraz_pl().hour < BRIEF_DO or not _brief_oznacz_dzis():
+        return None
+    t = brief_tekst()
+    print(f"brief: pierwsze siadanie dziś ({len(t)} znaków)", flush=True)
+    return {"odp": t, "mow": _do_mowy(t, BRIEF_ZNAKI)}
 
 
 # --------------------------------------------------------------------------- akcje
@@ -643,14 +764,33 @@ def _pc_cmd(pc, cmd, body=None):
     cache.drop("pc", "muzyka")
 
 
-def _do_mowy(tekst):
-    """Odpowiedź do czytania na głos: bez znaczników markdown, najwyżej ~500 znaków (urwane na końcu zdania)."""
+def _do_mowy(tekst, limit=500):
+    """Odpowiedź do czytania na głos: bez znaczników markdown, najwyżej ~limit znaków (urwane na końcu zdania)."""
     t = re.sub(r"[*_`#>|]", "", tekst or "")
     t = re.sub(r"\s+", " ", t).strip()
-    if len(t) > 500:
-        cut = max(t.rfind(". ", 0, 500), t.rfind("! ", 0, 500), t.rfind("? ", 0, 500))
-        t = t[:cut + 1] if cut > 100 else t[:500] + "…"
+    if len(t) > limit:
+        cut = max(t.rfind(". ", 0, limit), t.rfind("! ", 0, limit), t.rfind("? ", 0, limit))
+        t = t[:cut + 1] if cut > 100 else t[:limit] + "…"
     return t
+
+
+def _pogoda_zdanie(jutro=False):
+    """„Teraz X stopni, opis. Dziś od A do B, szansa opadów N procent.” (albo jutro). None = brak prognozy."""
+    p = cache.get("pogoda", 900, pogoda)
+    if not p.get("ok"):
+        return None
+    w = p["data"]
+    dni = w.get("days") or []
+    if jutro and len(dni) > 1:
+        d = dni[1]
+        odp = f"Jutro od {_stopnie(d['min'], True)} do {_stopnie(d['max'], True)}, {_pogoda_opis(d['code'])}"
+        return odp + (f", szansa opadów {d['pp']} procent." if d.get("pp") else ".")
+    odp = f"Teraz {_stopnie(w['temp'])}, {_pogoda_opis(w['code'])}."
+    if dni:
+        d = dni[0]
+        odp += f" Dziś od {_stopnie(d['min'], True)} do {_stopnie(d['max'], True)}"
+        odp += f", szansa opadów {d['pp']} procent." if d.get("pp") else "."
+    return odp
 
 
 def jarvis(tekst):
@@ -703,24 +843,15 @@ def jarvis(tekst):
         cache.drop("todo")
         return {"odp": f"Dodałem do listy: {tytul}."}
 
+    # brief dnia na żądanie (liczy się też jako dzisiejszy — automat przy siadaniu już go nie powtórzy)
+    if re.search(r"\bdzien dobry\b|\bbrief\b|\bco (mam |jest )?(dzis|dzisiaj)\b|\bplan na (dzis|dzisiaj)\b|"
+                 r"\bpodsumuj\w* dzien|\bpodsumowanie dnia", t):
+        _brief_oznacz_dzis()
+        return {"odp": brief_tekst(), "mow_limit": BRIEF_ZNAKI}
+
     # pogoda i godzina
     if re.search(r"pogod|temperatur|ile stopni|czy (bedzie )?pada", t):
-        p = cache.get("pogoda", 900, pogoda)
-        if not p.get("ok"):
-            return {"odp": "Nie mam teraz prognozy pogody."}
-        w = p["data"]
-        dni = w.get("days") or []
-        if "jutro" in t and len(dni) > 1:
-            d = dni[1]
-            odp = f"Jutro od {_stopnie(d['min'], True)} do {_stopnie(d['max'], True)}, {_pogoda_opis(d['code'])}"
-            odp += f", szansa opadów {d['pp']} procent." if d.get("pp") else "."
-            return {"odp": odp}
-        odp = f"Teraz {_stopnie(w['temp'])}, {_pogoda_opis(w['code'])}."
-        if dni:
-            d = dni[0]
-            odp += f" Dziś od {_stopnie(d['min'], True)} do {_stopnie(d['max'], True)}"
-            odp += f", szansa opadów {d['pp']} procent." if d.get("pp") else "."
-        return {"odp": odp}
+        return {"odp": _pogoda_zdanie(jutro="jutro" in t) or "Nie mam teraz prognozy pogody."}
     if re.search(r"\b(ktora|jaka) (jest )?godzin", t):
         return {"odp": f"Jest {_godzina()}."}
 
@@ -761,7 +892,7 @@ def jarvis_api(tekst):
         w = jarvis(tekst)
     except Exception as e:  # noqa: BLE001  odpowiedź ma być zawsze do przeczytania
         w = {"odp": f"Nie udało się: {e}", "blad": True}
-    w["mow"] = _do_mowy(w["odp"])
+    w["mow"] = _do_mowy(w["odp"], w.pop("mow_limit", 500))
     return w
 
 
@@ -1021,8 +1152,10 @@ class H(BaseHTTPRequestHandler):
         if sc == "/api/jarvis":
             return self.odpowiedz(200, jarvis_api(b.get("tekst")))
         if sc == "/api/obecnosc":
-            obecnosc(b.get("twarz"))
-            return self.odpowiedz(204)
+            jest = b.get("twarz")
+            obecnosc(jest)
+            br = brief_auto() if jest is True else None
+            return self.odpowiedz(200, {"brief": br}) if br else self.odpowiedz(204)
         if m := re.fullmatch(r"/api/gniazdo/([\w-]+)/(on|off|toggle)", sc):
             w = Z.gniazdo_ustaw(m.group(1), m.group(2))
             cache.drop("dash-gniazda")

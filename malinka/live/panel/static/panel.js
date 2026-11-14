@@ -1282,7 +1282,17 @@ window.jarvisGlos = (stan, tekst) => {
 };
 
 // kamera panelu: ktoś usiadł przy biurku / odszedł (twarz albo dłoń) -> malinka steruje gniazdem monitora
-window.jarvisObecnosc = (jest) => { api("/api/obecnosc", "POST", { twarz: !!jest }).catch(() => { /* offline */ }); };
+// pierwsze siadanie danego dnia: malinka odsyła brief dnia -> dymek + czytanie na głos
+window.jarvisObecnosc = (jest) => {
+  api("/api/obecnosc", "POST", { twarz: !!jest }).then((r) => {
+    const br = r && r.brief;
+    if (!br || !br.odp) return;
+    wake(wakeMin);
+    pokazGlos("Brief dnia", br.odp);
+    if (B && B.mow) try { B.mow(br.mow || br.odp); } catch (e) { /* stara appka */ }
+    schowajGlos(Math.min(60000, 6000 + br.odp.length * 60));
+  }).catch(() => { /* offline */ });
+};
 
 async function heartbeat() {
   // stan telefonu zgłasza tylko appka; zwykła przeglądarka z otwartym panelem nie może go nadpisywać
