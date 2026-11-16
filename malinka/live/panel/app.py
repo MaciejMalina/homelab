@@ -38,6 +38,7 @@ Zapisy wymagają Content-Type: application/json (ochrona przed CSRF), a jeśli u
 PANEL_TOKEN, także nagłówka X-Panel-Token.
 """
 import base64
+import collections
 import hmac
 import json
 import os
@@ -958,6 +959,48 @@ def dobranoc_trwa():
         return _dobranoc["id"] is not None
 
 
+# --------------------------------------------------------------------------- historia CPU/GPU komputerów
+# W tle co HIST_CO_S s: obciążenie i temperatury z agenta, ostatnie ~10 min (HIST_N próbek) na komputer —
+# zakładka Komputer rysuje z tego wykresy. Wyłączony komputer: próba raz na minutę, stara historia znika.
+HIST_CO_S = 5
+HIST_N = 120
+_hist = {}
+_hist_lock = threading.Lock()
+
+
+def probkowanie_pc():
+    nastepna = {}
+    while True:
+        t0 = teraz()
+        try:
+            for pc in Z.lista_pc():
+                if t0 < nastepna.get(pc["id"], 0):
+                    continue
+                try:
+                    s = Z.agent(pc, "/api/stan", timeout=2)
+                    cpu, gpu = (s or {}).get("cpu") or {}, (s or {}).get("gpu") or {}
+                    with _hist_lock:
+                        _hist.setdefault(pc["id"], collections.deque(maxlen=HIST_N)).append(
+                            [int(t0), cpu.get("obciazenie"), gpu.get("obciazenie"), cpu.get("temp"), gpu.get("temp")])
+                except Exception:  # noqa: BLE001  wyłączony / śpi
+                    nastepna[pc["id"]] = t0 + 60
+                    with _hist_lock:
+                        _hist.pop(pc["id"], None)
+        except Exception as e:  # noqa: BLE001
+            print(f"historia pc: {e}", flush=True)
+        time.sleep(max(1.0, HIST_CO_S - (teraz() - t0)))
+
+
+def _tab_pc():
+    """Stan komputerów (cache 2 s) + historia [czas, cpu %, gpu %, cpu °C, gpu °C] do wykresów na zakładce Komputer."""
+    w = cache.get("pc", 2, lambda: Z.pc_stan(("stan", "audio")))
+    if not w.get("ok"):
+        return w
+    with _hist_lock:
+        pcs = [{**p, "historia": list(_hist.get(p["id"], []))} for p in w["data"]]
+    return {**w, "data": pcs}
+
+
 # --------------------------------------------------------------------------- akcje
 def wol(mac_txt):
     mac = bytes.fromhex(re.sub(r"[^0-9a-fA-F]", "", mac_txt or ""))
@@ -1290,7 +1333,7 @@ def tab_serwery():
 
 TABS = {
     "dzien": tab_dzien,
-    "pc": lambda: {"pcs": cache.get("pc", 2, lambda: Z.pc_stan(("stan", "audio")))},
+    "pc": lambda: {"pcs": _tab_pc()},
     "muzyka": lambda: {"pcs": cache.get("muzyka", 2, lambda: Z.pc_stan(("media", "audio")))},
     "discord": lambda: {"discord": dict(Z.DISCORD), "pcs": cache.get("pc-discord", 3, Z.pc_discord)},
     "media": tab_media,
@@ -1527,4 +1570,5 @@ if __name__ == "__main__":
           f"token {'tak' if PANEL_TOKEN else 'nie'}", flush=True)
     threading.Thread(target=straznik_obecnosci, daemon=True).start()
     threading.Thread(target=straznik_przypomnien, daemon=True).start()
+    threading.Thread(target=probkowanie_pc, daemon=True).start()
     ThreadingHTTPServer(("0.0.0.0", PORT), H).serve_forever()

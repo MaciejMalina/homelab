@@ -88,9 +88,18 @@ function dataKrotko(iso) {
 const KOL = { ok: "var(--ok)", uwaga: "var(--uwaga)", zle: "var(--zle)", pom: "var(--pom)", morski: "var(--morski)", akcent: "var(--akcent)", fiolet: "var(--fiolet)", brak: "var(--ramka)" };
 const kolTemp = (t) => (t == null ? KOL.brak : t < 60 ? KOL.morski : t < 75 ? KOL.uwaga : KOL.pom);
 const kolProc = (p) => (p == null ? KOL.brak : p < 60 ? KOL.morski : p < 85 ? KOL.uwaga : KOL.zle);
-function kafel(et, wa, jedn = "", kolor = KOL.brak, pod = "", atrybuty = "") {
+function kafel(et, wa, jedn = "", kolor = KOL.brak, pod = "", atrybuty = "", wykres = "") {
   return `<div class="kafel" style="--kolor:${kolor}" ${atrybuty}><div class="et">${esc(et)}</div>` +
-    `<div class="wa">${esc(wa)}${jedn ? `<small>${esc(jedn)}</small>` : ""}</div>${pod ? `<div class="pod">${esc(pod)}</div>` : ""}</div>`;
+    `<div class="wa">${esc(wa)}${jedn ? `<small>${esc(jedn)}</small>` : ""}</div>${wykres}${pod ? `<div class="pod">${esc(pod)}</div>` : ""}</div>`;
+}
+const WYKRESY_ATR = 'data-akcja="pc-wykresy"';
+// mały wykres liniowy (ostatnie ~10 min z malinki); wartości poza [min, max] przycięte, braki pomijane
+function spark(wart, min, max) {
+  const v = wart.map((x, i) => [i, x]).filter(([, x]) => x != null);
+  if (v.length < 2) return "";
+  const n = wart.length - 1 || 1;
+  const pkt = v.map(([i, x]) => `${(100 * i / n).toFixed(1)},${(20 - 20 * (Math.min(max, Math.max(min, x)) - min) / (max - min)).toFixed(1)}`).join(" ");
+  return `<svg class="spark" viewBox="0 0 100 20" preserveAspectRatio="none"><polyline points="${pkt}"/></svg>`;
 }
 const pasek = (proc, kolor = KOL.akcent) => `<div class="pasek" style="--kolor:${kolor}"><i style="width:${Math.max(0, Math.min(100, proc || 0))}%"></i></div>`;
 const pustoHtml = (t) => `<div class="pusto">${esc(t)}</div>`;
@@ -506,15 +515,16 @@ RENDER.pc = (d) => {
   const vramP = gpu.vramRazemMb ? (100 * gpu.vramUzyteMb) / gpu.vramRazemMb : null;
   const ping = s.pingMs;
   const sp = wynikiSpeedPc[pc.id];
+  const hist = pc.historia || [], kol = (i) => hist.map((r) => r[i]);
   const kafle = [
-    kafel("CPU", cpu.temp != null ? Math.round(cpu.temp) + "°" : "–", "", kolTemp(cpu.temp), cpu.nazwa || ""),
-    kafel("GPU", gpu.temp != null ? Math.round(gpu.temp) + "°" : "–", "", kolTemp(gpu.temp), gpu.nazwa || ""),
+    kafel("CPU", cpu.temp != null ? Math.round(cpu.temp) + "°" : "–", "", kolTemp(cpu.temp), cpu.nazwa || "", WYKRESY_ATR, spark(kol(3), 30, 100)),
+    kafel("GPU", gpu.temp != null ? Math.round(gpu.temp) + "°" : "–", "", kolTemp(gpu.temp), gpu.nazwa || "", WYKRESY_ATR, spark(kol(4), 30, 100)),
     kafel("Moc", s.mocW != null ? Math.round(s.mocW) : "–", "W", KOL.morski, "CPU + GPU"),
     kafel("RAM", s.ramUzyteGb != null ? s.ramUzyteGb.toFixed(1) : "–", s.ramRazemGb ? `/${Math.round(s.ramRazemGb)} GB` : "GB", kolProc(ramP)),
     kafel("VRAM", gpu.vramUzyteMb != null ? (gpu.vramUzyteMb / 1024).toFixed(1) : "–", gpu.vramRazemMb ? `/${Math.round(gpu.vramRazemMb / 1024)} GB` : "GB", kolProc(vramP)),
     kafel("Ping", ping != null ? (ping < 10 ? ping.toFixed(1) : Math.round(ping)) : "–", "ms", ping == null ? KOL.zle : ping < 30 ? KOL.ok : ping < 80 ? KOL.uwaga : KOL.zle, "1.1.1.1"),
-    kafel("CPU obc.", cpu.obciazenie != null ? Math.round(cpu.obciazenie) : "–", "%", kolProc(cpu.obciazenie), cpu.moc != null ? `${Math.round(cpu.moc)} W` : ""),
-    kafel("GPU obc.", gpu.obciazenie != null ? Math.round(gpu.obciazenie) : "–", "%", kolProc(gpu.obciazenie), gpu.moc != null ? `${Math.round(gpu.moc)} W` : ""),
+    kafel("CPU obc.", cpu.obciazenie != null ? Math.round(cpu.obciazenie) : "–", "%", kolProc(cpu.obciazenie), cpu.moc != null ? `${Math.round(cpu.moc)} W` : "", WYKRESY_ATR, spark(kol(1), 0, 100)),
+    kafel("GPU obc.", gpu.obciazenie != null ? Math.round(gpu.obciazenie) : "–", "%", kolProc(gpu.obciazenie), gpu.moc != null ? `${Math.round(gpu.moc)} W` : "", WYKRESY_ATR, spark(kol(2), 0, 100)),
     kafel("Włączony", s.uptimeS != null ? eta(s.uptimeS) : "–", "", KOL.fiolet, "od startu Windows"),
   ].join("");
   const urz = (a.urzadzenia || []).map((u) =>
@@ -982,6 +992,64 @@ WIDOK.pogoda = {
   },
 };
 
+// ---------- wykresy CPU/GPU komputera (historia ~10 min z malinki, próbka co 5 s)
+const WYKRES_OKNO_S = 600;
+function wykresDuzy(hist, serie, min, max, jedn, krok) {
+  if (hist.length < 2) return pustoHtml("Zbieram dane… (pierwsze punkty po kilkunastu sekundach)");
+  const koniec = hist[hist.length - 1][0], start = koniec - WYKRES_OKNO_S;
+  const x = (t) => ((100 * (t - start)) / WYKRES_OKNO_S).toFixed(2);
+  const y = (v) => (100 - (100 * (Math.min(max, Math.max(min, v)) - min)) / (max - min)).toFixed(2);
+  let siatka = "", oy = "";
+  for (let v = min; v <= max; v += krok) {
+    siatka += `<line class="linia-s" x1="0" x2="100" y1="${y(v)}" y2="${y(v)}"/>`;
+    oy += `<div class="oy" style="top:${y(v)}%">${v}${jedn}</div>`;
+  }
+  const ox = [10, 5, 0].map((m) => `<div class="ox" style="left:${x(koniec - m * 60)}%">${m ? "−" + m + " min" : "teraz"}</div>`).join("");
+  const linie = serie.map((s) => {
+    // przerwa > 15 s (np. agent nie odpowiadał) = przerwana linia
+    const odcinki = [];
+    let biez = [], ost = null;
+    for (const r of hist) {
+      const v = r[s.i];
+      if (v == null || (ost != null && r[0] - ost > 15)) { if (biez.length > 1) odcinki.push(biez); biez = []; }
+      if (v != null) biez.push(`${x(r[0])},${y(v)}`);
+      ost = r[0];
+    }
+    if (biez.length > 1) odcinki.push(biez);
+    return odcinki.map((o) => `<polyline style="stroke:${s.kolor}" points="${o.join(" ")}"/>`).join("");
+  }).join("");
+  return `<div class="wykres"><svg viewBox="0 0 100 100" preserveAspectRatio="none">${siatka}${linie}</svg>${oy}${ox}</div>`;
+}
+function statyWykresu(hist, s, jedn) {
+  const v = hist.map((r) => r[s.i]).filter((x) => x != null);
+  if (!v.length) return `<span class="leg" style="--kolor:${s.kolor}">${esc(s.nazwa)}: brak czujnika</span>`;
+  const sr = v.reduce((a, b) => a + b, 0) / v.length;
+  return `<span class="leg" style="--kolor:${s.kolor}">${esc(s.nazwa)} <b>${Math.round(v[v.length - 1])}${jedn}</b>` +
+    ` · śr. ${Math.round(sr)} · maks. ${Math.round(Math.max(...v))}</span>`;
+}
+WIDOK.pc = {
+  tytul: (w) => {
+    const pcs = (w.dane && w.dane.pcs && w.dane.pcs.data) || [];
+    const pc = pcs.find((p) => p.id === wybranyPc);
+    return "Wykresy" + (pc ? " — " + pc.nazwa : "");
+  },
+  co: 5000,
+  html(w) {
+    const [pcs, err] = zrodlo(w.dane.pcs, "Komputery");
+    if (!pcs) return `<div class="karta">${err}</div>`;
+    const pc = pcs.find((p) => p.id === wybranyPc) || pcs.find((p) => p.online);
+    if (!pc || !pc.online) return `<div class="karta">${pustoHtml("Komputer jest offline — brak bieżących danych.")}</div>`;
+    const h = pc.historia || [];
+    const obc = [{ i: 1, nazwa: "CPU", kolor: KOL.akcent }, { i: 2, nazwa: "GPU", kolor: KOL.fiolet }];
+    const tmp = [{ i: 3, nazwa: "CPU", kolor: KOL.akcent }, { i: 4, nazwa: "GPU", kolor: KOL.fiolet }];
+    return `<div class="siatka" style="grid-template-rows:1fr 1fr">
+      <div class="karta"><h2>Obciążenie — ostatnie 10 min<span class="prawo">${obc.map((s) => statyWykresu(h, s, "%")).join("")}</span></h2>
+        ${wykresDuzy(h, obc, 0, 100, "%", 25)}</div>
+      <div class="karta"><h2>Temperatury<span class="prawo">${tmp.map((s) => statyWykresu(h, s, "°")).join("")}</span></h2>
+        ${wykresDuzy(h, tmp, 30, 100, "°", 10)}</div></div>`;
+  },
+};
+
 // ---------- kontenery Dockera
 const STAN_KONT = { running: "działa", exited: "zatrzymany", restarting: "restartuje się", paused: "pauza", created: "utworzony", dead: "martwy" };
 const ZDROWIE = { healthy: "zdrowy", unhealthy: "niezdrowy", starting: "startuje" };
@@ -1089,6 +1157,7 @@ document.addEventListener("click", (e) => {
       });
       break;
     case "pogoda-otworz": otworzWidok("pogoda"); break;
+    case "pc-wykresy": otworzWidok("pc"); break;
     case "docker-otworz": otworzWidok("docker"); break;
     case "widok-wstecz": widokWstecz(); break;
     case "docker-logi":

@@ -67,6 +67,20 @@ input { user-select: text; -webkit-user-select: text; }
 .kafel .et { font-size: 10px; font-weight: 700; letter-spacing: .08em; text-transform: uppercase; color: #cfd6e4; }
 .kafel .wa { font-size: 21px; font-weight: 700; line-height: 1.15; font-variant-numeric: tabular-nums; white-space: nowrap; }
 .kafel .wa small { font-size: 12px; font-weight: 600; color: var(--przyg); margin-left: 2px; }
+.wykres { position: relative; flex: 1; min-height: 0; margin: 2px 4px 16px 34px; }
+.wykres svg { position: absolute; inset: 0; width: 100%; height: 100%; overflow: visible; }
+.wykres .linia-s { stroke: rgba(255,255,255,.09); stroke-width: 1; vector-effect: non-scaling-stroke; }
+.wykres polyline { fill: none; stroke-width: 2.2; vector-effect: non-scaling-stroke; stroke-linejoin: round; stroke-linecap: round; }
+.wykres .oy { position: absolute; left: -34px; width: 28px; text-align: right; font-size: 10px; color: var(--przyg); transform: translateY(-50%); }
+.wykres .ox { position: absolute; bottom: -15px; font-size: 10px; color: var(--przyg); transform: translateX(-50%); white-space: nowrap; }
+.wykres .ox:last-child { transform: translateX(-100%); }
+.karta h2 .leg { margin-left: 14px; color: #cfd6e4; }
+.karta h2 .leg::before { content: ""; display: inline-block; width: 10px; height: 3px; border-radius: 2px; background: var(--kolor);
+  vertical-align: middle; margin-right: 5px; }
+.karta h2 .leg b { color: var(--kolor); }
+.kafel .spark { display: block; width: 100%; height: 14px; margin: 1px 0; }
+.kafel .spark polyline { fill: none; stroke: var(--kolor, #8b95a5); stroke-width: 1.5; vector-effect: non-scaling-stroke;
+  stroke-linejoin: round; opacity: .9; }
 .kafel .pod { font-size: 10px; color: var(--przyg); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .wiersz { display: flex; align-items: center; gap: 8px; padding: 5px 0; border-bottom: 1px solid var(--ramka); min-width: 0; }
 .wiersz:last-child { border-bottom: 0; }
