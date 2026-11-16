@@ -34,6 +34,8 @@ API (nagłówek `X-Agent-Token`):
 | `POST /api/zasilanie/uspij\|wylacz\|restart\|zablokuj` | |
 | `POST /api/discord/mikrofon\|sluchawki` | naciska skróty z agent.json — ustaw te same w Discordzie |
 | `POST /api/speedtest` | ping + 25 MB w dół / 10 MB w górę (Cloudflare) |
+| `GET /api/procesy` | top 8 procesów wg CPU i wg RAM (zgrupowane po nazwie, próbka co 3 s) — od 1.1 |
+| `POST /api/procesy/zakoncz {nazwa, pid?}` | kończy jedną instancję (pid) albo wszystkie o tej nazwie; tylko sesja użytkownika, bez chronionych (explorer, dwm, svchost…) — od 1.1 |
 
 Uwagi:
 - LibreHardwareMonitor czyta czujniki CPU przez sterownik jądra (starsze wersje: WinRing0). Jeśli Windows Defender go zgłosi,

@@ -1,4 +1,4 @@
-// JARVIS Agent — Windows (laptop i gaming PC). Panel na malince pyta go o czujniki, audio i multimedia
+﻿// JARVIS Agent — Windows (laptop i gaming PC). Panel na malince pyta go o czujniki, audio i multimedia
 // oraz wysyła polecenia (uśpij/wyłącz, głośność, play/pauza, wycisz w Discordzie).
 // Dostęp: tylko adresy z agent.json → DozwoloneIp + nagłówek X-Agent-Token. Do tego reguła zapory (install.ps1).
 using System.Net;
@@ -18,6 +18,7 @@ builder.WebHost.UseUrls($"http://0.0.0.0:{cfg.Port}");
 builder.Services.ConfigureHttpJsonOptions(o => o.SerializerOptions.PropertyNamingPolicy = JsonNamingPolicy.CamelCase);
 builder.Services.AddSingleton(new Sprzet(cfg.PingHost));
 builder.Services.AddSingleton(new DiscordRpc(cfg));
+builder.Services.AddSingleton(new Procesy());
 
 var app = builder.Build();
 app.Services.GetRequiredService<DiscordRpc>().Start();
@@ -60,7 +61,7 @@ app.Use(async (ctx, next) =>
 });
 
 // ------------------------------------------------------------------ odczyt
-app.MapGet("/api/health", () => Results.Json(new { ok = true, nazwa = cfg.Nazwa, wersja = "1.0" }));
+app.MapGet("/api/health", () => Results.Json(new { ok = true, nazwa = cfg.Nazwa, wersja = "1.1" }));
 
 app.MapGet("/api/stan", (Sprzet s) =>
 {
@@ -126,6 +127,8 @@ app.MapPost("/api/discord/{akcja}", async (string akcja, DiscordRpc rpc) =>
     return Results.Json(new { ok = true, via = "skrot" });
 });
 app.MapPost("/api/speedtest", async () => Results.Json(await Speedtest.Uruchom()));
+app.MapGet("/api/procesy", (Procesy p) => Results.Json(p.Lista()));
+app.MapPost("/api/procesy/zakoncz", (ZadanieZakonczenia z, Procesy p) => Results.Json(new { ok = true, msg = p.Zakoncz(z.Nazwa, z.Pid) }));
 
 app.Run();
 
@@ -133,3 +136,4 @@ record ZadanieGlosnosci(int Wartosc);
 record ZadanieWyciszenia(bool? Wyciszony);
 record ZadanieWyjscia(string Id);
 record ZadanieAplikacji(uint Pid, int? Glosnosc, bool? Wyciszona);
+record ZadanieZakonczenia(string Nazwa, int? Pid);

@@ -28,6 +28,8 @@ API (JSON):
   POST /api/media/qbit/<hash>/<start|stop>
   GET  /api/siec/speedtest        ostatni wynik (ts, ts_ms, ping, dol, gora) - dla kafelka w Homepage
 POST /api/siec/speedtest
+  POST /api/claude                     {"zdarzenie": UserPromptSubmit|Stop|Notification, "typ", "sesja", "projekt"}
+                                       <- hook Claude Code z laptopa: „skończył” (>= CLAUDE_MIN_S) / „czeka na zgodę”
   POST /api/dobranoc/anuluj             przerywa odliczanie „Dobranoc” (dotknięcie ekranu)
   SSE "przypomnienie" {"mow", "tekst"}    minutnik / przypomnienie głosowe (do tego alert budzi ekran)
   POST /api/swiatlo                    {"on"?, "bri"?, "kolor"?: [r,g,b], "ps"?}  -> WLED
@@ -991,6 +993,22 @@ def probkowanie_pc():
         time.sleep(max(1.0, HIST_CO_S - (teraz() - t0)))
 
 
+def _procesy():
+    """Widok „Procesy”: top CPU/RAM z agenta 1.1+ dla każdego komputera (starszy agent -> 404 -> komunikat)."""
+    def jeden(pc):
+        def f():
+            return Z.agent(pc, "/api/procesy", timeout=2.5)
+        return f
+    wyniki = Z.rownolegle({pc["id"]: jeden(pc) for pc in Z.lista_pc()})
+    out = []
+    for pc in Z.lista_pc():
+        w = wyniki.get(pc["id"]) or {}
+        blad = w.get("error") or ""
+        out.append({"id": pc["id"], "nazwa": pc["nazwa"], "online": bool(w.get("ok")), "procesy": w.get("data"),
+                    "error": "agent bez obsługi procesów — zaktualizuj go do wersji 1.1" if "404" in blad else blad})
+    return out
+
+
 def _tab_pc():
     """Stan komputerów (cache 2 s) + historia [czas, cpu %, gpu %, cpu °C, gpu °C] do wykresów na zakładce Komputer."""
     w = cache.get("pc", 2, lambda: Z.pc_stan(("stan", "audio")))
@@ -999,6 +1017,46 @@ def _tab_pc():
     with _hist_lock:
         pcs = [{**p, "historia": list(_hist.get(p["id"], []))} for p in w["data"]]
     return {**w, "data": pcs}
+
+
+# --------------------------------------------------------------------------- Claude Code (hooki z laptopa)
+# UserPromptSubmit = start pracy; Stop = koniec (powiadamiamy, gdy trwało >= CLAUDE_MIN_S — krótkie odpowiedzi
+# pomijamy); Notification permission_prompt = czeka na zgodę. idle_prompt pomijamy (dubluje Stop po ~60 s).
+CLAUDE_MIN_S = int(E("CLAUDE_MIN_S", "30"))
+_claude = {}
+_claude_lock = threading.Lock()
+
+
+def _powiadom(tekst, ikona="🤖", minuty=10):
+    """Baner na panelu (budzi ekran) + pik i czytanie na głos; po „Dobranoc” (pauza do rana) tylko baner."""
+    ustaw_alert(f"{ikona} {tekst}", "info", minuty)
+    if not _obecnosc_pauza():
+        szyna.publikuj("przypomnienie", {"mow": tekst, "tekst": tekst})
+
+
+def claude_zdarzenie(b):
+    zd = str(b.get("zdarzenie") or "")
+    sesja = str(b.get("sesja") or "")[:80]
+    projekt = re.sub(r"[^\w .\-]", "", str(b.get("projekt") or ""))[:60] or "bez nazwy"
+    t = teraz()
+    with _claude_lock:
+        for k in [k for k, v in _claude.items() if t - v > 86400]:
+            del _claude[k]
+        if zd == "UserPromptSubmit":
+            _claude[sesja] = t
+            return {"ok": True}
+        start = _claude.pop(sesja, None) if zd == "Stop" else None
+    if zd == "Stop":
+        if start is None or t - start < CLAUDE_MIN_S:
+            return {"ok": True, "pominiete": "krótka odpowiedź"}
+        tekst = f"Claude skończył pracę w projekcie {projekt}. Trwało {_czas_opis(t - start if t - start < 60 else round((t - start) / 60) * 60)}."
+    elif zd == "Notification" and b.get("typ") == "permission_prompt":
+        tekst = f"Claude czeka na twoją zgodę w projekcie {projekt}."
+    else:
+        return {"ok": True, "pominiete": "inne zdarzenie"}
+    print(f"claude: {tekst}", flush=True)
+    _powiadom(tekst)
+    return {"ok": True, "powiadomienie": tekst}
 
 
 # --------------------------------------------------------------------------- akcje
@@ -1059,7 +1117,8 @@ def akcja_sync():
 
 AKCJE = {"wake": akcja_wake, "sleep": akcja_sleep, "reboot": akcja_reboot, "sync": akcja_sync}
 POLECENIA_PC = re.compile(r"audio/(glosnosc|wycisz|wyjscie|aplikacja)|media/(toggle|nastepny|poprzedni)"
-                          r"|zasilanie/(uspij|wylacz|restart|zablokuj)|discord/(mikrofon|sluchawki|rozlacz)|speedtest")
+                          r"|zasilanie/(uspij|wylacz|restart|zablokuj)|discord/(mikrofon|sluchawki|rozlacz)|speedtest"
+                          r"|procesy/zakoncz")
 
 
 # --------------------------------------------------------------------------- asystent głosowy: POST /api/jarvis {"tekst"}
@@ -1334,6 +1393,7 @@ def tab_serwery():
 TABS = {
     "dzien": tab_dzien,
     "pc": lambda: {"pcs": _tab_pc()},
+    "procesy": lambda: {"pcs": cache.get("procesy", 2, _procesy)},
     "muzyka": lambda: {"pcs": cache.get("muzyka", 2, lambda: Z.pc_stan(("media", "audio")))},
     "discord": lambda: {"discord": dict(Z.DISCORD), "pcs": cache.get("pc-discord", 3, Z.pc_discord)},
     "media": tab_media,
@@ -1529,6 +1589,8 @@ class H(BaseHTTPRequestHandler):
             return self.odpowiedz(200, {"ok": True})
         if sc == "/api/jarvis":
             return self.odpowiedz(200, jarvis_api(b.get("tekst")))
+        if sc == "/api/claude":
+            return self.odpowiedz(200, claude_zdarzenie(b))
         if sc == "/api/dobranoc/anuluj":
             bylo = dobranoc_anuluj()
             return self.odpowiedz(200, {"ok": True, "msg": "Anulowane. Nic nie wyłączam." if bylo else "Nic nie trwało."})

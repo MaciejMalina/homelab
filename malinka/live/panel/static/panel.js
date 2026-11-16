@@ -532,8 +532,9 @@ RENDER.pc = (d) => {
   return `<div class="siatka pc-uklad">
     <div class="karta"><h2>Sprzęt i temperatury<span class="prawo">${esc(s.host || "")}</span></h2>
       <div class="kafle" style="grid-template-columns:repeat(3,1fr)">${kafle}</div>
-      <div class="przyciski" style="margin-top:auto;padding-top:8px;grid-template-columns:1fr 1fr">
+      <div class="przyciski" style="margin-top:auto;padding-top:8px;grid-template-columns:auto auto 1fr">
         <button data-akcja="pc-cmd" data-pc="${esc(pc.id)}" data-cmd="speedtest" data-dlugie>⇅ Speedtest PC</button>
+        <button data-akcja="pc-procesy">☰ Procesy ›</button>
         <div class="mala przyg" style="align-self:center">${sp ? `↓ ${sp.pobieranieMbps} · ↑ ${sp.wysylanieMbps} Mb/s${sp.pingMs != null ? ` · ${Math.round(sp.pingMs)} ms` : ""}` : "Test: 25 MB w dół, 10 MB w górę"}</div>
       </div></div>
     <div class="siatka" style="grid-template-rows:auto 1fr;gap:8px">
@@ -1050,6 +1051,39 @@ WIDOK.pc = {
   },
 };
 
+// ---------- najcięższe procesy na PC (agent 1.1+), kończenie z potwierdzeniem „Na pewno?”
+const ramTxt = (mb) => (mb >= 1024 ? (mb / 1024).toFixed(1) + " GB" : Math.round(mb) + " MB");
+function wierszProcesu(pcId, p, wartosc) {
+  const nazwa = `${esc(p.nazwa)}${p.liczba > 1 ? ` <span class="przyg">×${p.liczba}</span>` : ""}`;
+  const zakoncz = (pid, etykieta) => `<button class="maly groznie" data-akcja="pc-cmd" data-pc="${esc(pcId)}" data-cmd="procesy/zakoncz" ` +
+    `${bodyAttr(pid ? { nazwa: p.nazwa, pid } : { nazwa: p.nazwa })} data-potwierdz>${etykieta}</button>`;
+  const przyciski = p.chroniony ? `<span class="przyg mala">chroniony</span>`
+    : p.liczba > 1 ? zakoncz(p.glownyPid, "Jedną") + zakoncz(null, `Wszystkie ×${p.liczba}`) : zakoncz(p.glownyPid, "Zakończ");
+  return `<div class="wiersz"><span class="v zawijaj">${nazwa}</span><span class="k" style="white-space:nowrap">${wartosc}</span>` +
+    `<span style="display:flex;gap:4px;flex:none">${przyciski}</span></div>`;
+}
+WIDOK.procesy = {
+  tytul: (w) => {
+    const pcs = (w.dane && w.dane.pcs && w.dane.pcs.data) || [];
+    const pc = pcs.find((p) => p.id === wybranyPc);
+    return "Procesy" + (pc ? " — " + pc.nazwa : "");
+  },
+  co: 3000,
+  html(w) {
+    const [pcs, err] = zrodlo(w.dane.pcs, "Komputery");
+    if (!pcs) return `<div class="karta">${err}</div>`;
+    const pc = pcs.find((p) => p.id === wybranyPc) || pcs.find((p) => p.online);
+    if (!pc || !pc.online || !pc.procesy) return `<div class="karta">${pustoHtml((pc && pc.error) || "Komputer jest offline.")}</div>`;
+    const pr = pc.procesy;
+    const cpu = (pr.cpu || []).map((p) => wierszProcesu(pc.id, p, `${p.cpu.toFixed(1)}%`)).join("");
+    const ram = (pr.ram || []).map((p) => wierszProcesu(pc.id, p, ramTxt(p.ramMb))).join("");
+    return `<div class="siatka" style="grid-template-columns:1fr 1fr">
+      <div class="karta"><h2>Najwięcej CPU<span class="prawo">100% = wszystkie ${pr.rdzenie || ""} wątki</span></h2>
+        <div class="przewijane" data-scroll="pr-cpu">${cpu || pustoHtml("brak danych")}</div></div>
+      <div class="karta"><h2>Najwięcej RAM</h2><div class="przewijane" data-scroll="pr-ram">${ram || pustoHtml("brak danych")}</div></div></div>`;
+  },
+};
+
 // ---------- kontenery Dockera
 const STAN_KONT = { running: "działa", exited: "zatrzymany", restarting: "restartuje się", paused: "pauza", created: "utworzony", dead: "martwy" };
 const ZDROWIE = { healthy: "zdrowy", unhealthy: "niezdrowy", starting: "startuje" };
@@ -1158,6 +1192,7 @@ document.addEventListener("click", (e) => {
       break;
     case "pogoda-otworz": otworzWidok("pogoda"); break;
     case "pc-wykresy": otworzWidok("pc"); break;
+    case "pc-procesy": otworzWidok("procesy"); break;
     case "docker-otworz": otworzWidok("docker"); break;
     case "widok-wstecz": widokWstecz(); break;
     case "docker-logi":
