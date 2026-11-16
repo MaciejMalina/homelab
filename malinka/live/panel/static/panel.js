@@ -1279,9 +1279,42 @@ async function zapytajJarvisa(tekst) {
     const ids = Object.keys(TABS);
     przelacz(ids[(ids.indexOf(aktywna) + a.zakladka_krok + ids.length) % ids.length]);
   }
+  if (a.dobranoc) pokazDobranoc(a.dobranoc.do_ms);
+  if (a.dobranoc_anuluj) schowajDobranoc();
   if (a.ekran === "sleep") setTimeout(() => { $("glos").hidden = true; forcedUntil = 0; awakeUntil = 0; goSleep(); }, 2500);
   setTimeout(odswiezTeraz, 800);
   schowajGlos(Math.min(40000, 6000 + (r.odp || "").length * 60));
+}
+// „Dobranoc”: malinka sama wykona wyłączanie po odliczaniu; tu tylko licznik na ekranie i anulowanie dotknięciem
+let dobranocT = 0;
+function schowajDobranoc() {
+  clearInterval(dobranocT);
+  const el = document.getElementById("dobranoc");
+  if (el) el.remove();
+}
+function pokazDobranoc(doMs) {
+  schowajDobranoc();
+  const el = document.createElement("div");
+  el.id = "dobranoc";
+  el.style.cssText = "position:fixed;inset:0;z-index:9999;background:rgba(0,0,0,.82);color:#e6eaf0;display:flex;" +
+    "flex-direction:column;align-items:center;justify-content:center;font:600 28px sans-serif;text-align:center";
+  el.innerHTML = `<div>🌙 Dobranoc — wyłączam za <span id="dobranoc-s"></span> s</div>` +
+    `<div style="font-size:18px;opacity:.75;margin-top:14px">Dotknij ekranu, żeby anulować</div>`;
+  el.addEventListener("pointerdown", async (e) => {
+    e.stopPropagation();
+    schowajDobranoc();
+    try { const r = await api("/api/dobranoc/anuluj", "POST"); toast(r.msg || "Anulowane"); }
+    catch (err) { toast("Nie udało się anulować: " + err.message, true); }
+  });
+  document.body.appendChild(el);
+  const tik = () => {
+    const s = Math.max(0, Math.ceil((doMs - Date.now()) / 1000));
+    const sp = document.getElementById("dobranoc-s");
+    if (sp) sp.textContent = s;
+    if (s <= 0) schowajDobranoc();
+  };
+  tik();
+  dobranocT = setInterval(tik, 500);
 }
 window.jarvisGlos = (stan, tekst) => {
   if (stan === "wake") { wake(wakeMin); pokazGlos("Słucham…"); return; }

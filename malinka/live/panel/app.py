@@ -28,6 +28,7 @@ API (JSON):
   POST /api/media/qbit/<hash>/<start|stop>
   GET  /api/siec/speedtest        ostatni wynik (ts, ts_ms, ping, dol, gora) - dla kafelka w Homepage
 POST /api/siec/speedtest
+  POST /api/dobranoc/anuluj             przerywa odliczanie „Dobranoc” (dotknięcie ekranu)
   SSE "przypomnienie" {"mow", "tekst"}    minutnik / przypomnienie głosowe (do tego alert budzi ekran)
   POST /api/swiatlo                    {"on"?, "bri"?, "kolor"?: [r,g,b], "ps"?}  -> WLED
   POST /api/todo, PATCH /api/todo/<id> -> jarvis_todo
@@ -499,6 +500,14 @@ def _obecnosc_gniazdo(akcja, powod):
         print(f"obecnosc: {powod} -> {akcja} NIEUDANE: {e}", flush=True)
 
 
+def _obecnosc_pauza():
+    """Po „Dobranoc” do DOBRANOC_DO_H rano kamera nie włącza monitora ani nie odpala briefu."""
+    try:
+        return teraz() < float(Z.pamiec_get("obecnosc_pauza_do", 0) or 0)
+    except (TypeError, ValueError):
+        return False
+
+
 def obecnosc(jest):
     if not isinstance(jest, bool):
         return
@@ -510,7 +519,7 @@ def obecnosc(jest):
         OBECNOSC["ts"] = t
     if zmiana:
         print(f"obecnosc: {'ktoś przy biurku' if jest else 'nikogo przy biurku'}", flush=True)
-        if jest and OBECNOSC_GNIAZDO:
+        if jest and OBECNOSC_GNIAZDO and not _obecnosc_pauza():
             threading.Thread(target=_obecnosc_gniazdo, args=("on", "obecność"), daemon=True).start()
 
 
@@ -548,14 +557,15 @@ def _bez_emoji(s):
     return re.sub(r"\s+", " ", s).strip()
 
 
-def _brief_kalendarz():
+def _brief_kalendarz(dzien=0):
     k = _z_pamieci("kalendarz", Z.kalendarz_pobierz)
     d = (k.get("data") or {}) if k.get("ok") else {}
     n = _teraz_pl()
+    data = n.date() + Z.timedelta(days=dzien)
     godz, cale = [], []
     for w in d.get("wydarzenia") or []:
         start = Z.datetime.fromisoformat(w["start"]).astimezone(Z.TZ)
-        if start.date() != n.date():
+        if start.date() != data:
             continue
         if w.get("caly_dzien"):
             cale.append(w.get("tytul") or "wydarzenie")
@@ -636,7 +646,7 @@ def _brief_oznacz_dzis():
 
 def brief_auto():
     """Wołane, gdy telefon zgłasza obecność: brief tylko raz dziennie i tylko w oknie BRIEF_OD..BRIEF_DO."""
-    if not BRIEF_AUTO or not BRIEF_OD <= _teraz_pl().hour < BRIEF_DO or not _brief_oznacz_dzis():
+    if not BRIEF_AUTO or _obecnosc_pauza() or not BRIEF_OD <= _teraz_pl().hour < BRIEF_DO or not _brief_oznacz_dzis():
         return None
     t = brief_tekst()
     print(f"brief: pierwsze siadanie dziś ({len(t)} znaków)", flush=True)
@@ -833,13 +843,119 @@ def straznik_przypomnien():
             print(f"przypomnienia: błąd {e}", flush=True)
 
 
-def _brief_przypomnienia():
-    dzis = _teraz_pl().date()
+def _brief_przypomnienia(dzien=0):
+    dzis = _teraz_pl().date() + Z.timedelta(days=dzien)
     lista = [p for p in _przyp_lista() if p["typ"] == "przypomnienie"
              and Z.datetime.fromtimestamp(p["ts"], Z.TZ).date() == dzis]
     if not lista:
         return None
     return "Przypomnienia: " + ", ".join(f"{_kiedy_opis(p['ts'])} {p['tekst']}" for p in lista[:3]) + "."
+
+
+# --------------------------------------------------------------------------- „Dobranoc”
+# Plan na jutro + po odliczaniu: stanowisko off, oba komputery wyłączone, serwer wyłączony, panel wygaszony.
+# Decyzje 2026-11-16: komputery WYŁĄCZANE (nie usypiane), bez sprawdzania, czy coś gra/pobiera; ochrona przed
+# źle usłyszanym słowem = odliczanie (DOBRANOC_S po przeczytaniu odpowiedzi), „anuluj” albo dotknięcie przerywa.
+DOBRANOC_S = 15
+DOBRANOC_DO_H = int(E("DOBRANOC_DO_H", "6"))   # o tej godzinie rano blokada kamery zdejmuje się sama (decyzja 2026-11-16)
+_dobranoc = {"id": None, "do": 0.0}
+_dobranoc_lock = threading.Lock()
+
+
+def _plan_na_jutro():
+    n = _teraz_pl()
+    dzien = 0 if n.hour < 5 else 1            # po północy „jutro” to już dziś
+    slowo = "Dziś" if dzien == 0 else "Jutro"
+    out = []
+    try:
+        if dzien == 1:
+            out.append(_pogoda_zdanie(jutro=True))
+        else:
+            p = _pogoda_zdanie()   # „Teraz X, opis. Dziś od A do B…” -> tylko część „Dziś…”
+            out.append("Dziś " + p.split(" Dziś ", 1)[1] if p and " Dziś " in p else p)
+    except Exception as e:  # noqa: BLE001
+        print(f"dobranoc: pogoda: {e}", flush=True)
+    for fn, przedrostek in ((_brief_kalendarz, True), (_brief_przypomnienia, False)):
+        try:
+            z = fn(dzien)
+            if z:
+                out.append(f"{slowo} {z[0].lower()}{z[1:]}" if przedrostek else z)   # przypomnienia mają już „jutro o…”
+        except Exception as e:  # noqa: BLE001
+            print(f"dobranoc: {fn.__name__}: {e}", flush=True)
+    return " ".join(x for x in out if x)
+
+
+def _dobranoc_wykonaj(ident):
+    while True:
+        time.sleep(0.5)
+        with _dobranoc_lock:
+            if _dobranoc["id"] != ident:
+                print("dobranoc: anulowane", flush=True)
+                return
+            if teraz() >= _dobranoc["do"]:
+                _dobranoc["id"] = None
+                break
+    wyniki = []
+    # 1) kamera nie może zaraz włączyć monitora z powrotem (odchodzisz od biurka)
+    n = _teraz_pl()
+    rano = n.replace(hour=DOBRANOC_DO_H, minute=0, second=0, microsecond=0)
+    if rano <= n:
+        rano += Z.timedelta(days=1)
+    Z.pamiec_set("obecnosc_pauza_do", rano.timestamp())
+    # 2) stanowisko
+    for g in STANOWISKO:
+        try:
+            wyniki.append(Z.gniazdo_ustaw(g, "off")["msg"])
+        except Exception as e:  # noqa: BLE001
+            wyniki.append(f"{g}: {e}")
+    cache.drop("dash-gniazda")
+    # 3) komputery — wyłączenie (agent: shutdown /s /t 5); wyłączony agent = komputer już śpi/jest wyłączony
+    for pc in Z.lista_pc():
+        try:
+            Z.agent(pc, "/api/zasilanie/wylacz", method="POST", body={}, timeout=4)
+            wyniki.append(f"{pc['nazwa']}: wyłączam")
+        except Exception:  # noqa: BLE001
+            wyniki.append(f"{pc['nazwa']}: nie odpowiada (pewnie już wyłączony)")
+    cache.drop("pc", "dash-pcs")
+    # 4) serwer
+    try:
+        if serwer_up():
+            akcja_sleep()
+            wyniki.append("serwer: wyłączam")
+        else:
+            wyniki.append("serwer: już śpi")
+    except Exception as e:  # noqa: BLE001
+        wyniki.append(f"serwer: {e}")
+    # 5) panel
+    ustaw_ekran("sleep")
+    print(f"dobranoc: {'; '.join(wyniki)} | kamera bez automatu do {rano:%d.%m %H:%M}", flush=True)
+
+
+def dobranoc_start():
+    ident = os.urandom(6).hex()
+    plan = _plan_na_jutro()
+    koniec = "Wyłączam stanowisko, komputery i serwer za 15 sekund. Powiedz anuluj albo dotknij ekranu, żeby przerwać."
+    odp = "Dobranoc. " + (plan + " " if plan else "") + koniec
+    mow = _do_mowy(odp, BRIEF_ZNAKI)
+    # odliczanie liczy się od końca czytania (~13 znaków/s), bo w trakcie mowy mikrofon nie słucha „anuluj”
+    do = teraz() + DOBRANOC_S + len(mow) / 13
+    with _dobranoc_lock:
+        _dobranoc.update(id=ident, do=do)
+    threading.Thread(target=_dobranoc_wykonaj, args=(ident,), daemon=True).start()
+    print(f"dobranoc: start, wykonanie za {int(do - teraz())} s", flush=True)
+    return {"odp": odp, "mow_limit": BRIEF_ZNAKI, "akcja": {"dobranoc": {"do_ms": int(do * 1000)}}}
+
+
+def dobranoc_anuluj():
+    with _dobranoc_lock:
+        bylo = _dobranoc["id"] is not None
+        _dobranoc.update(id=None, do=0.0)
+    return bylo
+
+
+def dobranoc_trwa():
+    with _dobranoc_lock:
+        return _dobranoc["id"] is not None
 
 
 # --------------------------------------------------------------------------- akcje
@@ -999,6 +1115,13 @@ def jarvis(tekst):
     if not t:
         raise ValueError("puste polecenie")
 
+    # trwa odliczanie „Dobranoc”: każde „anuluj / stop / nie / przerwij” je przerywa
+    if dobranoc_trwa() and re.search(r"\b(anuluj|przerwij|stop|nie|zatrzymaj|czekaj)", t):
+        dobranoc_anuluj()
+        return {"odp": "Anulowane. Nic nie wyłączam.", "akcja": {"dobranoc_anuluj": True}}
+    if re.search(r"\bdobranoc\b|\bdobrej nocy\b|\bide spac\b|\bidziemy spac\b", t):
+        return dobranoc_start()
+
     # minutniki i przypomnienia — NAJPIERW, bo tekst przypomnienia może zawierać inne komendy („…wyłączyć stanowisko”)
     if re.search(r"\b(anuluj|usun|odwolaj|skasuj|wylacz|zatrzymaj)\w*\s+(?:wszystkie\s+|ten\s+|to\s+)?(minutnik|timer|przypomnien)", t):
         return {"odp": _przyp_anuluj(t)}
@@ -1025,6 +1148,8 @@ def jarvis(tekst):
         for g in STANOWISKO:
             Z.gniazdo_ustaw(g, akcja)
         cache.drop("dash-gniazda")
+        if akcja == "on":
+            Z.pamiec_set("obecnosc_pauza_do", 0)   # ręczne włączenie zdejmuje pauzę kamery po „Dobranoc”
         return {"odp": "Wyłączam stanowisko." if akcja == "off" else "Włączam stanowisko."}
 
     # serwer i komputery (tylko włączanie = WoL; „obudź” zostaje jako stara forma)
@@ -1361,6 +1486,9 @@ class H(BaseHTTPRequestHandler):
             return self.odpowiedz(200, {"ok": True})
         if sc == "/api/jarvis":
             return self.odpowiedz(200, jarvis_api(b.get("tekst")))
+        if sc == "/api/dobranoc/anuluj":
+            bylo = dobranoc_anuluj()
+            return self.odpowiedz(200, {"ok": True, "msg": "Anulowane. Nic nie wyłączam." if bylo else "Nic nie trwało."})
         if sc == "/api/obecnosc":
             jest = b.get("twarz")
             obecnosc(jest)
