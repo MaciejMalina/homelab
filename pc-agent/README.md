@@ -36,6 +36,7 @@ API (nagłówek `X-Agent-Token`):
 | `POST /api/speedtest` | ping + 25 MB w dół / 10 MB w górę (Cloudflare) |
 | `GET /api/procesy` | top 8 procesów wg CPU i wg RAM (zgrupowane po nazwie, próbka co 3 s) — od 1.1 |
 | `POST /api/procesy/zakoncz {nazwa, pid?}` | kończy jedną instancję (pid) albo wszystkie o tej nazwie; tylko sesja użytkownika, bez chronionych (explorer, dwm, svchost…) — od 1.1 |
+| `GET /api/claude/powiadomienia` | powiadomienia aplikacji Claude (desktop) z centrum powiadomień Windows: id, czas, tytuł rozmowy, treść — bez API i tokenów — od 1.2 |
 
 Uwagi:
 - LibreHardwareMonitor czyta czujniki CPU przez sterownik jądra (starsze wersje: WinRing0). Jeśli Windows Defender go zgłosi,

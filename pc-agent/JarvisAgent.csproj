@@ -13,7 +13,7 @@
     <ImplicitUsings>enable</ImplicitUsings>
     <RootNamespace>JarvisAgent</RootNamespace>
     <AssemblyName>JarvisAgent</AssemblyName>
-    <Version>1.1.0</Version>
+    <Version>1.2.0</Version>
     <RuntimeIdentifier>win-x64</RuntimeIdentifier>
     <SelfContained>true</SelfContained>
     <PublishSingleFile>true</PublishSingleFile>
@@ -27,5 +27,8 @@
     <PackageReference Include="LibreHardwareMonitorLib" Version="0.9.*" />
     <!-- Core Audio: urządzenia wyjściowe, głośność, mikser aplikacji -->
     <PackageReference Include="NAudio.Wasapi" Version="2.2.1" />
+    <!-- odczyt bazy centrum powiadomień (powiadomienia aplikacji Claude); SQLite wbudowany w Windows (winsqlite3) -->
+    <PackageReference Include="Microsoft.Data.Sqlite.Core" Version="8.0.*" />
+    <PackageReference Include="SQLitePCLRaw.bundle_winsqlite3" Version="2.1.*" />
   </ItemGroup>
 </Project>

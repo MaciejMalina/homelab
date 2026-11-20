@@ -19,6 +19,7 @@ builder.Services.ConfigureHttpJsonOptions(o => o.SerializerOptions.PropertyNamin
 builder.Services.AddSingleton(new Sprzet(cfg.PingHost));
 builder.Services.AddSingleton(new DiscordRpc(cfg));
 builder.Services.AddSingleton(new Procesy());
+builder.Services.AddSingleton(new PowiadomieniaClaude());
 
 var app = builder.Build();
 app.Services.GetRequiredService<DiscordRpc>().Start();
@@ -61,7 +62,7 @@ app.Use(async (ctx, next) =>
 });
 
 // ------------------------------------------------------------------ odczyt
-app.MapGet("/api/health", () => Results.Json(new { ok = true, nazwa = cfg.Nazwa, wersja = "1.1" }));
+app.MapGet("/api/health", () => Results.Json(new { ok = true, nazwa = cfg.Nazwa, wersja = "1.2" }));
 
 app.MapGet("/api/stan", (Sprzet s) =>
 {
@@ -128,6 +129,8 @@ app.MapPost("/api/discord/{akcja}", async (string akcja, DiscordRpc rpc) =>
 });
 app.MapPost("/api/speedtest", async () => Results.Json(await Speedtest.Uruchom()));
 app.MapGet("/api/procesy", (Procesy p) => Results.Json(p.Lista()));
+// powiadomienia aplikacji Claude z centrum powiadomień Windows (zero tokenów) — panel zbiera je do zakładki Claude
+app.MapGet("/api/claude/powiadomienia", (PowiadomieniaClaude p) => Results.Json(p.Lista()));
 app.MapPost("/api/procesy/zakoncz", (ZadanieZakonczenia z, Procesy p) => Results.Json(new { ok = true, msg = p.Zakoncz(z.Nazwa, z.Pid) }));
 
 app.Run();

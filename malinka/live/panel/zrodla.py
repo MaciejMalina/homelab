@@ -642,6 +642,100 @@ def discord_wyslij(tytul, opis, kolor=0xF0A020, ping=True):
     return True
 
 
+
+# --------------------------------------------------------------------------- Claude: limity planu (nieoficjalne API)
+# Poświadczenia z osobnego logowania Claude Code na malince (2026-11-20):
+#   docker run -it --rm -v ~/panel/data/claude:/root/.claude node:22-slim \
+#     sh -c 'npm i -g @anthropic-ai/claude-code && claude auth login --claudeai'
+# Access token żyje ~8 h; odświeżamy go sami (refresh token ROTUJE — nowy trzeba od razu zapisać, a z tego pliku
+# nie może korzystać nic innego). /api/oauth/usage to endpoint, z którego czyta Claude Code; ostro limituje (429),
+# więc pytamy rzadko. Bierzemy tylko stabilną część odpowiedzi: limits[], five_hour/seven_day, seven_day_breakdown.
+CLAUDE_CRED = os.path.join(DATA_DIR, "claude", ".credentials.json")
+CLAUDE_CLIENT_ID = "9d1c250a-e61b-44d9-88ed-5944d1962f5e"
+CLAUDE_TOKEN_URL = "https://platform.claude.com/v1/oauth/token"
+CLAUDE_USAGE_URL = "https://api.anthropic.com/api/oauth/usage"
+_claude_lock = threading.Lock()
+
+
+def _claude_cred():
+    with open(CLAUDE_CRED, encoding="utf-8") as f:
+        return json.load(f)
+
+
+def _claude_odswiez(d):
+    o = d["claudeAiOauth"]
+    if not o.get("refreshToken"):
+        raise RuntimeError("Claude: brak refresh tokena — zaloguj malinkę ponownie")
+    r = zadanie(CLAUDE_TOKEN_URL, method="POST", timeout=15, headers={"User-Agent": "jarvis-panel"},
+                body={"grant_type": "refresh_token", "refresh_token": o["refreshToken"], "client_id": CLAUDE_CLIENT_ID})
+    if not isinstance(r, dict) or not r.get("access_token"):
+        raise RuntimeError("Claude: odświeżenie tokena bez access_token")
+    o["accessToken"] = r["access_token"]
+    o["refreshToken"] = r.get("refresh_token") or o["refreshToken"]
+    o["expiresAt"] = int((time.time() + float(r.get("expires_in") or 28800)) * 1000)
+    if r.get("scope"):
+        o["scopes"] = r["scope"].split()
+    fd, tmp = tempfile.mkstemp(dir=os.path.dirname(CLAUDE_CRED), prefix=".cred-")
+    with os.fdopen(fd, "w", encoding="utf-8") as f:
+        json.dump(d, f)
+    os.chmod(tmp, 0o600)
+    os.replace(tmp, CLAUDE_CRED)
+    print("claude: token odświeżony", flush=True)
+
+
+def _claude_token(wymus=False):
+    with _claude_lock:   # jedno odświeżanie naraz — przy rotacji równoległe zepsułoby sesję
+        d = _claude_cred()
+        if wymus or d["claudeAiOauth"].get("expiresAt", 0) / 1000 - time.time() < 600:
+            _claude_odswiez(d)
+        return d["claudeAiOauth"]["accessToken"], d["claudeAiOauth"].get("subscriptionType")
+
+
+def _iso_ts(s):
+    try:
+        return datetime.fromisoformat(str(s).replace("Z", "+00:00")).timestamp() if s else None
+    except ValueError:
+        return None
+
+
+CLAUDE_NAZWY = {"session": "Sesja (5 h)", "weekly_all": "Tydzień", "weekly_opus": "Tydzień · Opus",
+                "weekly_sonnet": "Tydzień · Sonnet", "weekly_cowork": "Tydzień · Cowork"}
+
+
+def claude_limity():
+    if not os.path.exists(CLAUDE_CRED):
+        return {"disabled": True}
+    for proba in (0, 1):
+        token, plan = _claude_token(wymus=bool(proba))
+        try:
+            d = zadanie(CLAUDE_USAGE_URL, timeout=10, headers={
+                "Authorization": f"Bearer {token}", "anthropic-beta": "oauth-2025-04-20", "User-Agent": "jarvis-panel"})
+            break
+        except urllib.error.HTTPError as e:
+            if e.code != 401 or proba:
+                raise
+    limity = []
+    for x in d.get("limits") or []:
+        if x.get("percent") is None:
+            continue
+        k = str(x.get("kind") or "")
+        limity.append({"kind": k, "nazwa": CLAUDE_NAZWY.get(k) or k.replace("_", " ").capitalize(),
+                       "grupa": x.get("group"), "proc": float(x["percent"]), "poziom": x.get("severity") or "normal",
+                       "reset": _iso_ts(x.get("resets_at")), "aktywny": bool(x.get("is_active"))})
+    if not limity:   # starszy kształt odpowiedzi
+        for k, kind in (("five_hour", "session"), ("seven_day", "weekly_all")):
+            v = d.get(k)
+            if isinstance(v, dict) and v.get("utilization") is not None:
+                limity.append({"kind": kind, "nazwa": CLAUDE_NAZWY[kind], "grupa": "session" if kind == "session" else "weekly",
+                               "proc": float(v["utilization"]), "poziom": "normal", "reset": _iso_ts(v.get("resets_at")), "aktywny": False})
+    b = d.get("seven_day_breakdown") or {}
+    podzial = [{"nazwa": r.get("display_name") or r.get("key"), "udzial": r.get("percent"), "limitu": r.get("percent_of_limit")}
+               for r in b.get("rows") or [] if r.get("percent")]
+    ex = d.get("extra_usage") or {}
+    return {"plan": plan, "limity": limity, "podzial": podzial, "tydzien_od": _iso_ts(b.get("window_started_at")),
+            "dodatkowe": bool(ex.get("is_enabled")), "ts": time.time()}
+
+
 _speed_lock = threading.Lock()
 # Cloudflare odrzuca domyślny User-Agent Pythona (403), więc przedstawiamy się jak zwykła przeglądarka
 _SPEED_UA = {"User-Agent": "Mozilla/5.0 (X11; Linux aarch64) jarvis-panel"}

@@ -7,7 +7,7 @@ todo/trener/Kuma/AdGuard są pod 127.0.0.1. Źródła danych zakładek: zrodla.p
 
 API (JSON):
   GET  /api/dash                       zakładka Przegląd
-  GET  /api/tab/<nazwa>                dzien | pc | muzyka | discord | media | serwery | siec | trening | swiatlo
+  GET  /api/tab/<nazwa>                dzien | pc | muzyka (z Discordem) | claude | media | serwery | siec | trening | swiatlo
                                        + widoki szczegółowe: pogoda (godzinowa i 7 dni) | docker (kontenery)
   GET  /api/screen                     stan ekranu: {ver, mode, until, alert, now} (zapas, gdy nie działa strumień)
   GET  /api/stream                     SSE: zdarzenia "ekran" (zmiana ekranu/alertu), "discord", "ping" co 15 s
@@ -32,6 +32,7 @@ POST /api/siec/speedtest
   POST /api/budzik                     {"godzina": "6:30", "dni"?: [0..6] | "pn-pt"|"weekend"|"codziennie"|"jednorazowy"}
   POST /api/budzik/<stop|drzemka>      wyłącza dzwoniący budzik / drzemka BUDZIK_DRZEMKA_MIN
   POST /api/budzik/<id>/<wl|wyl|usun>  stały budzik: włącz / wyłącz, każdy: usuń  (lista: GET /api/tab/budziki)
+  POST /api/claude-limity/odswiez      limity Claude teraz (najwyżej raz na minutę; samo co CLAUDE_CO_S)
   POST /api/siec/urzadzenie/<MAC>      {"znane"?: bool, "nazwa"?: str}  zatwierdzenie / nazwa urządzenia w sieci
   POST /api/claude                     {"zdarzenie": UserPromptSubmit|Stop|Notification, "typ", "sesja", "projekt"}
                                        <- hook Claude Code z laptopa: „skończył” (>= CLAUDE_MIN_S) / „czeka na zgodę”
@@ -633,7 +634,7 @@ def brief_tekst():
     out = [f"{'Dzień dobry' if 5 <= n.hour < 18 else 'Dobry wieczór'}. Jest {n.hour}:{n.minute:02d}, "
            f"{DNI_TYG[n.weekday()]} {n.day} {MIESIACE[n.month - 1]}."]
     for fn in (_pogoda_zdanie, _brief_kalendarz, _brief_przypomnienia, _brief_poczta, _brief_paczki, _brief_media,
-               _brief_trening, _brief_uslugi, _brief_siec):
+               _brief_trening, _brief_uslugi, _brief_siec, _brief_claude):
         try:
             z = fn()
             if z:
@@ -1516,6 +1517,167 @@ def _brief_siec():
             + opis + (f" i jeszcze {len(n) - 3}" if len(n) > 3 else "") + ". Zatwierdź w zakładce Sieć.")
 
 
+# --------------------------------------------------------------------------- Claude: limity planu
+# Co CLAUDE_CO_S (nieoficjalne /api/oauth/usage, sesja malinki — zrodla.claude_limity) -> pamiec claude_limity
+# + historia claude_hist (7 dni). Przekroczenie progu z CLAUDE_PROGI albo odnowienie limitu, który próg przekroczył:
+# baner bez głosu + Discord (ping tylko przy progu; w ciche godziny sieci bez banera i bez pingu).
+# Brief: zdanie, gdy tydzień >= CLAUDE_BRIEF_OD %. Głosem: „ile mam limitu w Claude”. Decyzje 2026-11-20.
+CLAUDE_CO_S = int(E("CLAUDE_CO_S", "600"))
+CLAUDE_PROGI = sorted({int(x) for x in E("CLAUDE_PROGI", "80,100").split(",") if x.strip().isdigit()}) or [80]
+CLAUDE_BRIEF_OD = int(E("CLAUDE_BRIEF_OD", "50"))
+CLAUDE_GLOS = r"\b(claud|cloud|klaud|klod|clod)"   # rozpoznawanie mowy Google słyszy „Claude” jako „cloud”
+DNI_W = ["w poniedziałek", "we wtorek", "w środę", "w czwartek", "w piątek", "w sobotę", "w niedzielę"]
+_cl = {"ost": 0.0}
+_cl_lock = threading.Lock()
+
+
+def _kiedy_tydz(ts):
+    d = Z.datetime.fromtimestamp(ts, Z.TZ)
+    return _kiedy_opis(ts) if (d.date() - _teraz_pl().date()).days <= 1 else f"{DNI_W[d.weekday()]} o {d.hour}:{d.minute:02d}"
+
+
+def claude_pobierz(min_odstep=60):
+    """Świeże limity, ale nie częściej niż co min_odstep s (endpoint szybko odpowiada 429)."""
+    with _cl_lock:
+        if teraz() - _cl["ost"] < min_odstep:
+            return Z.pamiec_get("claude_limity")
+        _cl["ost"] = teraz()
+    try:
+        d = Z.claude_limity()
+    except Exception as e:  # noqa: BLE001
+        if isinstance(e, urllib.error.HTTPError) and e.code == 429:
+            with _cl_lock:
+                _cl["ost"] = teraz() + 1800   # zbyt często — następna próba za ~40 min
+        stare = Z.pamiec_get("claude_limity") or {}
+        stare.update(blad=f"{type(e).__name__}: {e}"[:200], blad_ts=teraz())
+        Z.pamiec_set("claude_limity", stare)
+        print(f"claude: {stare['blad']}", flush=True)
+        return stare
+    if d.get("disabled"):
+        return d
+    proc = {x["kind"]: x["proc"] for x in d["limity"]}
+    hist = [h for h in (Z.pamiec_get("claude_hist", []) or []) if h[0] > d["ts"] - 7 * 86400]
+    hist.append([round(d["ts"]), proc.get("session"), proc.get("weekly_all")])
+    Z.pamiec_set("claude_hist", hist[-1200:])
+    Z.pamiec_set("claude_limity", d)
+    try:
+        _claude_alerty(d)
+    except Exception as e:  # noqa: BLE001
+        print(f"claude: alerty: {e}", flush=True)
+    return d
+
+
+def _claude_alerty(d):
+    stan = Z.pamiec_get("claude_alerty", {}) or {}
+    kom = []
+    for x in d["limity"]:
+        st = stan.get(x["kind"]) or {}
+        if st.get("reset") and x.get("reset") and x["reset"] > st["reset"] + 60:   # nowe okno limitu
+            if st.get("prog"):
+                kom.append(("reset", f"{x['nazwa']}: limit się odnowił, teraz {x['proc']:.0f}%."))
+            st = {}
+        nowe = [pr for pr in CLAUDE_PROGI if x["proc"] >= pr > (st.get("prog") or 0)]
+        if nowe:
+            st["prog"] = max(nowe)
+            kom.append(("prog", f"{x['nazwa']}: wykorzystane {x['proc']:.0f}%"
+                        + (f", odnowi się {_kiedy_tydz(x['reset'])}" if x.get("reset") else "") + "."))
+        st.update(reset=x.get("reset"), proc=x["proc"])
+        stan[x["kind"]] = st
+    Z.pamiec_set("claude_alerty", stan)
+    if not kom:
+        return
+    print("claude: " + " ".join(t for _, t in kom), flush=True)
+    prog, cisza = any(r == "prog" for r, _ in kom), _siec_cisza()
+    try:
+        Z.discord_wyslij("🤖 Limity Claude", "\n".join("• " + t for _, t in kom), kolor=0xD97757, ping=prog and not cisza)
+    except Exception as e:  # noqa: BLE001
+        print(f"claude: Discord: {e}", flush=True)
+    if not cisza:
+        ustaw_alert("🤖 " + " ".join(t for _, t in kom), "warn" if prog else "info", 10)
+
+
+def straznik_claude():
+    time.sleep(40)
+    while True:
+        try:
+            claude_pobierz(min_odstep=CLAUDE_CO_S - 30)
+        except Exception as e:  # noqa: BLE001
+            print(f"claude: {type(e).__name__}: {e}", flush=True)
+        time.sleep(60)
+
+
+def tab_claude():
+    d = Z.pamiec_get("claude_limity") or claude_pobierz() or {}
+    return {"claude": d, "hist": Z.pamiec_get("claude_hist", []) or [], "progi": CLAUDE_PROGI, "co_s": CLAUDE_CO_S,
+            "powiadomienia": Z.pamiec_get("claude_powiadomienia", []) or [], "now": teraz()}
+
+
+# Powiadomienia aplikacji Claude („needs your input”) z centrum powiadomień Windows — agent 1.2 czyta je lokalnie,
+# zero tokenów. Agent widzi tylko te, które jeszcze wiszą w Windows; historię (30) trzymamy tu, „aktywne” = wciąż
+# wisi (nieodpowiedziane / niezamknięte). Tylko lista w zakładce Claude, bez banera i głosu (decyzja 2026-11-20).
+CLAUDE_POW_CO_S = 15
+
+
+def _claude_pow_krok():
+    zebrane, pcs_ok = [], set()
+    for pc in Z.lista_pc():
+        try:
+            lst = Z.agent(pc, "/api/claude/powiadomienia")
+        except Exception:  # noqa: BLE001  offline albo agent starszy niż 1.2
+            continue
+        if not isinstance(lst, list):
+            continue
+        pcs_ok.add(pc["nazwa"])
+        zebrane += [{"id": f"{pc['id']}:{x.get('id')}:{int(x.get('czas') or 0)}", "pc": pc["nazwa"], "czas": x.get("czas"),
+                     "tytul": str(x.get("tytul") or "Claude")[:120], "tresc": str(x.get("tresc") or "")[:200]} for x in lst]
+    if not pcs_ok:
+        return
+    po_id = {x["id"]: x for x in Z.pamiec_get("claude_powiadomienia", []) or []}
+    teraz_ids = {x["id"] for x in zebrane}
+    zmiana = False
+    for x in zebrane:
+        if x["id"] not in po_id:
+            po_id[x["id"]] = {**x, "aktywne": True}
+            zmiana = True
+            print(f"claude: powiadomienie z {x['pc']}: {x['tytul']} — {x['tresc']}", flush=True)
+    for k, x in po_id.items():
+        if x["pc"] in pcs_ok and x.get("aktywne") != (k in teraz_ids):
+            x["aktywne"] = k in teraz_ids
+            zmiana = True
+    if zmiana:
+        Z.pamiec_set("claude_powiadomienia", sorted(po_id.values(), key=lambda x: x.get("czas") or 0, reverse=True)[:30])
+
+
+def straznik_powiadomien_claude():
+    time.sleep(25)
+    while True:
+        try:
+            _claude_pow_krok()
+        except Exception as e:  # noqa: BLE001
+            print(f"claude: powiadomienia: {type(e).__name__}: {e}", flush=True)
+        time.sleep(CLAUDE_POW_CO_S)
+
+
+def _brief_claude():
+    d = Z.pamiec_get("claude_limity") or {}
+    w = next((x for x in d.get("limity") or [] if x["kind"] == "weekly_all"), None)
+    if not w or w["proc"] < CLAUDE_BRIEF_OD or teraz() - (d.get("ts") or 0) > 6 * 3600:
+        return None
+    return (f"Claude: tygodniowy limit wykorzystany w {w['proc']:.0f}%"
+            + (f", odnowi się {_kiedy_tydz(w['reset'])}" if w.get("reset") else "") + ".")
+
+
+def _claude_glos():
+    d = claude_pobierz(120) or {}
+    if d.get("disabled"):
+        return "Malinka nie jest zalogowana do Claude."
+    if not d.get("limity"):
+        return "Nie mam danych o limitach Claude" + (f": {d['blad']}" if d.get("blad") else ".")
+    czesci = [f"{x['nazwa'].split(' (')[0].replace(' · ', ' ')} {x['proc']:.0f} procent"
+              + (f", odnowi się {_kiedy_tydz(x['reset'])}" if x.get("reset") else "") for x in d["limity"]]
+    return "Limity Claude: " + "; ".join(czesci) + "."
+
+
 # --------------------------------------------------------------------------- Claude Code (hooki z laptopa)
 # UserPromptSubmit = start pracy; Stop = koniec (powiadamiamy, gdy trwało >= CLAUDE_MIN_S — krótkie odpowiedzi
 # pomijamy); Notification permission_prompt = czeka na zgodę. idle_prompt pomijamy (dubluje Stop po ~60 s).
@@ -1624,7 +1786,7 @@ POLECENIA_PC = re.compile(r"audio/(glosnosc|wycisz|wyjscie|aplikacja)|media/(tog
 # słowo nie może położyć serwera ani komputera.
 N8N_CHAT = E("N8N_CHAT", "")   # domyślnie http://SERVER_IP:N8N_PORT/webhook/chat
 ZAKLADKI_GLOS = [("przeglad", r"przeglad|glown|start"), ("dzien", r"dzien|kalendarz|plan|mail|faktur"),
-                 ("pc", r"komputer|\bpc\b"), ("muzyka", r"muzyk|piosenk|utwor"), ("discord", r"discord"),
+                 ("pc", r"komputer|\bpc\b"), ("muzyka", r"muzyk|piosenk|utwor|discord"), ("claude", r"\bclaud|\bcloud|\bklaud|\bklod|limit"),
                  ("media", r"media|pobier|torrent|film|serial"), ("serwery", r"serwer|kontener|docker"),
                  ("siec", r"siec|internet|router|speedtest|lacz"), ("trening", r"trening|silowni|cwicz"),
                  ("swiatlo", r"swiatl|led")]
@@ -1748,6 +1910,10 @@ def jarvis(tekst):
         return _przypomnij(src, t, m.end())
     if re.search(r"\b(ustaw|nastaw|wlacz|odpal|daj|odlicz)\w*\s+(?:mi\s+)?(minutnik|timer)|^(minutnik|timer|odlicz)", t):
         return _minutnik(t)
+
+    # limity Claude („ile mam limitu w Claude”, „limit Claude”)
+    if re.search(CLAUDE_GLOS, t) and re.search(r"\blimit|\bzuzy|\bile\b|\bwykorzyst", t):
+        return {"odp": _claude_glos()}
 
     # ekran i zakładki
     if re.search(r"\b(wygas|zgas)\w*\s+ekran|\bwylacz\w*\s+ekran", t):
@@ -1910,8 +2076,10 @@ TABS = {
     "dzien": tab_dzien,
     "pc": lambda: {"pcs": _tab_pc()},
     "procesy": lambda: {"pcs": cache.get("procesy", 2, _procesy)},
-    "muzyka": lambda: {"pcs": cache.get("muzyka", 2, lambda: Z.pc_stan(("media", "audio")))},
-    "discord": lambda: {"discord": dict(Z.DISCORD), "pcs": cache.get("pc-discord", 3, Z.pc_discord)},
+    # Muzyka i Discord w jednej zakładce (2026-11-20), żeby zrobić miejsce na Claude
+    "muzyka": lambda: {"pcs": cache.get("muzyka", 2, lambda: Z.pc_stan(("media", "audio"))),
+                       "pcs_dc": cache.get("pc-discord", 3, Z.pc_discord), "discord": dict(Z.DISCORD)},
+    "claude": tab_claude,
     "media": tab_media,
     "serwery": tab_serwery,
     "siec": lambda: {"zte": cache.get("zte", 15, Z.zte), "adguard": cache.get("adguard", 60, Z.adguard),
@@ -2100,6 +2268,13 @@ class H(BaseHTTPRequestHandler):
             return self.odpowiedz(200, {"ok": True})
         if sc == "/api/siec/speedtest":
             return self.odpowiedz(200, {"ok": True, **Z.speedtest()})
+        if sc == "/api/claude-limity/odswiez":
+            d = claude_pobierz(60) or {}
+            if d.get("disabled"):
+                return self.blad(409, "malinka nie jest zalogowana do Claude")
+            swieze = teraz() - (d.get("ts") or 0) < 90
+            return self.odpowiedz(200, {"ok": True, "msg": "Limity odświeżone" if swieze else
+                                        (d.get("blad") or "Odświeżane najwyżej raz na minutę")})
         if sc == "/api/budzik":
             g = str(b.get("godzina") or "")
             m = re.fullmatch(r"\s*(\d{1,2})[:.](\d{2})\s*", g) or re.fullmatch(r"\s*(\d{1,2})()\s*", g)
@@ -2171,4 +2346,6 @@ if __name__ == "__main__":
     threading.Thread(target=zbieranie_mediow, daemon=True).start()
     threading.Thread(target=straznik_sieci, daemon=True).start()
     threading.Thread(target=straznik_budzika, daemon=True).start()
+    threading.Thread(target=straznik_claude, daemon=True).start()
+    threading.Thread(target=straznik_powiadomien_claude, daemon=True).start()
     ThreadingHTTPServer(("0.0.0.0", PORT), H).serve_forever()

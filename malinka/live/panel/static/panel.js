@@ -187,7 +187,7 @@ function startStrumien() {
   const zywy = () => { strumienZywy = true; strumienOstatni = Date.now(); };
   strumien.addEventListener("ekran", (e) => { zywy(); try { zastosujEkran(JSON.parse(e.data)); } catch (err) { /* uszkodzone zdarzenie */ } });
   strumien.addEventListener("ping", zywy);
-  strumien.addEventListener("discord", () => { zywy(); if (aktywna === "discord" && !sleeping) odswiezTeraz(); });
+  strumien.addEventListener("discord", () => { zywy(); if (aktywna === "muzyka" && !sleeping) odswiezTeraz(); });
   // minutnik / przypomnienie głosowe: malinka już ustawiła alert (budzi ekran, baner) — tu sygnał i czytanie na głos
   strumien.addEventListener("przypomnienie", (e) => {
     zywy();
@@ -217,8 +217,8 @@ const TABS = {
   przeglad: { tytul: "Przegląd", co: 30000, ikona: IK('<rect x="3" y="3" width="7" height="7" rx="1.5"/><rect x="14" y="3" width="7" height="7" rx="1.5"/><rect x="3" y="14" width="7" height="7" rx="1.5"/><rect x="14" y="14" width="7" height="7" rx="1.5"/>') },
   dzien: { tytul: "Dzień", co: 60000, ikona: IK('<rect x="3" y="4" width="18" height="17" rx="2"/><path d="M3 9h18M8 2v4M16 2v4"/>') },
   pc: { tytul: "Komputer", co: 3000, ikona: IK('<rect x="2" y="3" width="20" height="13" rx="2"/><path d="M8 21h8M12 16v5"/>') },
-  muzyka: { tytul: "Muzyka", co: 2500, ikona: IK('<path d="M9 18V5l12-2v13"/><circle cx="6" cy="18" r="3"/><circle cx="18" cy="16" r="3"/>') },
-  discord: { tytul: "Discord", co: 5000, ikona: IK('<path d="M3 14v-2a9 9 0 0 1 18 0v2"/><rect x="2" y="14" width="5" height="7" rx="1.5"/><rect x="17" y="14" width="5" height="7" rx="1.5"/>') },
+  muzyka: { tytul: "Muzyka i Discord", co: 2500, ikona: IK('<path d="M9 18V5l12-2v13"/><circle cx="6" cy="18" r="3"/><circle cx="18" cy="16" r="3"/>') },
+  claude: { tytul: "Claude", co: 60000, ikona: IK('<path d="M12 3v3M12 18v3M3 12h3M18 12h3M5.6 5.6l2.1 2.1M16.3 16.3l2.1 2.1M5.6 18.4l2.1-2.1M16.3 7.7l2.1-2.1"/><circle cx="12" cy="12" r="2.5"/>') },
   media: { tytul: "Media", co: 5000, ikona: IK('<path d="M12 3v12M7 10l5 5 5-5M4 21h16"/>') },
   serwery: { tytul: "Serwery", co: 5000, ikona: IK('<rect x="3" y="3" width="18" height="7" rx="2"/><rect x="3" y="14" width="18" height="7" rx="2"/><path d="M7 6.5h.01M7 17.5h.01"/>') },
   siec: { tytul: "Sieć", co: 15000, ikona: IK('<path d="M2 9a15 15 0 0 1 20 0M5 12.5a10 10 0 0 1 14 0M8.5 16a5 5 0 0 1 7 0"/><circle cx="12" cy="19.5" r="1"/>') },
@@ -560,8 +560,13 @@ RENDER.muzyka = (d) => {
   if (!pcs) return err;
   if (!pcs.length) return pustoHtml("Brak komputerów — ustaw PCS i AGENT_TOKEN w .env panelu.");
   const pc = wybierzPc(pcs, (p) => p.online && p.media && p.media.stan === "gra");
-  chipyPc(pcs, (p) => (p.online && p.media && p.media.stan === "gra" ? " ▶" : ""));
-  if (!pc.online) { muzykaStan = null; return pcOffline(pc); }
+  const dcPc = (id) => ((zrodlo(d.pcs_dc, "")[0] || []).find((x) => x.id === id) || {});
+  chipyPc(pcs, (p) => (p.online && p.media && p.media.stan === "gra" ? " ▶" : "") +
+    (dcPc(p.id).discord && dcPc(p.id).discord.polaczony && dcPc(p.id).discord.kanal ? " 🔊" : ""));
+  if (!pc.online) {
+    muzykaStan = null;
+    return `<div class="muzyka-uklad"><div style="flex:1;min-height:0;display:flex">${pcOffline(pc)}</div>${discordPasek(d)}</div>`;
+  }
   const m = pc.media || {}, a = pc.audio || {};
   muzykaStan = m.dlugoscS ? { poz: m.pozycjaS || 0, dl: m.dlugoscS, gra: m.stan === "gra", t: Date.now() } : null;
   const okl = m.okladkaId ? `<img class="okladka" src="/api/pc/${encodeURIComponent(pc.id)}/okladka/${esc(m.okladkaId)}" alt="">` : `<div class="okladka">🎵</div>`;
@@ -580,11 +585,11 @@ RENDER.muzyka = (d) => {
       <button data-akcja="pc-cmd" data-pc="${esc(pc.id)}" data-cmd="audio/aplikacja" ${bodyAttr({ pid: x.pid, wyciszona: !x.wyciszona })}>${x.wyciszona ? "🔇" : x.aktywna ? "🔊" : "🔈"}</button>
       <span class="nazwa">${esc(x.nazwa)}</span>
       <input type="range" min="0" max="100" value="${x.glosnosc}" data-suwak="app" data-pc="${esc(pc.id)}" data-pid="${x.pid}"><span class="proc">${x.glosnosc}%</span></div>`).join("");
-  return `<div class="siatka" style="grid-template-columns:1.25fr 1fr">${lewa}
-    <div class="karta"><h2>Mikser<span class="prawo">${esc((a.urzadzenia || []).find((u) => u.domyslne)?.nazwa || "")}</span></h2>
+  return `<div class="muzyka-uklad"><div class="siatka" style="grid-template-columns:minmax(0,1.3fr) minmax(0,1fr);flex:1;min-height:0">${lewa}
+    <div class="karta"><h2>Mikser<span class="prawo jedna-linia">${esc((a.urzadzenia || []).find((u) => u.domyslne)?.nazwa || "")}</span></h2>
       <div class="suwak" style="margin-bottom:8px"><button data-akcja="pc-cmd" data-pc="${esc(pc.id)}" data-cmd="audio/wycisz" ${bodyAttr({})}>${a.wyciszony ? "🔇" : "🔊"}</button>
         <span class="nazwa"><b>Główna</b></span><input type="range" min="0" max="100" value="${a.glosnosc ?? 0}" data-suwak="master" data-pc="${esc(pc.id)}"><span class="proc">${a.glosnosc ?? "–"}%</span></div>
-      <div class="przewijane" data-scroll="mikser">${apki || pustoHtml("Żadna aplikacja nie gra")}</div></div></div>`;
+      <div class="przewijane" data-scroll="mikser">${apki || pustoHtml("Żadna aplikacja nie gra")}</div></div></div>${discordPasek(d)}</div>`;
 };
 function tickMuzyka() {
   if (aktywna !== "muzyka" || !muzykaStan || !muzykaStan.gra) return;
@@ -597,62 +602,38 @@ function tickMuzyka() {
   }
 }
 
-RENDER.discord = (d) => {
+// Discord (pasek na dole zakładki Muzyka): kto siedzi na kanałach głosowych (RPC agentów + bot) i mikrofon /
+// słuchawki / rozłącz dla komputera wybranego chipem
+function discordPasek(d) {
   const dc = d.discord || {};
-  const [pcs] = zrodlo(d.pcs, "Komputery");
+  const [pcs] = zrodlo(d.pcs_dc, "Komputery");
   const online = (pcs || []).filter((p) => p.online);
   const maKanal = (p) => p.discord && p.discord.polaczony && p.discord.kanal;
-  let pc = online.length ? wybierzPc(online) : null;
-  // wybór komputera zostaje ręczny; 🔊 przy nazwie pokazuje, na którym jesteś teraz na kanale
-  if (pcs && pcs.length) chipyPc(pcs, (p) => (maKanal(p) ? " 🔊" : ""));
-
-  // Twój kanał (Discord RPC z agenta): działa na każdym serwerze, nie tylko tam, gdzie jest bot
-  const rpcHtml = online.filter(maKanal).map((p) => {
+  const osoba = (o) => `<span class="osoba-mini">${o.avatar ? `<img src="${esc(o.avatar)}" alt="" referrerpolicy="no-referrer">` : '<span class="awatar"></span>'}${esc(o.nazwa)}${o.mute ? '<span class="zle-t">🎙✕</span>' : ""}${o.deaf ? '<span class="zle-t">🎧✕</span>' : ""}${o.stream ? '<span class="etykieta czerwona">LIVE</span>' : ""}</span>`;
+  const kanaly = [];
+  const juz = new Set();
+  online.filter(maKanal).forEach((p) => {
     const k = p.discord.kanal;
-    return `<div class="dzien-naglowek">🔊 ${esc(k.nazwa || "Rozmowa")} <span class="przyg" style="text-transform:none">· Ty na ${esc(p.nazwa)} · ${k.uczestnicy.length} os.</span></div>` +
-      k.uczestnicy.map((o) => `<div class="osoba">${o.avatar ? `<img src="${esc(o.avatar)}" alt="" referrerpolicy="no-referrer">` : '<span class="awatar"></span>'}<span class="v">${esc(o.nazwa)}${o.bot ? ' <span class="etykieta">BOT</span>' : ""}</span>
-        <span class="ikony">${o.mute ? '<span class="etykieta czerwona">🎙 off</span>' : ""}${o.deaf ? '<span class="etykieta czerwona">🎧 off</span>' : ""}</span></div>`).join("");
-  }).join("");
-
-  // serwery z botem (stan wypychany przez cogs/panel.py)
-  let botHtml = "";
-  if (dc.ts && (dc.kanaly || []).length) {
-    botHtml = dc.kanaly.map((k) => `<div class="dzien-naglowek">🔊 ${esc(k.kanal)} <span class="przyg" style="text-transform:none">· ${esc(k.serwer)} · ${k.osoby.length} os.</span></div>` +
-      k.osoby.map((o) => `<div class="osoba">${o.avatar ? `<img src="${esc(o.avatar)}" alt="" referrerpolicy="no-referrer">` : '<span class="awatar"></span>'}
-        <span class="v">${esc(o.nazwa)}${o.bot ? ' <span class="etykieta">BOT</span>' : ""}</span>
-        <span class="ikony">${o.stream ? '<span class="etykieta czerwona">LIVE</span>' : ""}${o.kamera ? "📷" : ""}${o.mute ? '<span class="etykieta czerwona">🎙 off</span>' : ""}${o.deaf ? '<span class="etykieta czerwona">🎧 off</span>' : ""}</span></div>`).join("")).join("");
-    if (rpcHtml) botHtml = '<div class="przyg mala" style="margin:10px 0 4px">Serwery z botem</div>' + botHtml;
-  }
-
-  let lewa = rpcHtml + botHtml;
-  if (!lewa) {
-    const rpcDziala = online.some((p) => p.discord && p.discord.polaczony);
-    if (rpcDziala) lewa = pustoHtml("Nie siedzisz na żadnym kanale głosowym.");
-    else if (!dc.ts) lewa = pustoHtml("Brak danych: uruchom Discorda z włączonym RPC w agencie albo dodaj cogs/panel.py do bota.");
-    else lewa = pustoHtml("Nikt nie siedzi na kanałach głosowych.");
-  }
-
-  let prawa;
+    juz.add((k.nazwa || "").toLowerCase());
+    kanaly.push(`<span class="dc-kanal">🔊 ${esc(k.nazwa || "Rozmowa")}</span>${k.uczestnicy.map(osoba).join("")}`);
+  });
+  (dc.kanaly || []).forEach((k) => {   // kanały z bota, których nie pokazał już RPC
+    if (!juz.has((k.kanal || "").toLowerCase())) kanaly.push(`<span class="dc-kanal">🔊 ${esc(k.kanal)} <span class="przyg">· ${esc(k.serwer)}</span></span>${k.osoby.map(osoba).join("")}`);
+  });
+  const opis = kanaly.length ? kanaly.join("")
+    : `<span class="przyg">${online.some((p) => p.discord && p.discord.polaczony) ? "Nie siedzisz na kanale głosowym" : dc.ts ? "Nikt nie siedzi na kanałach głosowych" : "Discord: brak danych (RPC w agencie albo bot)"}</span>`;
+  const pc = online.find((p) => p.id === wybranyPc) || null;
+  let ster = "";
   if (pc) {
     const r = pc.discord && pc.discord.polaczony ? pc.discord : null;
     const kl = (v) => (r ? (v ? "wylaczony" : "wlaczony") : "");
-    const opis = r
-      ? `Sterowanie przez Discord RPC na ${esc(pc.nazwa)}${r.kanal ? "" : " · nie jesteś na kanale głosowym"}.`
-      : pc.discord && pc.discord.wlaczony
-        ? `Discord RPC na ${esc(pc.nazwa)}: ${esc(pc.discord.status || "niepołączony")} — działają skróty z agent.json.`
-        : `Przełącza wyciszenie w Discordzie na ${esc(pc.nazwa)} (skróty z agent.json).`;
-    prawa = `<div class="duze-przyciski" style="flex:1">
-        <button class="${kl(r && r.mute)}" data-akcja="pc-cmd" data-pc="${esc(pc.id)}" data-cmd="discord/mikrofon">🎙️<div class="mala">${r ? (r.mute ? "wyciszony" : "włączony") : "mikrofon"}</div></button>
-        <button class="${kl(r && r.deaf)}" data-akcja="pc-cmd" data-pc="${esc(pc.id)}" data-cmd="discord/sluchawki">🎧<div class="mala">${r ? (r.deaf ? "ogłuszony" : "słyszysz") : "słuchawki"}</div></button></div>
-       ${r && r.kanal ? `<button class="groznie" style="margin-top:8px;min-height:56px;width:100%" data-akcja="pc-cmd" data-pc="${esc(pc.id)}" data-cmd="discord/rozlacz">📞 Rozłącz z kanału</button>` : ""}
-       <div class="przyg mala" style="margin-top:6px">${opis}</div>`;
-  } else {
-    prawa = pustoHtml("Żaden komputer z agentem nie jest online.");
+    ster = `<button class="${kl(r && r.mute)}" data-akcja="pc-cmd" data-pc="${esc(pc.id)}" data-cmd="discord/mikrofon" title="mikrofon">🎙️</button>
+      <button class="${kl(r && r.deaf)}" data-akcja="pc-cmd" data-pc="${esc(pc.id)}" data-cmd="discord/sluchawki" title="słuchawki">🎧</button>
+      ${r && r.kanal ? `<button class="groznie" data-akcja="pc-cmd" data-pc="${esc(pc.id)}" data-cmd="discord/rozlacz" title="rozłącz">📞</button>` : ""}`;
   }
-  return `<div class="siatka" style="grid-template-columns:1.5fr 1fr">
-    <div class="karta"><h2>Kanały głosowe<span class="prawo">${dc.ts ? temuOd(dc.ts) : ""}</span></h2><div class="przewijane" data-scroll="dc">${lewa}</div></div>
-    <div class="karta"><h2>Sterowanie</h2>${prawa}</div></div>`;
-};
+  return `<div class="karta dc-pasek"><div class="dc-lewa"><h2>Discord<span class="prawo">${dc.ts ? temuOd(dc.ts) : ""}</span></h2>
+    <div class="dc-osoby przewijane" data-scroll="dc">${opis}</div></div><div class="dc-ster">${ster}</div></div>`;
+}
 
 function serwerSpi(s) {
   const [kl, txt] = opisSerwera(s);
@@ -967,6 +948,60 @@ function rysujWidok(wymus = false) {
     else if (el.dataset.dol) el.scrollTop = el.scrollHeight;
   });
 }
+
+// ------------------------------------------------------------------ Claude: limity planu (malinka pyta co 10 min)
+const kolClaude = (x) => (x.poziom && x.poziom !== "normal" ? KOL.zle : x.proc >= 80 ? KOL.pom : x.proc >= 50 ? KOL.uwaga : KOL.ok);
+function doResetu(ts) {
+  if (!ts) return "";
+  const s = Math.max(0, ts - Date.now() / 1000), h = Math.floor(s / 3600), m = Math.floor((s % 3600) / 60);
+  const d = new Date(ts * 1000);
+  const kiedy = s < 86400 ? `${d.getHours()}:${dwa(d.getMinutes())}` : `${["nd", "pn", "wt", "śr", "cz", "pt", "sb"][d.getDay()]} ${d.getHours()}:${dwa(d.getMinutes())}`;
+  return `odnowi się ${kiedy} · za ${h >= 24 ? Math.floor(h / 24) + " d " + (h % 24) + " h" : h ? h + " h " + m + " min" : m + " min"}`;
+}
+function wykresClaude(hist) {
+  // 7 dni: tydzień (fiolet) i sesja (akcent), oś 0–100 %
+  const kon = Date.now() / 1000, start = kon - 7 * 86400;
+  const pts = hist.filter((h) => h[0] >= start);
+  if (pts.length < 2) return pustoHtml("Historia zbiera się co 10 minut");
+  const x = (t) => ((100 * (t - start)) / (kon - start)).toFixed(2), y = (v) => (100 - Math.min(100, v)).toFixed(2);
+  const linia = (i, kol) => `<polyline fill="none" stroke="${kol}" stroke-width="1.6" vector-effect="non-scaling-stroke"
+      points="${pts.filter((h) => h[i] != null).map((h) => `${x(h[0])},${y(h[i])}`).join(" ")}"/>`;
+  const dni = [...Array(7)].map((_, k) => { const t = kon - k * 86400; return `<line x1="${x(t)}" x2="${x(t)}" y1="0" y2="100" stroke="rgba(255,255,255,.06)" vector-effect="non-scaling-stroke"/>`; }).join("");
+  return `<svg viewBox="0 0 100 100" preserveAspectRatio="none" style="width:100%;flex:1;min-height:90px">
+      <line x1="0" x2="100" y1="20" y2="20" stroke="rgba(255,122,133,.35)" stroke-dasharray="2 2" vector-effect="non-scaling-stroke"/>${dni}
+      ${linia(1, "var(--akcent)")}${linia(2, "var(--fiolet)")}</svg>
+    <div class="mala przyg" style="display:flex;gap:14px"><span style="color:var(--akcent)">● sesja</span><span style="color:var(--fiolet)">● tydzień</span><span>7 dni · kreska = 80%</span></div>`;
+}
+RENDER.claude = (d) => {
+  $("naglowek-info").innerHTML = `<button class="maly" data-akcja="claude-odswiez" data-dlugie>⟳ Odśwież</button>`;
+  const c = d.claude || {};
+  if (c.disabled) return pustoHtml("Malinka nie jest zalogowana do Claude (brak data/claude/.credentials.json).");
+  const lim = c.limity || [];
+  if (!lim.length) return pustoHtml(c.blad ? "Nie udało się pobrać limitów: " + c.blad : "Czekam na pierwsze dane…");
+  const tydz = lim.find((x) => x.kind === "weekly_all");
+  let tempo = "";
+  if (tydz && tydz.reset) {
+    const uplyw = Math.min(1, Math.max(0, 1 - (tydz.reset - Date.now() / 1000) / (7 * 86400)));
+    const roznica = tydz.proc - 100 * uplyw;
+    tempo = `<div class="mala przyg" style="margin-top:4px">Minęło ${Math.round(100 * uplyw)}% tygodnia — ${roznica > 10 ? "zużywasz szybciej niż równo" : roznica < -10 ? "masz zapas" : "równe tempo"}.</div>`;
+  }
+  const karty = lim.map((x) => `<div class="karta" style="gap:6px"><h2>${esc(x.nazwa)}${x.aktywny ? '<span class="prawo">teraz liczy się ten</span>' : ""}</h2>
+      <div style="font-size:54px;font-weight:800;line-height:1;color:${kolClaude(x)}">${Math.round(x.proc)}<small style="font-size:22px">%</small></div>
+      ${pasek(x.proc, kolClaude(x))}<div class="mala przyg">${esc(doResetu(x.reset))}</div>${x.kind === "weekly_all" ? tempo : ""}</div>`).join("");
+  const podzial = (c.podzial || []).map((r) => `<div class="wiersz"><span class="v">${esc(r.nazwa)}</span><span class="k mala">${Math.round(r.udzial)}% tygodnia · ${Math.round(r.limitu)}% limitu</span></div>`).join("");
+  const stan = `${c.plan ? "Plan " + esc(c.plan) + " · " : ""}dane ${c.ts ? temuOd(c.ts) : "—"}${c.blad && c.blad_ts > (c.ts || 0) ? ` · <span class="zle-t">${esc(c.blad)}</span>` : ""}`;
+  return `<div style="display:flex;flex-direction:column;gap:8px;height:100%">
+    <div class="siatka" style="grid-template-columns:repeat(${Math.min(lim.length, 3)},1fr);flex:none">${karty}</div>
+    <div class="siatka" style="grid-template-columns:minmax(0,1.35fr) minmax(0,1.1fr) minmax(0,.85fr);flex:1;min-height:0">
+      <div class="karta"><h2>Historia</h2>${wykresClaude(d.hist || [])}</div>
+      <div class="karta"><h2>Powiadomienia<span class="prawo">${(d.powiadomienia || []).filter((x) => x.aktywne).length ? "● czeka" : ""}</span></h2>
+        <div class="przewijane" data-scroll="clp">${(d.powiadomienia || []).map((x) => `<div class="wiersz"><span class="v zawijaj">
+          <span style="color:${x.aktywne ? "var(--pom)" : "var(--ramka)"}">●</span> <b>${esc(x.tytul)}</b>
+          <div class="mala przyg">${esc(x.tresc)}</div><div class="mala przyg">${esc(x.pc)} · ${godzMin(x.czas)} · ${temuOd(x.czas)}</div></span></div>`).join("")
+          || pustoHtml("Brak. Zbiera je agent 1.2 z powiadomień aplikacji Claude na komputerze.")}</div></div>
+      <div class="karta"><h2>Tydzień według</h2><div class="przewijane" data-scroll="cl">${podzial || pustoHtml("—")}</div>
+        <div class="mala przyg" style="margin-top:auto">${stan}<br>Alert przy ${(d.progi || []).join(" i ")}% · głosem: „ile mam limitu w Claude”</div></div></div></div>`;
+};
 
 // ---------- budziki (widok z zakładki Dzień)
 const DNI_PN = ["pn", "wt", "śr", "cz", "pt", "sb", "nd"];
@@ -1351,6 +1386,7 @@ document.addEventListener("click", (e) => {
     }
     case "budzik-stop": budzikStop(); akcjaPost(null, "/api/budzik/stop", {}, () => {}); break;
     case "budzik-drzemka": budzikStop(); akcjaPost(null, "/api/budzik/drzemka", {}, (r) => toast(r.msg)); break;
+    case "claude-odswiez": akcjaPost(b, "/api/claude-limity/odswiez", {}, (r) => { toast(r.msg); if (aktywna === "claude") odswiezTeraz(); }); break;
     case "budziki-otworz": otworzWidok("budziki"); break;
     case "budzik-dzien": {
       const dz = Number(b.dataset.d);
@@ -1480,10 +1516,6 @@ const GESTY = {
     kciuk_gora: () => glosnoscGest(10),
     kciuk_dol: () => glosnoscGest(-10),
     piesc: () => pcGest("audio/wycisz", "wycisz / przywróć"),
-  },
-  discord: {
-    piesc: () => pcGest("discord/mikrofon", "mikrofon"),
-    kciuk_dol: () => pcGest("discord/sluchawki", "słuchawki"),
   },
   trening: {
     piesc: () => {

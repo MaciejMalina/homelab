@@ -294,3 +294,15 @@ input.tekst:focus { border-color: var(--akcent); }
 #budzik button.wylacz { background: var(--zle); color: #fff; border-color: transparent; }
 #swit { position: fixed; inset: 0; z-index: 160; background: #000; pointer-events: none; transition: opacity 3s ease-in; }
 #swit[hidden] { display: none; }
+/* Muzyka i Discord: dwie kolumny (~70%) + karta Discorda na dole (~30% wysokości) */
+.muzyka-uklad { display: flex; flex-direction: column; gap: 8px; height: 100%; min-height: 0; }
+.muzyka-uklad > .siatka, .muzyka-uklad > div > .siatka { flex: 1; min-height: 0; }
+.jedna-linia { max-width: 60%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.dc-pasek { flex: 0 0 30%; min-height: 96px; flex-direction: row; align-items: stretch; gap: 12px; }
+.dc-lewa { flex: 1; min-width: 0; display: flex; flex-direction: column; min-height: 0; }
+.dc-osoby { display: flex; flex-wrap: wrap; align-content: flex-start; align-items: center; gap: 6px 14px; font-size: 14px; }
+.dc-kanal { flex-basis: 100%; font-weight: 700; font-size: 12px; color: var(--akcent); text-transform: uppercase; letter-spacing: .05em; }
+.osoba-mini { display: inline-flex; align-items: center; gap: 6px; font-weight: 600; }
+.osoba-mini img, .osoba-mini .awatar { width: 30px; height: 30px; border-radius: 50%; object-fit: cover; background: rgba(255,255,255,.12); display: inline-block; }
+.dc-ster { display: flex; gap: 8px; flex: none; align-items: center; }
+.dc-ster button { min-height: 60px; min-width: 66px; font-size: 24px; border-radius: 16px; }
