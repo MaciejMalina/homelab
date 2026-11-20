@@ -29,6 +29,9 @@ API (JSON):
   GET  /api/siec/speedtest        ostatni wynik (ts, ts_ms, ping, dol, gora) - dla kafelka w Homepage
 POST /api/siec/speedtest
   POST /api/paczka/<id>/odebrana       chowa paczkę z listy (zakładka Dzień, brief)
+  POST /api/budzik                     {"godzina": "6:30", "dni"?: [0..6] | "pn-pt"|"weekend"|"codziennie"|"jednorazowy"}
+  POST /api/budzik/<stop|drzemka>      wyłącza dzwoniący budzik / drzemka BUDZIK_DRZEMKA_MIN
+  POST /api/budzik/<id>/<wl|wyl|usun>  stały budzik: włącz / wyłącz, każdy: usuń  (lista: GET /api/tab/budziki)
   POST /api/siec/urzadzenie/<MAC>      {"znane"?: bool, "nazwa"?: str}  zatwierdzenie / nazwa urządzenia w sieci
   POST /api/claude                     {"zdarzenie": UserPromptSubmit|Stop|Notification, "typ", "sesja", "projekt"}
                                        <- hook Claude Code z laptopa: „skończył” (>= CLAUDE_MIN_S) / „czeka na zgodę”
@@ -420,7 +423,7 @@ def wake_min():
 def stan_ekranu():
     with stan_lock:
         s = dict(EKRAN)
-    return {**s, "now": teraz(), "wake_min": wake_min()}
+    return {**s, "now": teraz(), "wake_min": wake_min(), "budzik": {**BUDZIK, "drzemka_min": BUDZIK_DRZEMKA_MIN}}
 
 
 def ustaw_ekran(mode, minutes=None):
@@ -858,6 +861,248 @@ def _brief_przypomnienia(dzien=0):
     return "Przypomnienia: " + ", ".join(f"{_kiedy_opis(p['ts'])} {p['tekst']}" for p in lista[:3]) + "."
 
 
+# --------------------------------------------------------------------------- budzik
+# Jednorazowe („obudź mnie o 7”, „nastaw budzik na 6:30”, „obudź mnie za 20 minut”, /budzik na Discordzie) i stałe
+# na dni tygodnia (widok Budziki z zakładki Dzień, /budzik z dniami). BUDZIK_SWIT_S przed czasem ekran budzi się
+# i rozjaśnia z czerni, o czasie strona pika coraz głośniej (WebAudio — głośność multimediów telefonu) i co minutę
+# mówi godzinę. „Wyłącz” / „Drzemka” przyciskami albo głosem; po BUDZIK_MAX_MIN milknie sam.
+# Decyzje 2026-11-20: bez nowego APK, świt kilka sekund (nie minut), bez briefu po wyłączeniu.
+BUDZIK_SWIT_S = int(E("BUDZIK_SWIT_S", "3"))
+BUDZIK_DRZEMKA_MIN = int(E("BUDZIK_DRZEMKA_MIN", "9"))
+BUDZIK_MAX_MIN = int(E("BUDZIK_MAX_MIN", "15"))
+DNI_PN = ["pn", "wt", "śr", "cz", "pt", "sb", "nd"]
+BUDZIK = {"dzwoni": False, "od": 0.0, "swit_do": 0.0, "drzemka_do": 0.0, "tekst": ""}
+_budzik_lock = threading.Lock()
+GODZ_SLOWA = {"pierwsz": 1, "drug": 2, "trzeci": 3, "czwart": 4, "piat": 5, "szost": 6, "siodm": 7, "osm": 8,
+              "dziewiat": 9, "dziesiat": 10, "jedenast": 11, "dwunast": 12}
+
+
+def _budziki():
+    return Z.pamiec_get("budziki", []) or []
+
+
+def _budzik_nastepny(b, po):
+    """Najbliższy czas (timestamp) budzika ściśle po `po`; None = wyłączony albo jednorazowy, który już był."""
+    if b.get("ts"):
+        return b["ts"] if b["ts"] > po else None
+    if not b.get("wl", True) or not b.get("dni"):
+        return None
+    d0 = Z.datetime.fromtimestamp(po, Z.TZ)
+    for d in range(8):
+        c = (d0 + Z.timedelta(days=d)).replace(hour=b["h"], minute=b["m"], second=0, microsecond=0)
+        if c.weekday() in b["dni"] and c.timestamp() > po:
+            return c.timestamp()
+    return None
+
+
+def _budzik_dni_opis(dni):
+    dni = sorted(dni)
+    return ("codziennie" if dni == list(range(7)) else "pn–pt" if dni == list(range(5)) else "weekend" if dni == [5, 6]
+            else ", ".join(DNI_PN[d] for d in dni))
+
+
+def _budzik_opis(b):
+    return "jednorazowy" if b.get("ts") else _budzik_dni_opis(b["dni"])
+
+
+def _dni_z(v):
+    if isinstance(v, list):
+        return sorted({int(d) for d in v if 0 <= int(d) <= 6})
+    k = _bez_ogonkow(str(v or "")).strip().replace("–", "-")
+    dni = {"": [], "jednorazowy": [], "jednorazowo": [], "raz": [], "codziennie": list(range(7)),
+           "pn-pt": list(range(5)), "robocze": list(range(5)), "weekend": [5, 6]}.get(k)
+    if dni is None:
+        raise ValueError("dni: lista 0..6 (0 = poniedziałek) albo jednorazowy | pn-pt | weekend | codziennie")
+    return dni
+
+
+def budzik_dodaj(h, m, dni=None, ts=None, zrodlo=""):
+    if not (0 <= h <= 23 and 0 <= m <= 59):
+        raise ValueError("godzina: 0:00..23:59")
+    dni = _dni_z(dni or [])
+    b = {"id": os.urandom(5).hex(), "h": h, "m": m}
+    if dni:
+        b.update(dni=dni, wl=True)
+    else:
+        if ts is None:
+            n = _teraz_pl()
+            c = n.replace(hour=h, minute=m, second=0, microsecond=0)
+            ts = (c + Z.timedelta(days=1) if c <= n else c).timestamp()
+        b["ts"] = ts
+    with _budzik_lock:
+        lista = _budziki()
+        for x in lista:   # ten sam budzik drugi raz = bez duplikatu
+            if (x.get("ts") and b.get("ts") and abs(x["ts"] - b["ts"]) < 60) or \
+               (x.get("dni") and x["dni"] == b.get("dni") and (x["h"], x["m"]) == (h, m)):
+                if x.get("dni"):
+                    x["wl"] = True
+                Z.pamiec_set("budziki", lista)
+                return x
+        lista.append(b)
+        Z.pamiec_set("budziki", lista)
+    print(f"budzik: dodany {h}:{m:02d} {_budzik_opis(b)} ({zrodlo})", flush=True)
+    return b
+
+
+def _godzina_z(t):
+    """t bez ogonków: 'o 7', 'na 6:30', 'na 6 30', 'o siodmej trzydziesci' -> (h, m) albo None."""
+    t = _cyfry(t)
+    t = re.sub(r"\b(o|na)\s+(" + "|".join(GODZ_SLOWA) + r")\w*", lambda m: f"{m.group(1)} {GODZ_SLOWA[m.group(2)]}", t)
+    m = (re.search(r"\b(?:o|na)\s+(?:godzin\w*\s+)?(\d{1,2})(?:[:.\s]+(\d{2}))?\b", t)
+         or re.search(r"\b(\d{1,2})[:.](\d{2})\b", t))
+    if not m:
+        return None
+    h, mi = int(m.group(1)), int(m.group(2) or 0)
+    return (h, mi) if h <= 23 and mi <= 59 else None
+
+
+def _budzik_glos(t):
+    if m := re.search(r"\bza\s+", t):
+        sek, _ = _trwanie(t[m.end():])
+        if 60 <= sek <= 24 * 3600:
+            c = Z.datetime.fromtimestamp(teraz() + sek, Z.TZ)
+            b = budzik_dodaj(c.hour, c.minute, ts=c.timestamp(), zrodlo="głos")
+            return {"odp": f"Dobrze, obudzę cię za {_czas_opis(sek)}, {_kiedy_opis(b['ts'])}."}
+    g = _godzina_z(t)
+    if not g:
+        return {"odp": "Na którą nastawić budzik? Powiedz na przykład: obudź mnie o siódmej, albo nastaw budzik na 6:30."}
+    b = budzik_dodaj(*g, zrodlo="głos")
+    return {"odp": f"Dobrze, budzik {_kiedy_opis(b['ts'])}. To za {_czas_opis(max(60, round((b['ts'] - teraz()) / 60) * 60))}."}
+
+
+def _budzik_najblizszy():
+    t = teraz()
+    return sorted(((n, b) for b in _budziki() if (n := _budzik_nastepny(b, t))), key=lambda x: x[0])
+
+
+def _budziki_status():
+    akt = _budzik_najblizszy()
+    if not akt:
+        return "Nie masz nastawionych budzików."
+    out = [_kiedy_opis(n) + ("" if b.get("ts") else f", {_budzik_dni_opis(b['dni'])}") for n, b in akt[:4]]
+    return ("Najbliższy budzik: " if len(akt) == 1 else "Budziki: ") + "; ".join(out) + "."
+
+
+def _budzik_anuluj_glos():
+    with _budzik_lock:
+        lista = _budziki()
+        jedn = sorted((b for b in lista if b.get("ts") and b["ts"] > teraz()), key=lambda b: b["ts"])
+        if not jedn:
+            return ("Nie ma jednorazowego budzika do anulowania. Stałe budziki wyłączysz w zakładce Dzień, przycisk Budziki."
+                    if any(b.get("dni") for b in lista) else "Nie masz nastawionych budzików.")
+        Z.pamiec_set("budziki", [b for b in lista if b["id"] != jedn[0]["id"]])
+    return f"Anulowałem budzik {_kiedy_opis(jedn[0]['ts'])}."
+
+
+def budzik_akcja(bid, akcja):
+    with _budzik_lock:
+        lista = _budziki()
+        b = next((x for x in lista if x["id"] == bid), None)
+        if b is None:
+            raise ValueError("nie ma takiego budzika")
+        if akcja == "usun":
+            lista.remove(b)
+        elif akcja in ("wl", "wyl") and b.get("dni"):
+            b["wl"] = akcja == "wl"
+        else:
+            raise ValueError("akcja: wl | wyl (stały budzik) | usun")
+        Z.pamiec_set("budziki", lista)
+    opis = f"Budzik {b['h']}:{b['m']:02d}"
+    return {"ok": True, "msg": f"{opis} usunięty" if akcja == "usun" else f"{opis} {'włączony' if b['wl'] else 'wyłączony'}"}
+
+
+def budziki_lista():
+    t = teraz()
+    out = []
+    for b in _budziki():
+        n = _budzik_nastepny(b, t)
+        out.append({**b, "wl": bool(b.get("wl", True)), "opis": _budzik_opis(b), "nastepny": n,
+                    "nastepny_opis": _kiedy_opis(n) if n else None})
+    out.sort(key=lambda x: (x["nastepny"] is None, x["nastepny"] or 0, x["h"], x["m"]))
+    return {"budziki": out, "drzemka_min": BUDZIK_DRZEMKA_MIN, "max_min": BUDZIK_MAX_MIN, "now": t}
+
+
+def _budzik_start(tekst):
+    with _budzik_lock:
+        BUDZIK.update(dzwoni=True, od=teraz(), swit_do=0.0, drzemka_do=0.0, tekst=tekst)
+    print(f"budzik: DZWONI ({tekst})", flush=True)
+    ustaw_ekran("on", 0)   # świeci do wyłączenia budzika; publikuje stan z budzikiem
+
+
+def budzik_stop(drzemka=False, powod=""):
+    """None = nie było czego wyłączać. Drzemka działa tylko, gdy dzwoni; „wyłącz” w czasie drzemki ją kasuje."""
+    with _budzik_lock:
+        dzwoni, drz = BUDZIK["dzwoni"], BUDZIK["drzemka_do"]
+        if not dzwoni and not drz:
+            return None
+        if drzemka and dzwoni:
+            BUDZIK.update(dzwoni=False, swit_do=0.0, drzemka_do=teraz() + BUDZIK_DRZEMKA_MIN * 60)
+            msg = f"Drzemka, zadzwonię za {_czas_opis(BUDZIK_DRZEMKA_MIN * 60)}."
+        elif drzemka:
+            return f"Drzemka już trwa, zadzwonię {_kiedy_opis(drz)}."
+        else:
+            BUDZIK.update(dzwoni=False, swit_do=0.0, drzemka_do=0.0)
+            msg = "Budzik wyłączony."
+    print(f"budzik: {'drzemka' if drzemka else 'wyłączony'}{' — ' + powod if powod else ''}", flush=True)
+    ustaw_ekran("auto")
+    return msg
+
+
+def _budzik_swit():
+    with _budzik_lock:
+        BUDZIK["swit_do"] = teraz() + BUDZIK_SWIT_S
+    ustaw_ekran("on", 2)
+
+
+def _budzik_krok(ostatnio, t):
+    swit = odpal = None
+    for b in _budziki():
+        n = _budzik_nastepny(b, ostatnio)
+        if n is not None and n <= t:
+            odpal = b
+        n = _budzik_nastepny(b, ostatnio + BUDZIK_SWIT_S)
+        if n is not None and n - BUDZIK_SWIT_S <= t:
+            swit = b
+    with _budzik_lock:
+        dzwoni, od, drz = BUDZIK["dzwoni"], BUDZIK["od"], BUDZIK["drzemka_do"]
+    if drz:
+        if ostatnio < drz - BUDZIK_SWIT_S <= t:
+            swit = swit or {"drzemka": True}
+        if ostatnio < drz <= t:
+            odpal = odpal or {"drzemka": True}
+    if dzwoni and t - od > BUDZIK_MAX_MIN * 60:
+        budzik_stop(powod=f"nikt nie wyłączył przez {BUDZIK_MAX_MIN} min")
+        dzwoni = False
+    if swit and not dzwoni and not odpal:
+        _budzik_swit()
+    if odpal:
+        if odpal.get("ts"):   # jednorazowy po zadzwonieniu znika z listy
+            with _budzik_lock:
+                Z.pamiec_set("budziki", [b for b in _budziki() if b["id"] != odpal["id"]])
+        _budzik_start("Koniec drzemki" if odpal.get("drzemka") else f"Budzik {odpal['h']}:{odpal['m']:02d}")
+
+
+def straznik_budzika():
+    t = teraz()
+    with _budzik_lock:   # jednorazowe przegapione (panel nie działał): spóźnione do 30 min dzwonią, starsze znikają
+        lista = _budziki()
+        stare = [b for b in lista if b.get("ts") and b["ts"] <= t]
+        if stare:
+            Z.pamiec_set("budziki", [b for b in lista if b not in stare])
+    if any(t - b["ts"] < 1800 for b in stare):
+        b = max(stare, key=lambda x: x["ts"])
+        _budzik_start(f"Budzik {b['h']}:{b['m']:02d} (spóźniony — restart panelu)")
+    ostatnio = t
+    while True:
+        time.sleep(1)
+        try:
+            t = teraz()
+            _budzik_krok(ostatnio, t)
+            ostatnio = t
+        except Exception as e:  # noqa: BLE001  strażnik ma żyć dalej
+            print(f"budzik: błąd {type(e).__name__}: {e}", flush=True)
+
+
 # --------------------------------------------------------------------------- „Dobranoc”
 # Plan na jutro + po odliczaniu: stanowisko off, oba komputery wyłączone, serwer wyłączony, panel wygaszony.
 # Decyzje 2026-11-16: komputery WYŁĄCZANE (nie usypiane), bez sprawdzania, czy coś gra/pobiera; ochrona przed
@@ -888,6 +1133,9 @@ def _plan_na_jutro():
                 out.append(f"{slowo} {z[0].lower()}{z[1:]}" if przedrostek else z)   # przypomnienia mają już „jutro o…”
         except Exception as e:  # noqa: BLE001
             print(f"dobranoc: {fn.__name__}: {e}", flush=True)
+    akt = _budzik_najblizszy()
+    if akt and akt[0][0] - teraz() < 86400:
+        out.append(f"Budzik {_kiedy_opis(akt[0][0])}.")
     return " ".join(x for x in out if x)
 
 
@@ -1467,12 +1715,29 @@ def jarvis(tekst):
     if not t:
         raise ValueError("puste polecenie")
 
+    # dzwoniący budzik / drzemka: „drzemka”, „jeszcze chwilę” / „wyłącz”, „stop”, „wstaję”
+    with _budzik_lock:
+        dzwoni, drz = BUDZIK["dzwoni"], BUDZIK["drzemka_do"]
+    if dzwoni and re.search(r"\bdrzemk|\bjeszcze (?:chwil|troche|\d+|pare|kilka)", t):
+        return {"odp": budzik_stop(drzemka=True)}
+    if (dzwoni and re.search(r"\b(wylacz|stop|dosc|zatrzymaj|wstaje|wstalem|juz nie spie|cisza|dobra|ok)\b", t)) or \
+       (drz and re.search(r"\b(wylacz|anuluj|zatrzymaj)\w*\s+(?:ten\s+)?(?:budzik|drzemk)", t)):
+        return {"odp": (budzik_stop() or "Budzik wyłączony.") + " Dzień dobry!"}
+
     # trwa odliczanie „Dobranoc”: każde „anuluj / stop / nie / przerwij” je przerywa
     if dobranoc_trwa() and re.search(r"\b(anuluj|przerwij|stop|nie|zatrzymaj|czekaj)", t):
         dobranoc_anuluj()
         return {"odp": "Anulowane. Nic nie wyłączam.", "akcja": {"dobranoc_anuluj": True}}
     if re.search(r"\bdobranoc\b|\bdobrej nocy\b|\bide spac\b|\bidziemy spac\b", t):
         return dobranoc_start()
+
+    # budziki
+    if re.search(r"\b(anuluj|usun|odwolaj|skasuj|wylacz)\w*\s+(?:jutrzejsz\w*\s+|ten\s+|moj\w*\s+)?budzik", t):
+        return {"odp": _budzik_anuluj_glos()}
+    if re.search(r"\b(jakie|lista|pokaz)\w*\s+(?:mam\s+)?budzik|\bna (?:ktora|ile) (?:mam |jest )?(?:nastawion\w* )?budzik", t):
+        return {"odp": _budziki_status()}
+    if re.search(r"\bobudz\w*|\b(ustaw|nastaw|wlacz|dodaj)\w*\s+(?:mi\s+)?budzik|^budzik\b", t):
+        return _budzik_glos(t)
 
     # minutniki i przypomnienia — NAJPIERW, bo tekst przypomnienia może zawierać inne komendy („…wyłączyć stanowisko”)
     if re.search(r"\b(anuluj|usun|odwolaj|skasuj|wylacz|zatrzymaj)\w*\s+(?:wszystkie\s+|ten\s+|to\s+)?(minutnik|timer|przypomnien)", t):
@@ -1620,7 +1885,8 @@ def tab_dzien():
     return {"kalendarz": _z_pamieci("kalendarz", Z.kalendarz_pobierz),
             "paperless": _z_pamieci("paperless", Z.paperless_pobierz),
             "poczta": _poczta(),
-            "todo": cache.get("todo", 20, todo), "serwer": cache.get("serwer", 10, serwer)}
+            "todo": cache.get("todo", 20, todo), "serwer": cache.get("serwer", 10, serwer),
+            "budzik": (lambda a: _kiedy_opis(a[0][0]) if a else None)(_budzik_najblizszy())}
 
 
 def tab_media():
@@ -1655,6 +1921,7 @@ TABS = {
     # widoki szczegółowe otwierane z Przeglądu i Serwerów (nie mają własnej ikony na pasku)
     "pogoda": lambda: {"pogoda": cache.get("pogoda-szczegoly", 900, pogoda_szczegoly)},
     "docker": lambda: {"docker": cache.get("docker", 8, docker_wszystko)},
+    "budziki": budziki_lista,
 }
 
 
@@ -1833,6 +2100,18 @@ class H(BaseHTTPRequestHandler):
             return self.odpowiedz(200, {"ok": True})
         if sc == "/api/siec/speedtest":
             return self.odpowiedz(200, {"ok": True, **Z.speedtest()})
+        if sc == "/api/budzik":
+            g = str(b.get("godzina") or "")
+            m = re.fullmatch(r"\s*(\d{1,2})[:.](\d{2})\s*", g) or re.fullmatch(r"\s*(\d{1,2})()\s*", g)
+            if not m:
+                raise ValueError("godzina: np. 6:30")
+            nb = budzik_dodaj(int(m.group(1)), int(m.group(2) or 0), b.get("dni"), zrodlo=b.get("zrodlo") or "API")
+            kiedy = _kiedy_opis(nb["ts"]) if nb.get("ts") else f"{_budzik_dni_opis(nb['dni'])} o {nb['h']}:{nb['m']:02d}"
+            return self.odpowiedz(200, {"ok": True, "msg": f"Budzik {kiedy}", "budzik": nb})
+        if m := re.fullmatch(r"/api/budzik/(stop|drzemka)", sc):
+            return self.odpowiedz(200, {"ok": True, "msg": budzik_stop(drzemka=m.group(1) == "drzemka") or "Budzik nie dzwoni."})
+        if m := re.fullmatch(r"/api/budzik/(\w+)/(wl|wyl|usun)", sc):
+            return self.odpowiedz(200, budzik_akcja(m.group(1), m.group(2)))
         if m := re.fullmatch(r"/api/siec/urzadzenie/([0-9A-Fa-f:%-]{12,40})", sc):
             return self.odpowiedz(200, siec_urzadzenie(urllib.parse.unquote(m.group(1)), b))
         if sc == "/api/swiatlo":
@@ -1891,4 +2170,5 @@ if __name__ == "__main__":
     threading.Thread(target=probkowanie_pc, daemon=True).start()
     threading.Thread(target=zbieranie_mediow, daemon=True).start()
     threading.Thread(target=straznik_sieci, daemon=True).start()
+    threading.Thread(target=straznik_budzika, daemon=True).start()
     ThreadingHTTPServer(("0.0.0.0", PORT), H).serve_forever()

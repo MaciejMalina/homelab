@@ -1,4 +1,4 @@
-"""JARVIS — panel na telefonie: /ekran, /panel_alert + wysyłanie stanu kanałów głosowych
+"""JARVIS — panel na telefonie: /ekran, /panel_alert, /budzik, /budziki, /budzik_usun + wysyłanie stanu kanałów głosowych
 (kto siedzi, wyciszenia) do zakładki "Discord" na panelu.
 
 Rozmawia z kontenerem jarvis_panel na malince (bot i panel chodzą w network_mode: host,
@@ -73,6 +73,17 @@ class Panel(commands.Cog):
                     raise RuntimeError((dane or {}).get("error") or f"HTTP {r.status}")
                 return dane
 
+    async def api_get(self, sciezka: str):
+        async with aiohttp.ClientSession(timeout=TIMEOUT) as s:
+            async with s.get(PANEL_URL + sciezka) as r:
+                dane = await r.json(content_type=None)
+                if r.status >= 400:
+                    raise RuntimeError((dane or {}).get("error") or f"HTTP {r.status}")
+                return dane
+
+    async def lista_budzikow(self):
+        return (await self.api_get("/api/tab/budziki")).get("budziki") or []
+
     @app_commands.command(name="ekran", description="Włącza albo wygasza ekran panelu (telefon)")
     @app_commands.describe(stan="włącz / wygaś / auto (dotyk budzi, potem gaśnie)",
                            minuty="włącz: na ile minut (domyślnie 10, 0 = do odwołania); "
@@ -118,6 +129,57 @@ class Panel(commands.Cog):
             await interaction.response.send_message(f"❌ Panel nie odpowiada: {e}", ephemeral=True)
             return
         await interaction.response.send_message(f"📱 Na panelu: {tekst}", ephemeral=True)
+
+
+    # ------------------------------------------------------------------ budzik na panelu (decyzja 2026-11-20)
+    @app_commands.command(name="budzik", description="Nastawia budzik na panelu (telefon przy biurku)")
+    @app_commands.describe(godzina="np. 6:30 albo 7", dni="jednorazowy (domyślnie) albo stały na dni tygodnia")
+    @app_commands.choices(dni=[
+        app_commands.Choice(name="jednorazowy", value="jednorazowy"),
+        app_commands.Choice(name="pn–pt", value="pn-pt"),
+        app_commands.Choice(name="weekend", value="weekend"),
+        app_commands.Choice(name="codziennie", value="codziennie"),
+    ])
+    @app_commands.default_permissions(administrator=True)
+    async def budzik(self, interaction: discord.Interaction, godzina: str, dni: app_commands.Choice[str] | None = None):
+        try:
+            r = await self.api("/api/budzik", {"godzina": godzina, "dni": dni.value if dni else "jednorazowy", "zrodlo": "Discord"})
+        except Exception as e:  # noqa: BLE001
+            await interaction.response.send_message(f"❌ {e}", ephemeral=True)
+            return
+        await interaction.response.send_message(f"⏰ {r.get('msg', 'Budzik nastawiony')}", ephemeral=True)
+
+    @app_commands.command(name="budziki", description="Lista budzików na panelu")
+    @app_commands.default_permissions(administrator=True)
+    async def budziki(self, interaction: discord.Interaction):
+        try:
+            lista = await self.lista_budzikow()
+        except Exception as e:  # noqa: BLE001
+            await interaction.response.send_message(f"❌ Panel nie odpowiada: {e}", ephemeral=True)
+            return
+        if not lista:
+            await interaction.response.send_message("⏰ Brak budzików. Dodaj: `/budzik godzina:6:30`", ephemeral=True)
+            return
+        wiersze = [f"**{i}.** {b['h']}:{b['m']:02d} — {b['opis']}"
+                   + (f" · dzwoni {b['nastepny_opis']}" if b.get("nastepny") else " · wyłączony")
+                   for i, b in enumerate(lista, 1)]
+        await interaction.response.send_message("⏰ Budziki:\n" + "\n".join(wiersze) + "\n\nUsuń: `/budzik_usun numer:N`",
+                                                ephemeral=True)
+
+    @app_commands.command(name="budzik_usun", description="Usuwa budzik z panelu (numer z /budziki)")
+    @app_commands.describe(numer="numer z listy /budziki")
+    @app_commands.default_permissions(administrator=True)
+    async def budzik_usun(self, interaction: discord.Interaction, numer: app_commands.Range[int, 1, 50]):
+        try:
+            lista = await self.lista_budzikow()
+            if numer > len(lista):
+                await interaction.response.send_message(f"❌ Nie ma budzika nr {numer} (jest {len(lista)})", ephemeral=True)
+                return
+            r = await self.api(f"/api/budzik/{lista[numer - 1]['id']}/usun", {})
+        except Exception as e:  # noqa: BLE001
+            await interaction.response.send_message(f"❌ {e}", ephemeral=True)
+            return
+        await interaction.response.send_message(f"🗑️ {r.get('msg', 'Usunięty')}", ephemeral=True)
 
 
 async def setup(bot):

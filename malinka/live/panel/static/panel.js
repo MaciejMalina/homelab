@@ -154,6 +154,7 @@ document.addEventListener("pointerdown", () => { if (!sleeping) wake(wakeMin); }
 document.addEventListener("keydown", () => { if (!sleeping) wake(wakeMin); }, true);
 
 function zastosujEkran(s) {
+  budzikZastosuj(s.budzik, s);
   if (typeof s.wake_min === "number" && s.wake_min !== wakeMin) {
     // nowy czas wygaszania z /ekran auto minuty:N — obowiązuje od razu (krótszy skraca bieżące odliczanie)
     wakeMin = s.wake_min;
@@ -862,6 +863,7 @@ RENDER.swiatlo = (d) => {
 };
 
 RENDER.dzien = (d) => {
+  $("naglowek-info").innerHTML = `<button class="maly" data-akcja="budziki-otworz">⏰ ${esc(d.budzik ? "Budzik " + d.budzik : "Budziki")}</button>`;
   const [kal, ekal] = zrodlo(d.kalendarz, "Kalendarz");
   let kalHtml = ekal;
   if (kal === null && !ekal) kalHtml = pustoHtml("Kalendarz: brak danych (serwer jeszcze nie działał od startu panelu)");
@@ -964,6 +966,107 @@ function rysujWidok(wymus = false) {
     if (p) el.scrollTop = el.dataset.dol && p[1] ? el.scrollHeight : p[0];
     else if (el.dataset.dol) el.scrollTop = el.scrollHeight;
   });
+}
+
+// ---------- budziki (widok z zakładki Dzień)
+const DNI_PN = ["pn", "wt", "śr", "cz", "pt", "sb", "nd"];
+const nowyBudzik = { godz: "07:00", dni: [] };
+WIDOK.budziki = {
+  tytul: () => "Budziki",
+  co: 30000,
+  html: (w) => {
+    const d = w.dane, lista = d.budziki || [];
+    const wiersze = lista.map((b) => `<div class="wiersz"><span class="v"><b style="font-size:22px">${b.h}:${dwa(b.m)}</b>
+        <span class="przyg">${esc(b.opis)}</span><div class="mala przyg">${b.nastepny ? "dzwoni " + esc(b.nastepny_opis) : "wyłączony"}</div></span>
+      <span class="k" style="display:flex;gap:6px">${b.ts ? "" : `<button class="chip maly ${b.wl ? "aktywny" : ""}" data-akcja="budzik-wl" data-id="${esc(b.id)}" data-cmd="${b.wl ? "wyl" : "wl"}">${b.wl ? "Wł." : "Wył."}</button>`}
+        <button class="maly" data-akcja="budzik-usun" data-id="${esc(b.id)}" data-potwierdz>Usuń</button></span></div>`).join("");
+    const dniChipy = DNI_PN.map((n, i) => `<button class="chip maly ${nowyBudzik.dni.includes(i) ? "aktywny" : ""}" data-akcja="budzik-dzien" data-d="${i}">${n}</button>`).join("");
+    const szybkie = [["pn–pt", "0,1,2,3,4"], ["weekend", "5,6"], ["codziennie", "0,1,2,3,4,5,6"], ["jednorazowo", ""]]
+      .map(([n, v]) => `<button class="chip maly ${nowyBudzik.dni.join(",") === v ? "aktywny" : ""}" data-akcja="budzik-dni" data-dni="${v}">${n}</button>`).join("");
+    const opisNowego = nowyBudzik.dni.length ? "Stały: " + nowyBudzik.dni.map((x) => DNI_PN[x]).join(", ") : "Jednorazowy — najbliższa taka godzina";
+    return `<div class="siatka" style="grid-template-columns:1.3fr 1fr">
+      <div class="karta"><h2>Nastawione</h2><div class="przewijane" data-scroll="bud">${wiersze || pustoHtml("Brak budzików — dodaj obok albo powiedz „obudź mnie o siódmej”")}</div></div>
+      <div class="karta"><h2>Nowy budzik</h2>
+        <input type="time" class="tekst" id="budzik-godz" value="${esc(nowyBudzik.godz)}" style="flex:none;width:100%;font-size:30px;min-height:58px;text-align:center">
+        <div class="chipy" style="margin-top:10px">${dniChipy}</div>
+        <div class="chipy" style="margin-top:6px">${szybkie}</div>
+        <div class="mala przyg" style="margin:8px 0">${esc(opisNowego)}</div>
+        <button class="glowny" data-akcja="budzik-dodaj">⏰ Dodaj budzik</button>
+        <div class="mala przyg" style="margin-top:auto;padding-top:8px">Pika z telefonu (głośność multimediów), drzemka ${d.drzemka_min} min, sam milknie po ${d.max_min} min.
+          Głosem: „obudź mnie o siódmej”, „drzemka”, „wyłącz”.</div></div></div>`;
+  },
+};
+
+// ---------- dzwonienie: stan przychodzi z malinki (stan ekranu), tu tylko dźwięk, nakładka i świt
+const budzik = { dzwoni: false, timer: 0, krok: 0, ciszaDo: 0, ostMowa: 0, switDo: 0 };
+function budzikEl() {
+  let el = $("budzik");
+  if (el) return el;
+  el = document.createElement("div");
+  el.id = "budzik"; el.hidden = true;
+  el.innerHTML = `<div class="czas" id="budzik-czas"></div><div class="opis" id="budzik-opis"></div>
+    <div class="przyciski"><button class="drzemka" data-akcja="budzik-drzemka" id="budzik-drz">💤 Drzemka</button>
+      <button class="wylacz" data-akcja="budzik-stop">Wyłącz</button></div>`;
+  document.body.appendChild(el);
+  return el;
+}
+function budzikZastosuj(b, s) {
+  if (!b) return;
+  if (b.swit_do && b.swit_do > s.now && budzik.switDo !== b.swit_do) { budzik.switDo = b.swit_do; swit(); }
+  if (b.dzwoni && !budzik.dzwoni) budzikStart();
+  else if (!b.dzwoni && budzik.dzwoni) budzikStop();
+  if (b.dzwoni) {
+    $("budzik-opis").textContent = b.tekst || "Budzik";
+    $("budzik-drz").textContent = `💤 Drzemka ${b.drzemka_min} min`;
+  }
+}
+function swit() {
+  // ekran budzi się w czerni i w kilka sekund rozjaśnia (appka nie umie płynnie zmieniać podświetlenia — robi to nakładka)
+  let el = $("swit");
+  if (!el) { el = document.createElement("div"); el.id = "swit"; document.body.appendChild(el); }
+  el.style.transition = "none"; el.style.opacity = "1"; el.hidden = false;
+  wake(wakeMin);
+  void el.offsetWidth;   // przeliczenie stylu, żeby przejście ruszyło od pełnej czerni
+  el.style.transition = ""; el.style.opacity = "0";
+  setTimeout(() => { el.hidden = true; }, 3300);
+}
+function budzikStart() {
+  budzik.dzwoni = true; budzik.krok = 0; budzik.ostMowa = Date.now(); budzik.ciszaDo = 0;
+  if (widok) zamknijWidok();
+  budzikEl().hidden = false;
+  wake(wakeMin);
+  try { audioCtx = audioCtx || new (window.AudioContext || window.webkitAudioContext)(); if (audioCtx.resume) audioCtx.resume(); } catch (e) { /* bez dźwięku */ }
+  clearInterval(budzik.timer);
+  budzik.timer = setInterval(budzikTik, 1300);
+  budzikTik();
+}
+function budzikStop() {
+  budzik.dzwoni = false;
+  clearInterval(budzik.timer);
+  const el = $("budzik"); if (el) el.hidden = true;
+}
+function budzikTik() {
+  const d = new Date();
+  $("budzik-czas").textContent = `${d.getHours()}:${dwa(d.getMinutes())}`;
+  if (Date.now() < budzik.ciszaDo) return;   // mówi godzinę albo słucha polecenia
+  if (Date.now() - budzik.ostMowa > 60000) {
+    budzik.ostMowa = Date.now(); budzik.ciszaDo = Date.now() + 4000;
+    if (B && B.mow) try { B.mow(`Pobudka. Jest ${d.getHours()}:${dwa(d.getMinutes())}.`); } catch (e) { /* stara appka */ }
+    return;
+  }
+  budzik.krok++;
+  const glosnosc = Math.min(1, 0.15 + budzik.krok * 0.03);   // pełna głośność po ~40 s
+  try {
+    if (audioCtx.state === "suspended" && audioCtx.resume) audioCtx.resume();
+    [0, 0.18, 0.36, 0.54].forEach((o, i) => {
+      const osc = audioCtx.createOscillator(), g = audioCtx.createGain();
+      osc.type = "square"; osc.frequency.value = i % 2 ? 1319 : 988;
+      osc.connect(g); g.connect(audioCtx.destination);
+      const t0 = audioCtx.currentTime + o;
+      g.gain.setValueAtTime(glosnosc * 0.5, t0); g.gain.exponentialRampToValueAtTime(0.001, t0 + 0.15);
+      osc.start(t0); osc.stop(t0 + 0.16);
+    });
+  } catch (e) { /* bez dźwięku */ }
 }
 
 // ---------- pogoda
@@ -1246,6 +1349,25 @@ document.addEventListener("click", (e) => {
       akcjaPost(b, `/api/siec/urzadzenie/${encodeURIComponent(b.dataset.mac)}`, { nazwa });
       break;
     }
+    case "budzik-stop": budzikStop(); akcjaPost(null, "/api/budzik/stop", {}, () => {}); break;
+    case "budzik-drzemka": budzikStop(); akcjaPost(null, "/api/budzik/drzemka", {}, (r) => toast(r.msg)); break;
+    case "budziki-otworz": otworzWidok("budziki"); break;
+    case "budzik-dzien": {
+      const dz = Number(b.dataset.d);
+      nowyBudzik.dni = nowyBudzik.dni.includes(dz) ? nowyBudzik.dni.filter((x) => x !== dz) : [...nowyBudzik.dni, dz].sort();
+      rysujWidok(true); break;
+    }
+    case "budzik-dni": nowyBudzik.dni = b.dataset.dni ? b.dataset.dni.split(",").map(Number) : []; rysujWidok(true); break;
+    case "budzik-dodaj": {
+      const i = $("budzik-godz"); if (i && i.value) nowyBudzik.godz = i.value;
+      blokadaRenderu = 0;
+      akcjaPost(b, "/api/budzik", { godzina: nowyBudzik.godz, dni: nowyBudzik.dni, zrodlo: "panel" }, (r) => { toast(r.msg); if (widok) { widok.ost = 0; wczytajWidok(); } });
+      break;
+    }
+    case "budzik-wl": case "budzik-usun":
+      akcjaPost(b, `/api/budzik/${encodeURIComponent(b.dataset.id)}/${b.dataset.akcja === "budzik-usun" ? "usun" : b.dataset.cmd}`, {},
+        (r) => { toast(r.msg); if (widok) { widok.ost = 0; wczytajWidok(); } });
+      break;
     case "speedtest-malinka": akcjaPost(b, "/api/siec/speedtest", {}, (r) => toast(`Łącze: ↓ ${r.dol} · ↑ ${r.gora} Mb/s · ${r.ping} ms`)); break;
     case "led": akcjaPost(b, "/api/swiatlo", body, () => {}); break;
     case "minutnik": {
@@ -1262,6 +1384,12 @@ document.addEventListener("click", (e) => {
   }
 });
 
+document.addEventListener("focusin", (e) => { if (e.target && e.target.id === "budzik-godz") blokadaRenderu = Date.now() + 60000; });
+document.addEventListener("change", (e) => {
+  if (!e.target || e.target.id !== "budzik-godz") return;
+  if (e.target.value) nowyBudzik.godz = e.target.value;
+  blokadaRenderu = 0;
+});
 document.addEventListener("keydown", (e) => {
   if (e.key !== "Enter" || !e.target || e.target.id !== "urz-nazwa") return;
   e.preventDefault();
@@ -1468,6 +1596,7 @@ function pokazDobranoc(doMs) {
   dobranocT = setInterval(tik, 500);
 }
 window.jarvisGlos = (stan, tekst) => {
+  if (budzik.dzwoni && (stan === "wake" || stan === "czesciowy")) budzik.ciszaDo = Date.now() + 8000;
   if (stan === "wake") { wake(wakeMin); pokazGlos("Słucham…"); return; }
   if (stan === "czesciowy") { wake(wakeMin); pokazGlos(tekst + "…"); return; }
   if (stan === "tekst") { zapytajJarvisa(tekst); return; }
