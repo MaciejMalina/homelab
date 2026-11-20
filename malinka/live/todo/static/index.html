@@ -42,9 +42,15 @@
   .pusto { color: var(--przygaszony); padding: 6px 2px; }
   .blad { color: var(--czerwony); font-size: 12px; }
   .edycja { flex: 1; min-width: 0; }
+  /* listy (zakupy, projekty…) — jak w Yapass-discord-bot */
+  #listy { display: flex; flex-wrap: wrap; gap: 6px; margin-bottom: 8px; }
+  #listy button { min-height: 0; padding: 3px 10px; border-radius: 999px; font-size: 12px; }
+  #listy button.aktywna { border-color: var(--akcent, #5cc8ff); color: var(--akcent, #5cc8ff); }
+  #listy small { opacity: .7; margin-left: 3px; }
 </style>
 </head>
 <body>
+<div id="listy"></div>
 <form id="f" autocomplete="off">
   <input id="tytul" placeholder="Nowe zadanie… (Enter)" maxlength="300" required>
   <input id="data" type="date" title="Termin (opcjonalnie)">
@@ -56,15 +62,17 @@
 <ul id="lista"></ul>
 <div class="stopka">
   <span id="licznik"></span>
-  <span><button id="pokaz" type="button"></button> <button id="czysc" type="button" hidden>wyczyść zrobione</button></span>
+  <span><button id="pokaz" type="button"></button> <button id="czysc" type="button" hidden>wyczyść zrobione</button>
+    <button id="czysc-liste" type="button" hidden>usuń całą listę</button></span>
 </div>
 <script>
 (() => {
   // ?jasny=1 w adresie — kolory pod jasny motyw (domyślnie ciemny, jak Homepage)
   if (new URLSearchParams(location.search).get('jasny') === '1') document.documentElement.classList.add('jasny');
   const $ = s => document.querySelector(s);
-  let zadania = [], pokazZrobione = false;
-  try { pokazZrobione = localStorage.getItem('todo-pokaz') === '1'; } catch (e) {}
+  let zadania = [], listy = [], pokazZrobione = false, wybrana = '';
+  try { pokazZrobione = localStorage.getItem('todo-pokaz') === '1'; wybrana = localStorage.getItem('todo-lista') || ''; } catch (e) {}
+  const nazwaListy = n => n || 'zadania';
 
   const pad = n => String(n).padStart(2, '0');
   const dzienISO = d => `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}`;
@@ -93,8 +101,35 @@
   function pokazBlad(e) { const b = $('#blad'); b.textContent = e ? 'Błąd: ' + e.message : ''; b.hidden = !e; }
 
   async function odswiez() {
-    try { zadania = (await api('GET', 'api/todos')).tasks; pokazBlad(null); rysuj(); }
-    catch (e) { pokazBlad(e); }
+    try {
+      const [t, l] = await Promise.all([api('GET', `api/todos?lista=${encodeURIComponent(wybrana)}`), api('GET', 'api/listy')]);
+      zadania = t.tasks; listy = l.listy;
+      if (!listy.some(x => x.nazwa === wybrana)) listy.push({ nazwa: wybrana, otwarte: 0, zrobione: 0 });
+      pokazBlad(null); rysujListy(); rysuj();
+    } catch (e) { pokazBlad(e); }
+  }
+
+  function wybierz(n) {
+    wybrana = n;
+    try { localStorage.setItem('todo-lista', n); } catch (e) {}
+    $('#tytul').placeholder = n ? `Dodaj do listy „${n}”… (Enter)` : 'Nowe zadanie… (Enter)';
+    odswiez();
+  }
+
+  function rysujListy() {
+    const box = $('#listy'); box.textContent = '';
+    for (const l of listy) {
+      const b = document.createElement('button'); b.type = 'button';
+      b.className = l.nazwa === wybrana ? 'aktywna' : '';
+      b.textContent = nazwaListy(l.nazwa);
+      if (l.otwarte) { const sm = document.createElement('small'); sm.textContent = l.otwarte; b.append(sm); }
+      b.onclick = () => wybierz(l.nazwa);
+      box.append(b);
+    }
+    const nowa = document.createElement('button'); nowa.type = 'button'; nowa.textContent = '+ lista';
+    nowa.onclick = () => { const n = (prompt('Nazwa nowej listy (np. zakupy, prezenty):') || '').trim().toLowerCase(); if (n) wybierz(n); };
+    box.append(nowa);
+    $('#tytul').placeholder = wybrana ? `Dodaj do listy „${wybrana}”… (Enter)` : 'Nowe zadanie… (Enter)';
   }
 
   function rysuj() {
@@ -119,7 +154,8 @@
       x.onclick = async () => { try { await api('DELETE', `api/todos/${t.id}`); await odswiez(); } catch (e) { pokazBlad(e); } };
       li.append(x); ul.append(li);
     }
-    $('#licznik').textContent = `${otwarte.length} do zrobienia`;
+    $('#licznik').textContent = `${otwarte.length} ${wybrana ? 'na liście' : 'do zrobienia'}`;
+    $('#czysc-liste').hidden = !(wybrana && zadania.length);
     $('#pokaz').textContent = zrobione.length ? (pokazZrobione ? 'ukryj zrobione' : `pokaż zrobione (${zrobione.length})`) : '';
     $('#czysc').hidden = !(pokazZrobione && zrobione.length);
   }
@@ -148,7 +184,7 @@
     const d = $('#data').value, g = $('#godz').value;
     const due = d ? (g ? `${d}T${g}` : d) : (g ? `${dzienISO(new Date())}T${g}` : null);
     try {
-      await api('POST', 'api/todos', { title: tytul, due });
+      await api('POST', 'api/todos', { title: tytul, due, lista: wybrana, kto: 'Homepage' });
       $('#tytul').value = ''; $('#data').value = ''; $('#godz').value = '';
       await odswiez(); $('#tytul').focus();
     } catch (e) { pokazBlad(e); }
@@ -161,7 +197,11 @@
     try { localStorage.setItem('todo-pokaz', pokazZrobione ? '1' : '0'); } catch (e) {}
     rysuj();
   };
-  $('#czysc').onclick = async () => { try { await api('POST', 'api/todos/clear-done', {}); await odswiez(); } catch (e) { pokazBlad(e); } };
+  $('#czysc').onclick = async () => { try { await api('POST', 'api/todos/clear-done', { lista: wybrana }); await odswiez(); } catch (e) { pokazBlad(e); } };
+  $('#czysc-liste').onclick = async () => {
+    if (!confirm(`Usunąć całą listę „${wybrana}” (${zadania.length} poz.)?`)) return;
+    try { await api('POST', 'api/listy/wyczysc', { lista: wybrana }); wybierz(''); } catch (e) { pokazBlad(e); }
+  };
 
   // odświeżanie: co 30 s (zadania dodane z Discorda) i po powrocie do karty
   setInterval(() => { if (!document.hidden && !document.querySelector('.edycja')) odswiez(); }, 30000);

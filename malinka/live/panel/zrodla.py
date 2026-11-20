@@ -950,6 +950,113 @@ def kalendarz_pobierz():
     return wynik
 
 
+
+# --------------------------------------------------------------------------- kalendarz: pogoda w miejscu i dodawanie
+# Z Yapass-discord-bot (2026-11-20): pole „Miejsce” wydarzenia -> Nominatim (geokodowanie, wynik zapamiętany na stałe
+# w pamiec "geo") -> prognoza godzinowa Open-Meteo (do 16 dni, pamięć 1 h na punkt). Polskie „w Krakowie” próbujemy
+# też w mianowniku (Kraków). Nominatim: najwyżej 1 zapytanie na sekundę i własny User-Agent.
+NOMINATIM = "https://nominatim.openstreetmap.org/search"
+_UA_GEO = {"User-Agent": "jarvis-panel/1.0 (domowy panel JARVIS; github.com/MaciejMalina)"}
+ONLINE_RE = re.compile(r"https?://|teams|zoom|meet\.|online|discord|telefon", re.I)
+_geo_lock = threading.Lock()
+_pog_cache = {}
+
+
+def _formy_miejsca(m):
+    """Najpierw mianownik zgadnięty z miejscownika („Krakowie” -> Kraków), na końcu tekst jak wpisany — inaczej
+    Nominatim dopasowuje „w Krakowie” np. do „Muzeum Narodowe w Krakowie”."""
+    m = re.sub(r"^(w|we|na)\s+", "", m.strip(), flags=re.I)
+    formy = []
+    for kon, zam in (("owie", "ów"), ("niu", "ń"), ("cach", "ce"), ("ach", "y"), ("ie", "a"), ("iu", ""), ("u", ""), ("em", "e")):
+        if m.lower().endswith(kon) and len(m) > len(kon) + 2:
+            formy.append(m[: -len(kon)] + zam)
+    return list(dict.fromkeys(formy + [m]))
+
+
+def geo_z_pamieci(miejsce):
+    """(lat, lon, nazwa) | None (nie ma takiego miejsca) | False (jeszcze nie sprawdzane)."""
+    if not miejsce or ONLINE_RE.search(miejsce):
+        return None
+    g = pamiec_get("geo", {}) or {}
+    k = " ".join(miejsce.lower().split())[:120]
+    return g[k] if k in g else False
+
+
+def geokoduj(miejsce):
+    if not miejsce or ONLINE_RE.search(miejsce):
+        return None
+    k = " ".join(miejsce.lower().split())[:120]
+    with _geo_lock:
+        g = pamiec_get("geo", {}) or {}
+        if k in g:
+            return g[k]
+        wynik, blad = None, False
+        for forma in _formy_miejsca(miejsce)[:4]:
+            q = urllib.parse.urlencode({"q": forma, "format": "json", "limit": 1, "accept-language": "pl"})
+            try:
+                r = zadanie(f"{NOMINATIM}?{q}", headers=_UA_GEO, timeout=8) or []
+            except Exception:  # noqa: BLE001
+                r, blad = [], True
+            time.sleep(1.1)
+            if r:
+                wynik = [float(r[0]["lat"]), float(r[0]["lon"]), str(r[0].get("display_name") or forma).split(",")[0].strip()]
+                break
+        if wynik or not blad:   # brak sieci nie zapisuje „nie ma takiego miejsca”
+            g[k] = wynik
+            pamiec_set("geo", g)
+        return wynik
+
+
+def pogoda_w(lat, lon, start, caly_dzien=False):
+    """{temp, min, pp, code} w danym miejscu o godzinie startu (albo na cały dzień); None = poza prognozą."""
+    k = (round(lat, 2), round(lon, 2))
+    c = _pog_cache.get(k)
+    if not c or time.time() - c[0] > 3600:
+        q = urllib.parse.urlencode({"latitude": k[0], "longitude": k[1], "timezone": "Europe/Warsaw", "forecast_days": 16,
+                                    "hourly": "temperature_2m,precipitation_probability,weather_code",
+                                    "daily": "temperature_2m_max,temperature_2m_min,precipitation_probability_max,weather_code"})
+        c = (time.time(), zadanie(f"https://api.open-meteo.com/v1/forecast?{q}", timeout=10) or {})
+        _pog_cache[k] = c
+    d = c[1]
+    if caly_dzien:
+        dl = d.get("daily") or {}
+        try:
+            i = (dl.get("time") or []).index(start.strftime("%Y-%m-%d"))
+        except ValueError:
+            return None
+        return {"temp": dl["temperature_2m_max"][i], "min": dl["temperature_2m_min"][i],
+                "pp": dl["precipitation_probability_max"][i], "code": dl["weather_code"][i]}
+    h = d.get("hourly") or {}
+    try:
+        i = (h.get("time") or []).index(start.strftime("%Y-%m-%dT%H:00"))
+    except ValueError:
+        return None
+    return {"temp": h["temperature_2m"][i], "pp": h["precipitation_probability"][i], "code": h["weather_code"][i]}
+
+
+def _ics_tekst(v):
+    return str(v).replace("\\", "\\\\").replace(";", "\\;").replace(",", "\\,").replace("\n", "\\n")
+
+
+def kalendarz_dodaj(w):
+    """PUT nowego wydarzenia do pierwszego kalendarza z NEXTCLOUD_CAL_URLS (serwer musi działać).
+    w: {uid, tytul, start (ISO z czasem lokalnym albo RRRR-MM-DD), minuty, caly_dzien, miejsce}"""
+    if not NC_CAL_URLS:
+        raise RuntimeError("brak NEXTCLOUD_CAL_URLS w .env")
+    utc = lambda dt: dt.astimezone(timezone.utc).strftime("%Y%m%dT%H%M%SZ")  # noqa: E731
+    if w.get("caly_dzien"):
+        d = date.fromisoformat(w["start"][:10])
+        czas = [f"DTSTART;VALUE=DATE:{d:%Y%m%d}", f"DTEND;VALUE=DATE:{d + timedelta(days=1):%Y%m%d}"]
+    else:
+        st = datetime.fromisoformat(w["start"]).replace(tzinfo=TZ) if "+" not in w["start"][10:] else datetime.fromisoformat(w["start"])
+        czas = [f"DTSTART:{utc(st)}", f"DTEND:{utc(st + timedelta(minutes=int(w.get('minuty') or 60)))}"]
+    linie = (["BEGIN:VCALENDAR", "VERSION:2.0", "PRODID:-//JARVIS//panel//PL", "BEGIN:VEVENT", f"UID:{w['uid']}",
+              f"DTSTAMP:{utc(datetime.now(TZ))}"] + czas + [f"SUMMARY:{_ics_tekst(w['tytul'])}"]
+             + ([f"LOCATION:{_ics_tekst(w['miejsce'])}"] if w.get("miejsce") else []) + ["END:VEVENT", "END:VCALENDAR", ""])
+    zadanie(NC_CAL_URLS[0].rstrip("/") + f"/{w['uid']}.ics", method="PUT", body="\r\n".join(linie), timeout=10,
+            headers={**basic(NC_USER, NC_PASS), "Content-Type": "text/calendar; charset=utf-8", "If-None-Match": "*"})
+
+
 def paperless_pobierz():
     if not (PAPERLESS_URL and PAPERLESS_TOKEN):
         return None

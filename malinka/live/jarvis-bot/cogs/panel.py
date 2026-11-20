@@ -1,4 +1,4 @@
-"""JARVIS — panel na telefonie: /ekran, /panel_alert, /budzik, /budziki, /budzik_usun + wysyłanie stanu kanałów głosowych
+"""JARVIS — panel na telefonie: /ekran, /panel_alert, /budzik, /budziki, /budzik_usun, /kalendarz + wysyłanie stanu kanałów głosowych
 (kto siedzi, wyciszenia) do zakładki "Discord" na panelu.
 
 Rozmawia z kontenerem jarvis_panel na malince (bot i panel chodzą w network_mode: host,
@@ -180,6 +180,32 @@ class Panel(commands.Cog):
             await interaction.response.send_message(f"❌ {e}", ephemeral=True)
             return
         await interaction.response.send_message(f"🗑️ {r.get('msg', 'Usunięty')}", ephemeral=True)
+
+
+    # ------------------------------------------------------------------ kalendarz (Nextcloud przez panel; z Yapass)
+    @app_commands.command(name="kalendarz", description="Dodaje wydarzenie do kalendarza (Nextcloud); śpiący serwer zostanie obudzony")
+    @app_commands.describe(tytul="Co, np. Dentysta", kiedy="np. jutro 18:00 / pt 9:30 / 30.11 / 2026-12-03 (bez godziny = cały dzień)",
+                           miejsce="Opcjonalnie: gdzie (dostanie pogodę w raporcie)", minuty="Czas trwania (domyślnie 60)")
+    @app_commands.default_permissions(administrator=True)
+    async def kalendarz(self, interaction: discord.Interaction, tytul: str, kiedy: str, miejsce: str | None = None,
+                        minuty: app_commands.Range[int, 5, 1440] = 60):
+        from cogs.todo import parsuj_termin   # ten sam parser terminu co /zadanie
+        try:
+            termin = parsuj_termin(kiedy)
+        except ValueError as e:
+            await interaction.response.send_message(f"❌ {e}. Przykłady: `jutro 18:00`, `pt 9:30`, `30.11`.", ephemeral=True)
+            return
+        if not termin:
+            await interaction.response.send_message("❌ Podaj kiedy, np. `jutro 18:00`.", ephemeral=True)
+            return
+        data, _, godz = termin.partition("T")
+        try:
+            r = await self.api("/api/kalendarz", {"tytul": tytul, "data": data, "godzina": godz or None, "minuty": minuty,
+                                                  "miejsce": miejsce, "zrodlo": f"Discord ({interaction.user.display_name})"})
+        except Exception as e:  # noqa: BLE001
+            await interaction.response.send_message(f"❌ {e}", ephemeral=True)
+            return
+        await interaction.response.send_message(f"📅 {r.get('msg', 'Dodane')}")
 
 
 async def setup(bot):

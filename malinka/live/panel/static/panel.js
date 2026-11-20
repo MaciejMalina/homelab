@@ -348,13 +348,18 @@ function fmtTermin(due) {
 function renderTodo(t) {
   const ul = $("lista");
   if (!t || !t.ok) { ul.innerHTML = `<li class="przyg">Lista TO DO nie odpowiada</li>`; $("todo-licznik").textContent = ""; return; }
-  const zadania = t.data.tasks || [];
+  const wszystkie = t.data.tasks || [];
+  const zadania = wszystkie.filter((z) => !z.lista);   // lista główna; inne listy (zakupy…) jako odnośnik
+  const inne = {};
+  wszystkie.filter((z) => z.lista).forEach((z) => { inne[z.lista] = (inne[z.lista] || 0) + 1; });
+  const odnosnik = Object.keys(inne).length
+    ? `<li class="przyg mala" data-akcja="listy-otworz" style="cursor:pointer">📋 ${Object.entries(inne).map(([n, c]) => `${esc(n)} ${c}`).join(" · ")} ›</li>` : "";
   $("todo-licznik").textContent = zadania.length ? String(zadania.length) : "";
-  if (!zadania.length) { ul.innerHTML = `<li class="przyg">Nic do zrobienia 🎉</li>`; return; }
+  if (!zadania.length) { ul.innerHTML = `<li class="przyg">Nic do zrobienia 🎉</li>` + odnosnik; return; }
   ul.innerHTML = zadania.map((z) => {
     const tm = fmtTermin(z.due);
     return `<li data-id="${z.id}"><span class="ptaszek"></span><span class="t">${esc(z.title)}</span>${tm ? `<span class="termin ${tm.klasa}">${esc(tm.tekst)}</span>` : ""}</li>`;
-  }).join("");
+  }).join("") + odnosnik;
 }
 $("lista").addEventListener("click", async (e) => {
   const li = e.target.closest("li[data-id]");
@@ -758,12 +763,12 @@ RENDER.siec = (d) => {
     <div class="karta"><h2>Urządzenia<span class="prawo">${urz.filter((u) => u.online).length} w sieci</span></h2><div class="przewijane" data-scroll="urz">${lista}</div></div></div>`;
 };
 
-// urządzenia w sieci: nowe (nieznane) na górze; ✎ = nazwa (nadanie nazwy zatwierdza), „Znane ✓” = zatwierdź bez nazwy
+// urządzenia w sieci: nowe (nieznane) na górze; ✎ = nazwa (nadanie nazwy zatwierdza) albo Usuń, „Znane ✓” = zatwierdź bez nazwy
 let edytowanyMac = null;
 function urzWiersz(u) {
   if (edytowanyMac === u.mac) {
     return `<div class="wiersz"><input type="text" class="tekst" id="urz-nazwa" maxlength="40" placeholder="Nazwa, np. Telefon Ani" value="${esc(u.nazwa || u.host || "")}">
-      <button class="maly" data-akcja="urz-zapisz" data-mac="${esc(u.mac)}">Zapisz</button><button class="maly" data-akcja="urz-anuluj">✕</button></div>`;
+      <button class="maly" data-akcja="urz-zapisz" data-mac="${esc(u.mac)}">Zapisz</button><button class="maly" data-akcja="urz-usun" data-mac="${esc(u.mac)}" data-potwierdz>Usuń</button><button class="maly" data-akcja="urz-anuluj">✕</button></div>`;
   }
   const nazwa = u.nazwa || u.host || (u.prywatny ? "prywatny MAC" : "bez nazwy");
   const opis = [u.ip, u.mac, u.online ? null : u.ostatni ? `widziane ${temuOd(u.ostatni)}` : "jeszcze nie widziane"].filter(Boolean).join(" · ");
@@ -844,7 +849,9 @@ RENDER.swiatlo = (d) => {
 };
 
 RENDER.dzien = (d) => {
-  $("naglowek-info").innerHTML = `<button class="maly" data-akcja="budziki-otworz">⏰ ${esc(d.budzik ? "Budzik " + d.budzik : "Budziki")}</button>`;
+  $("naglowek-info").innerHTML = `<div class="chipy"><button class="maly" data-akcja="wydarzenie-otworz">＋ wydarzenie</button>
+    <button class="maly" data-akcja="reguly-otworz">⚡ Reguły</button>
+    <button class="maly" data-akcja="budziki-otworz">⏰ ${esc(d.budzik ? "Budzik " + d.budzik : "Budziki")}</button></div>`;
   const [kal, ekal] = zrodlo(d.kalendarz, "Kalendarz");
   let kalHtml = ekal;
   if (kal === null && !ekal) kalHtml = pustoHtml("Kalendarz: brak danych (serwer jeszcze nie działał od startu panelu)");
@@ -856,7 +863,10 @@ RENDER.dzien = (d) => {
       ostatni = dz;
       const s = new Date(w.start), k = w.koniec ? new Date(w.koniec) : null;
       const godz = w.caly_dzien ? "cały dzień" : `${dwa(s.getHours())}:${dwa(s.getMinutes())}${k ? "–" + dwa(k.getHours()) + ":" + dwa(k.getMinutes()) : ""}`;
-      return `${nag}<div class="wiersz"><span class="k mala" style="width:78px">${esc(godz)}</span><span class="v zawijaj">${esc(w.tytul)}${w.miejsce ? ` <span class="przyg mala">· ${esc(w.miejsce)}</span>` : ""}</span></div>`;
+      // pogoda w miejscu wydarzenia (Open-Meteo o tej godzinie; z Yapass) — pojawia się, gdy miejsce jest już zgeokodowane
+      const p = w.pogoda;
+      const pog = p ? ` <span class="mala" title="${esc(p.opis || "")}">${p.ikona} ${Math.round(p.temp)}°${p.pp ? ` · ${p.pp}%` : ""}</span>` : "";
+      return `${nag}<div class="wiersz"><span class="k mala" style="width:78px">${esc(godz)}</span><span class="v zawijaj">${esc(w.tytul)}${w.miejsce ? ` <span class="przyg mala">· 📍 ${esc(w.miejsce)}</span>` : ""}${pog}</span></div>`;
     }).join("") || pustoHtml("Nic w kalendarzu na 7 dni");
   }
   const kalInfo = kal ? (kal.aktualne ? "" : `stan z ${godzMin(kal.ts)} · serwer śpi`) : "";
@@ -1001,6 +1011,154 @@ RENDER.claude = (d) => {
           || pustoHtml("Brak. Zbiera je agent 1.2 z powiadomień aplikacji Claude na komputerze.")}</div></div>
       <div class="karta"><h2>Tydzień według</h2><div class="przewijane" data-scroll="cl">${podzial || pustoHtml("—")}</div>
         <div class="mala przyg" style="margin-top:auto">${stan}<br>Alert przy ${(d.progi || []).join(" i ")}% · głosem: „ile mam limitu w Claude”</div></div></div></div>`;
+};
+
+// ---------- nowe wydarzenie w kalendarzu (Nextcloud; gdy serwer śpi — kolejka + budzenie)
+const noweWyd = { tytul: "", data: "", godz: "", minuty: 60, miejsce: "" };
+WIDOK.wydarzenie = {
+  tytul: () => "Nowe wydarzenie w kalendarzu",
+  co: 600000,
+  html: (w) => {
+    if (!noweWyd.data) { const d = new Date(Date.now() + 864e5); noweWyd.data = `${d.getFullYear()}-${dwa(d.getMonth() + 1)}-${dwa(d.getDate())}`; }
+    const pole = (id, typ, wart, ph, styl = "") => `<input type="${typ}" class="tekst" id="wyd-${id}" value="${esc(wart)}" placeholder="${esc(ph)}" style="width:100%;flex:none;min-height:44px;font-size:16px;${styl}">`;
+    return `<div class="siatka" style="grid-template-columns:minmax(0,1.3fr) minmax(0,1fr)">
+      <div class="karta" style="gap:8px"><h2>Co i gdzie</h2>
+        ${pole("tytul", "text", noweWyd.tytul, "Tytuł, np. Dentysta")}
+        ${pole("miejsce", "text", noweWyd.miejsce, "Miejsce (opcjonalnie) — dostanie pogodę, np. Kraków")}
+        <div class="mala przyg">${w.dane.serwer ? "Serwer działa — wydarzenie trafi do Nextclouda od razu." : "Serwer śpi — obudzę go, wydarzenie trafi do kalendarza, gdy wstanie."}</div></div>
+      <div class="karta" style="gap:8px"><h2>Kiedy</h2>
+        ${pole("data", "date", noweWyd.data, "")}
+        ${pole("godz", "time", noweWyd.godz, "")}
+        <div class="chipy">${[[0, "cały dzień"], [30, "30 min"], [60, "1 h"], [90, "1,5 h"], [120, "2 h"], [180, "3 h"]].map(([m, n]) =>
+          `<button class="chip maly ${(m === 0 ? !noweWyd.godz : noweWyd.godz && noweWyd.minuty === m) ? "aktywny" : ""}" data-akcja="wyd-czas" data-m="${m}">${n}</button>`).join("")}</div>
+        <button class="glowny" data-akcja="wyd-dodaj" data-dlugie style="margin-top:auto">📅 Dodaj do kalendarza</button></div></div>`;
+  },
+};
+function wydZbierz() {
+  for (const k of ["tytul", "miejsce", "data", "godz"]) { const el = $("wyd-" + k); if (el) noweWyd[k] = el.value.trim(); }
+}
+
+// ---------- wszystkie listy TO DO (zakupy, projekty…) — dotknięcie pozycji = zrobione / kupione
+WIDOK.listy = {
+  tytul: () => "Listy",
+  co: 20000,
+  html: (w) => {
+    const t = w.dane.todo || {};
+    const grupy = {};
+    (t.tasks || []).forEach((z) => { (grupy[z.lista || ""] = grupy[z.lista || ""] || []).push(z); });
+    const nazwy = Object.keys(grupy).sort((a, b) => (a !== "") - (b !== "") || a.localeCompare(b, "pl"));   // główna pierwsza
+    if (!nazwy.length) return pustoHtml("Wszystkie listy są puste. Głosem: „dodaj mleko do zakupów”.");
+    return `<div class="siatka" style="grid-template-columns:repeat(${Math.min(nazwy.length, 3)},minmax(0,1fr))">${nazwy.map((n) => `<div class="karta">
+      <h2>${esc(n || "zadania")}<span class="prawo">${grupy[n].length}</span></h2><div class="przewijane" data-scroll="l-${esc(n)}">
+      ${grupy[n].map((z) => `<div class="wiersz" data-akcja="lista-odhacz" data-id="${z.id}" style="cursor:pointer"><span class="v zawijaj">☐ ${esc(z.title)}</span>${z.kto ? `<span class="k mala">${esc(z.kto)}</span>` : ""}</div>`).join("")}
+      </div></div>`).join("")}</div>`;
+  },
+};
+
+// ---------- ściąga komend „Hey Jarvis” (głosem: „co umiesz?”)
+WIDOK.komendy = {
+  tytul: () => "Co umie JARVIS — powiedz „Hey Jarvis”, a potem…",
+  co: 600000,
+  html: (w) => `<div class="siatka" style="grid-template-columns:repeat(3,minmax(0,1fr));grid-auto-rows:min-content;overflow:auto">
+    ${(w.dane.grupy || []).map(([g, lista]) => `<div class="karta"><h2>${esc(g)}</h2>
+      ${lista.map((k) => `<div class="wiersz"><span class="v zawijaj">„${esc(k)}”</span></div>`).join("")}</div>`).join("")}</div>`,
+};
+
+// ---------- reguły „gdy → wtedy”: lista + kreator (malinka sprawdza je co 20 s; głosem „pokaż reguły”)
+const REG_NOWA = () => ({ id: "", nazwa: "", wl: true, gdy: { typ: "pobrane", minuty: 10, mac: "", godz: "07:30", dni: [], filtr: "" }, okno: null, wtedy: [] });
+let rk = REG_NOWA();
+const REG_MIN = { nieobecnosc: [5, 10, 15, 30, 60], wraca: [30, 60, 120, 240] };
+const REG_OKNA = [[null, "cały dzień"], [{ od: 7, do: 23 }, "7–23"], [{ od: 8, do: 22 }, "8–22"], [{ od: 22, do: 7 }, "noc 22–7"]];
+function regUrz(d, mac) { const u = (d.urzadzenia || []).find((x) => x.mac === mac); return u ? u.nazwa : mac || "—"; }
+function regGniazdo(d, id) { const g = (d.gniazda || []).find((x) => x.id === id); return g ? g.nazwa : id; }
+function regOpisGdy(g, d) {
+  switch (g.typ) {
+    case "pobrane": return "pobieranie skończone" + (g.filtr ? ` (nazwa zawiera „${g.filtr}”)` : "");
+    case "nieobecnosc": return `nikogo przy biurku ${g.minuty} min`;
+    case "obecnosc": return "ktoś siada przy biurku";
+    case "wraca": return g.mac ? `${regUrz(d, g.mac)} wraca po ${g.minuty >= 60 ? g.minuty / 60 + " h" : g.minuty + " min"}` : "urządzenie wraca (nie wybrano!)";
+    case "godzina": return `o ${g.godz}${g.dni && g.dni.length ? " · " + g.dni.map((x) => DNI_PN[x]).join(", ") : " codziennie"}`;
+    default: return g.typ;
+  }
+}
+function regOpisWtedy(a, d) {
+  const onoff = (x) => (x === "off" ? "wyłącz" : "włącz");
+  switch (a.typ) {
+    case "powiedz": return `powiedz „${a.tekst}”`;
+    case "discord": return "Discord";
+    case "gniazdo": return `${onoff(a.akcja)} ${regGniazdo(d, a.id)}`;
+    case "stanowisko": return `${onoff(a.akcja)} stanowisko`;
+    case "ekran": return a.akcja === "off" ? "uśpij ekran" : "obudź ekran";
+    case "brief": return "brief dnia";
+    case "komenda": return `„${a.tekst}”`;
+    default: return a.typ;
+  }
+}
+function regZbierz() {
+  const v = (id) => { const el = $(id); return el ? el.value : null; };
+  if (v("reg-nazwa") !== null) rk.nazwa = v("reg-nazwa");
+  if (v("reg-godz")) rk.gdy.godz = v("reg-godz");
+  if (v("reg-filtr") !== null) rk.gdy.filtr = v("reg-filtr");
+  rk.wtedy.forEach((a, i) => { const t = v("reg-t-" + i); if (t !== null) a.tekst = t; });
+}
+WIDOK.reguly = {
+  tytul: () => "Reguły — gdy… wtedy…",
+  co: 15000,
+  html: (w) => {
+    const d = w.dane, lista = d.reguly || [];
+    const chip = (akt, akcja, attrs, tekst) => `<button class="chip maly ${akt ? "aktywny" : ""}" data-akcja="${akcja}" ${attrs}>${tekst}</button>`;
+    const wiersze = lista.map((r) => `<div class="wiersz" style="align-items:flex-start"><span class="v zawijaj" style="${r.wl ? "" : "opacity:.5"}">
+        <b>${esc(r.nazwa)}</b>${rk.id === r.id ? ' <span class="mala" style="color:var(--akcent)">✎ edytujesz</span>' : ""}
+        <div class="mala przyg">gdy ${esc(regOpisGdy(r.gdy, d))}${r.okno ? ` · ${r.okno.od}–${r.okno.do}` : ""} → ${esc(r.wtedy.map((a) => regOpisWtedy(a, d)).join(", "))}</div>
+        <div class="mala przyg">${r.ostatnio ? `ostatnio ${temuOd(r.ostatnio)} · razem ${r.licznik}` : "jeszcze nie działała"}</div></span>
+      <span class="k" style="display:flex;gap:5px;flex-wrap:wrap;justify-content:flex-end">
+        ${chip(r.wl, "reg-cmd", `data-id="${esc(r.id)}" data-cmd="${r.wl ? "wyl" : "wl"}"`, r.wl ? "Wł." : "Wył.")}
+        <button class="maly" data-akcja="reg-edytuj" data-id="${esc(r.id)}">Edytuj</button>
+        <button class="maly" data-akcja="reg-cmd" data-id="${esc(r.id)}" data-cmd="test" data-dlugie>Test</button>
+        <button class="maly" data-akcja="reg-cmd" data-id="${esc(r.id)}" data-cmd="usun" data-potwierdz>Usuń</button></span></div>`).join("");
+    const hist = (d.hist || []).map((h) => `<div class="wiersz"><span class="v zawijaj"><span class="${h.ok ? "" : "zle-t"}">●</span> <b>${esc(h.nazwa)}</b>
+        <span class="mala przyg">${esc(h.opis)}</span></span><span class="k mala">${godzMin(h.ts)}<br>${temuOd(h.ts)}</span></div>`).join("");
+
+    // --- kreator
+    const g = rk.gdy;
+    const gdyChipy = Object.entries(d.gdy || {}).map(([k, n]) => chip(g.typ === k, "reg-gdy", `data-typ="${k}"`, esc(n))).join("");
+    let param = "";
+    if (REG_MIN[g.typ]) param += `<div class="chipy">${REG_MIN[g.typ].map((m) => chip(g.minuty === m, "reg-min", `data-m="${m}"`, m >= 60 ? m / 60 + " h" : m + " min")).join("")}
+      <span class="mala przyg">${g.typ === "wraca" ? "nieobecności w sieci" : "bez nikogo przy biurku (kamera panelu)"}</span></div>`;
+    if (g.typ === "wraca") param += `<div class="chipy" style="max-height:96px;overflow:auto">${(d.urzadzenia || []).map((u) =>
+      chip(g.mac === u.mac, "reg-mac", `data-mac="${esc(u.mac)}"`, `${u.online ? "🟢" : "⚪"} ${esc(u.nazwa)} <span class="przyg">${esc(u.ip || "")}</span>`)).join("")}</div>
+      <div class="mala przyg">Wybierz swój telefon (nazwy nadasz w zakładce Sieć). Sieć skanuje co 5 min.</div>`;
+    if (g.typ === "godzina") param += `<div class="chipy"><input type="time" class="tekst" id="reg-godz" value="${esc(g.godz)}" style="flex:none;width:130px;min-height:36px;font-size:16px">
+      ${DNI_PN.map((n, i) => chip((g.dni || []).includes(i), "reg-dzien", `data-d="${i}"`, n)).join("")}</div>
+      <div class="mala przyg">Bez zaznaczonych dni = codziennie.</div>`;
+    if (g.typ === "pobrane") param += `<input type="text" class="tekst" id="reg-filtr" value="${esc(g.filtr || "")}" placeholder="Tylko gdy nazwa zawiera… (puste = każde)" style="width:100%;flex:none;min-height:36px">`;
+    if (g.typ === "obecnosc") param += `<div class="mala przyg">Gdy kamera panelu zobaczy kogoś przy biurku (monitor i tak włącza się sam).</div>`;
+    const okno = REG_OKNA.map(([o, n]) => chip(JSON.stringify(o) === JSON.stringify(rk.okno), "reg-okno", `data-o='${JSON.stringify(o)}'`, n)).join("");
+    const akcje = rk.wtedy.map((a, i) => {
+      let p = "";
+      if (["powiedz", "discord", "komenda"].includes(a.typ)) p = `<input type="text" class="tekst" id="reg-t-${i}" value="${esc(a.tekst || "")}"
+        placeholder="${a.typ === "komenda" ? "np. włącz drukarkę / co mam jutro" : "Tekst — {nazwa}, {minuty} podstawią się same"}" style="min-height:34px">`;
+      if (["gniazdo", "stanowisko", "ekran"].includes(a.typ)) p = ["on", "off"].map((x) => chip(a.akcja === x, "reg-onoff", `data-i="${i}" data-x="${x}"`,
+        a.typ === "ekran" ? (x === "on" ? "obudź" : "uśpij") : (x === "on" ? "włącz" : "wyłącz"))).join("");
+      if (a.typ === "gniazdo") p += (d.gniazda || []).map((gn) => chip(a.id === gn.id, "reg-gn", `data-i="${i}" data-id="${esc(gn.id)}"`, esc(gn.nazwa))).join("");
+      if (a.typ === "stanowisko") p += `<span class="mala przyg">${esc((d.stanowisko || []).join(", "))}</span>`;
+      return `<div class="chipy" style="flex-wrap:nowrap;align-items:center"><b class="mala" style="white-space:nowrap">${esc((d.wtedy || {})[a.typ] || a.typ)}</b>
+        <div class="chipy" style="flex:1;min-width:0">${p}</div><button class="maly" data-akcja="reg-usun-a" data-i="${i}">✕</button></div>`;
+    }).join("");
+    const dodaj = Object.entries(d.wtedy || {}).map(([k, n]) => `<button class="chip maly" data-akcja="reg-dodaj-a" data-typ="${k}">＋ ${esc(n)}</button>`).join("");
+    return `<div class="siatka" style="grid-template-columns:minmax(0,1fr) minmax(0,1.15fr)">
+      <div style="display:flex;flex-direction:column;gap:8px;min-height:0">
+        <div class="karta" style="flex:1.4;min-height:0"><h2>Reguły<span class="prawo">${lista.filter((r) => r.wl).length}/${lista.length} wł.</span></h2>
+          <div class="przewijane" data-scroll="reg">${wiersze || pustoHtml("Brak reguł — utwórz obok")}</div></div>
+        <div class="karta" style="flex:1;min-height:0"><h2>Ostatnio zadziałały</h2><div class="przewijane" data-scroll="regh">${hist || pustoHtml("Jeszcze nic")}</div></div></div>
+      <div class="karta" style="gap:7px;overflow:auto"><h2>${rk.id ? "Edycja reguły" : "Nowa reguła"}<span class="prawo"><button class="maly" data-akcja="reg-nowa">＋ nowa</button></span></h2>
+        <input type="text" class="tekst" id="reg-nazwa" value="${esc(rk.nazwa)}" placeholder="Nazwa, np. Wychodzę z domu" style="width:100%;flex:none;min-height:40px;font-size:16px">
+        <div class="mala przyg">GDY</div><div class="chipy">${gdyChipy}</div>${param}
+        <div class="mala przyg">TYLKO W GODZINACH</div><div class="chipy">${okno}</div>
+        <div class="mala przyg">WTEDY</div>${akcje || '<div class="mala przyg">Dodaj, co ma się stać:</div>'}
+        <div class="chipy">${dodaj}</div>
+        <button class="glowny" data-akcja="reg-zapisz" data-dlugie style="margin-top:auto">⚡ ${rk.id ? "Zapisz zmiany" : "Utwórz regułę"}</button></div></div>`;
+  },
 };
 
 // ---------- budziki (widok z zakładki Dzień)
@@ -1378,6 +1536,9 @@ document.addEventListener("click", (e) => {
       break;
     }
     case "urz-anuluj": edytowanyMac = null; urzPrzerysuj(); break;
+    case "urz-usun":
+      akcjaPost(b, `/api/siec/urzadzenie/${encodeURIComponent(b.dataset.mac)}`, { usun: true }, (r) => { toast(r.msg); edytowanyMac = null; urzPrzerysuj(); odswiezTeraz(); });
+      break;
     case "urz-zapisz": {
       const i = $("urz-nazwa"); const nazwa = i ? i.value : "";
       edytowanyMac = null; blokadaRenderu = 0;
@@ -1387,6 +1548,60 @@ document.addEventListener("click", (e) => {
     case "budzik-stop": budzikStop(); akcjaPost(null, "/api/budzik/stop", {}, () => {}); break;
     case "budzik-drzemka": budzikStop(); akcjaPost(null, "/api/budzik/drzemka", {}, (r) => toast(r.msg)); break;
     case "claude-odswiez": akcjaPost(b, "/api/claude-limity/odswiez", {}, (r) => { toast(r.msg); if (aktywna === "claude") odswiezTeraz(); }); break;
+    case "listy-otworz": otworzWidok("listy"); break;
+    case "reguly-otworz": rk = REG_NOWA(); otworzWidok("reguly"); break;
+    case "reg-nowa": rk = REG_NOWA(); blokadaRenderu = 0; rysujWidok(true); break;
+    case "reg-edytuj": {
+      const r = ((widok && widok.dane && widok.dane.reguly) || []).find((x) => x.id === b.dataset.id);
+      if (r) { const c = JSON.parse(JSON.stringify(r)); rk = { ...REG_NOWA(), ...c, gdy: { ...REG_NOWA().gdy, ...c.gdy } }; }
+      blokadaRenderu = 0; rysujWidok(true); break;
+    }
+    case "reg-cmd":
+      akcjaPost(b, `/api/reguly/${encodeURIComponent(b.dataset.id)}/${b.dataset.cmd}`, {}, (r) => {
+        toast(r.msg);
+        if (b.dataset.cmd === "usun" && rk.id === b.dataset.id) rk = REG_NOWA();
+        if (widok) { widok.ost = 0; wczytajWidok(); }
+      });
+      break;
+    case "reg-gdy": case "reg-min": case "reg-mac": case "reg-dzien": case "reg-okno":
+    case "reg-onoff": case "reg-gn": case "reg-dodaj-a": case "reg-usun-a": {
+      regZbierz();
+      const ds = b.dataset, i = Number(ds.i), g = rk.gdy;
+      if (ds.akcja === "reg-gdy") { g.typ = ds.typ; if (REG_MIN[g.typ] && !REG_MIN[g.typ].includes(g.minuty)) g.minuty = g.typ === "wraca" ? 60 : 10; }
+      if (ds.akcja === "reg-min") g.minuty = Number(ds.m);
+      if (ds.akcja === "reg-mac") g.mac = ds.mac;
+      if (ds.akcja === "reg-dzien") { const x = Number(ds.d); g.dni = g.dni.includes(x) ? g.dni.filter((y) => y !== x) : [...g.dni, x].sort(); }
+      if (ds.akcja === "reg-okno") rk.okno = JSON.parse(ds.o);
+      if (ds.akcja === "reg-onoff") rk.wtedy[i].akcja = ds.x;
+      if (ds.akcja === "reg-gn") rk.wtedy[i].id = ds.id;
+      if (ds.akcja === "reg-dodaj-a" && rk.wtedy.length < 6) rk.wtedy.push({ typ: ds.typ, akcja: ds.typ === "stanowisko" ? "off" : "on", tekst: "", id: "" });
+      if (ds.akcja === "reg-usun-a") rk.wtedy.splice(i, 1);
+      rysujWidok(true); break;
+    }
+    case "reg-zapisz":
+      regZbierz();
+      akcjaPost(b, "/api/reguly", rk, (r) => { toast(r.msg); rk = REG_NOWA(); blokadaRenderu = 0; if (widok) { widok.ost = 0; wczytajWidok(); } });
+      break;
+    case "wydarzenie-otworz": Object.assign(noweWyd, { tytul: "", data: "", godz: "", minuty: 60, miejsce: "" }); otworzWidok("wydarzenie"); break;
+    case "wyd-czas": {
+      wydZbierz();
+      const m = Number(b.dataset.m);
+      if (m === 0) noweWyd.godz = ""; else { noweWyd.minuty = m; if (!noweWyd.godz) noweWyd.godz = "18:00"; }
+      rysujWidok(true); break;
+    }
+    case "wyd-dodaj": {
+      wydZbierz();
+      if (!noweWyd.tytul) { toast("Wpisz tytuł", true); break; }
+      akcjaPost(b, "/api/kalendarz", { tytul: noweWyd.tytul, data: noweWyd.data, godzina: noweWyd.godz || null,
+        minuty: noweWyd.minuty, miejsce: noweWyd.miejsce || null, zrodlo: "panel" }, (r) => { toast(r.msg); blokadaRenderu = 0; zamknijWidok(); });
+      break;
+    }
+    case "lista-odhacz":
+      b.style.opacity = ".4";
+      api(`/api/todo/${encodeURIComponent(b.dataset.id)}`, "PATCH", { done: true })
+        .then(() => { toast("Odhaczone"); if (widok) { widok.ost = 0; wczytajWidok(); } loadDash(); })
+        .catch((err) => { b.style.opacity = ""; toast("Nie odhaczono: " + err.message, true); });
+      break;
     case "budziki-otworz": otworzWidok("budziki"); break;
     case "budzik-dzien": {
       const dz = Number(b.dataset.d);
@@ -1420,7 +1635,9 @@ document.addEventListener("click", (e) => {
   }
 });
 
-document.addEventListener("focusin", (e) => { if (e.target && e.target.id === "budzik-godz") blokadaRenderu = Date.now() + 60000; });
+document.addEventListener("focusin", (e) => {
+  if (e.target && (e.target.id === "budzik-godz" || String(e.target.id).startsWith("wyd-") || String(e.target.id).startsWith("reg-"))) blokadaRenderu = Date.now() + 120000;
+});
 document.addEventListener("change", (e) => {
   if (!e.target || e.target.id !== "budzik-godz") return;
   if (e.target.value) nowyBudzik.godz = e.target.value;
@@ -1586,6 +1803,7 @@ async function zapytajJarvisa(tekst) {
   if (B && B.mow) try { B.mow(r.mow || r.odp); } catch (e) { /* stara appka */ }
   const a = r.akcja || {};
   if (a.zakladka) przelacz(a.zakladka);
+  if (a.widok && WIDOK[a.widok]) setTimeout(() => otworzWidok(a.widok), 1500);
   if (a.zakladka_krok) {
     const ids = Object.keys(TABS);
     przelacz(ids[(ids.indexOf(aktywna) + a.zakladka_krok + ids.length) % ids.length]);

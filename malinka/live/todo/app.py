@@ -3,11 +3,15 @@
 
 Bez zależności (sama biblioteka standardowa). Dane w DATA_DIR/todo.json.
 API (JSON, tylko tailnet/LAN — bez logowania, jak Kuma/Trener):
-  GET    /api/todos              -> {"tasks": [...]}      (?open=1 — tylko niezrobione)
-  POST   /api/todos              {"title", "due"?}        -> zadanie
-  PATCH  /api/todos/<id>         {"title"?, "due"?, "done"?}
+  GET    /api/todos              -> {"tasks": [...]}      (?open=1 — tylko niezrobione, ?lista=zakupy — jedna lista)
+  POST   /api/todos              {"title", "due"?, "lista"?, "kto"?}   -> zadanie
+  PATCH  /api/todos/<id>         {"title"?, "due"?, "done"?, "lista"?}
   DELETE /api/todos/<id>
-  POST   /api/todos/clear-done   usuwa zrobione
+  POST   /api/todos/clear-done   {"lista"?} usuwa zrobione (z jednej listy albo ze wszystkich)
+  GET    /api/listy              -> {"listy": [{"nazwa", "otwarte", "zrobione"}]}  ("" = lista główna „zadania”)
+  POST   /api/listy/wyczysc      {"lista"} usuwa CAŁĄ listę (wszystkie pozycje, jak /todo_wyczysc w Yapass)
+Listy (2026-11-20, jak w Yapass-discord-bot): "lista" = nazwa listy małymi literami (np. "zakupy"), "" = główna;
+"kto" = skąd dodane (panel, głos, nick z Discorda). Stare zadania bez pola "lista" są na liście głównej.
   GET    /api/health
 Termin ("due"): null, "RRRR-MM-DD" albo "RRRR-MM-DDTHH:MM" (czas lokalny, Europe/Warsaw).
 Zapisy wymagają Content-Type: application/json — zwykła strona z internetu nie wyśle
@@ -19,6 +23,7 @@ import re
 import tempfile
 import threading
 from datetime import datetime
+from urllib.parse import parse_qs
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 DATA_DIR = os.environ.get("DATA_DIR", "/data")
@@ -71,6 +76,20 @@ def sprawdz_tytul(v):
     if not isinstance(v, str) or not v.strip():
         raise ValueError("title: puste")
     return " ".join(v.split())[:MAX_TYTUL]
+
+
+def sprawdz_liste(v):
+    if v in (None, ""):
+        return ""
+    if not isinstance(v, str):
+        raise ValueError("lista: oczekiwano tekstu")
+    v = " ".join(re.sub(r"[^\w \-]", "", v.lower()).split())[:40]
+    return "" if v in ("zadania", "glowna", "główna") else v
+
+
+def z_lista(t):
+    t.setdefault("lista", "")
+    return t
 
 
 def klucz_sort(t):
@@ -143,10 +162,21 @@ class H(BaseHTTPRequestHandler):
             return self.odpowiedz(200, {"ok": True})
         if sc == "/api/todos":
             with lock:
-                tasks = sorted(wczytaj()["tasks"], key=klucz_sort)
+                tasks = [z_lista(t) for t in sorted(wczytaj()["tasks"], key=klucz_sort)]
             if re.search(r"(^|&)open=(1|true)", q):
                 tasks = [t for t in tasks if not t["done"]]
+            if "lista" in (p := parse_qs(q, keep_blank_values=True)) and p["lista"][0] != "*":
+                lista = sprawdz_liste(p["lista"][0])
+                tasks = [t for t in tasks if t["lista"] == lista]
             return self.odpowiedz(200, {"tasks": tasks})
+        if sc == "/api/listy":
+            with lock:
+                tasks = [z_lista(t) for t in wczytaj()["tasks"]]
+            listy = {"": {"nazwa": "", "otwarte": 0, "zrobione": 0}}
+            for t in tasks:
+                w = listy.setdefault(t["lista"], {"nazwa": t["lista"], "otwarte": 0, "zrobione": 0})
+                w["zrobione" if t["done"] else "otwarte"] += 1
+            return self.odpowiedz(200, {"listy": sorted(listy.values(), key=lambda x: (x["nazwa"] != "", x["nazwa"]))})
         self.blad(404, "nie ma")
 
     # ---------- POST ----------
@@ -158,7 +188,8 @@ class H(BaseHTTPRequestHandler):
         if sc == "/api/todos":
             b = self.cialo()
             t = {"id": 0, "title": sprawdz_tytul(b.get("title")), "due": sprawdz_due(b.get("due")),
-                 "done": False, "created": teraz(), "done_at": None}
+                 "done": False, "created": teraz(), "done_at": None, "lista": sprawdz_liste(b.get("lista")),
+                 "kto": " ".join(str(b.get("kto") or "").split())[:40] or None}
             with lock:
                 d = wczytaj()
                 if len(d["tasks"]) >= MAX_ZADAN:
@@ -169,11 +200,24 @@ class H(BaseHTTPRequestHandler):
                 zapisz(d)
             return self.odpowiedz(201, t)
         if sc == "/api/todos/clear-done":
-            self.cialo()
+            b = self.cialo()
+            jedna = "lista" in b
+            lista = sprawdz_liste(b.get("lista"))
             with lock:
                 d = wczytaj()
                 przed = len(d["tasks"])
-                d["tasks"] = [t for t in d["tasks"] if not t["done"]]
+                d["tasks"] = [t for t in d["tasks"] if not (t["done"] and (not jedna or t.get("lista", "") == lista))]
+                zapisz(d)
+            return self.odpowiedz(200, {"removed": przed - len(d["tasks"])})
+        if sc == "/api/listy/wyczysc":
+            b = self.cialo()
+            if "lista" not in b:
+                raise ValueError("lista: wymagana (\"\" = lista główna)")
+            lista = sprawdz_liste(b.get("lista"))
+            with lock:
+                d = wczytaj()
+                przed = len(d["tasks"])
+                d["tasks"] = [t for t in d["tasks"] if t.get("lista", "") != lista]
                 zapisz(d)
             return self.odpowiedz(200, {"removed": przed - len(d["tasks"])})
         self.blad(404, "nie ma")
@@ -197,12 +241,14 @@ class H(BaseHTTPRequestHandler):
                 t["title"] = sprawdz_tytul(b["title"])
             if "due" in b:
                 t["due"] = sprawdz_due(b["due"])
+            if "lista" in b:
+                t["lista"] = sprawdz_liste(b["lista"])
             if "done" in b:
                 nowe = bool(b["done"])
                 if nowe != t["done"]:
                     t["done"], t["done_at"] = nowe, (teraz() if nowe else None)
             zapisz(d)
-        return self.odpowiedz(200, t)
+        return self.odpowiedz(200, z_lista(t))
 
     # ---------- DELETE ----------
     def do_DELETE(self):

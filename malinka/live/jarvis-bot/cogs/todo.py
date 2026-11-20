@@ -1,4 +1,5 @@
-"""JARVIS — lista TO DO z Discorda: /zadanie, /zadania, /zrobione.
+"""JARVIS — lista TO DO z Discorda: /zadanie, /zadania, /zrobione, /listy, /lista_wyczysc.
+Listy (zakupy, projekty…) jak w Yapass-discord-bot — opcja `lista` w /zadanie i /zadania (brak = lista główna).
 
 Rozmawia z kontenerem jarvis_todo na malince (bot chodzi w network_mode: host,
 więc domyślnie http://127.0.0.1:8083). Inny adres: TODO_URL w .env bota.
@@ -6,6 +7,7 @@ więc domyślnie http://127.0.0.1:8083). Inny adres: TODO_URL w .env bota.
 import os
 import re
 from datetime import date, datetime, timedelta
+from urllib.parse import quote
 
 import aiohttp
 import discord
@@ -97,28 +99,45 @@ class Todo(commands.Cog):
                     raise RuntimeError((dane or {}).get("error") or f"HTTP {r.status}")
                 return dane
 
-    @app_commands.command(name="zadanie", description="Dodaje zadanie do listy TO DO")
-    @app_commands.describe(tresc="Co trzeba zrobić",
-                           termin="Opcjonalnie: dziś / jutro / pt / 30.10 / jutro 18:00")
+    async def podpowiedz_liste(self, interaction: discord.Interaction, wpisane: str):
+        try:
+            listy = [x["nazwa"] for x in (await self.api("GET", "/api/listy"))["listy"] if x["nazwa"]]
+        except Exception:  # noqa: BLE001
+            listy = []
+        wpisane = (wpisane or "").lower()
+        nazwy = [n for n in listy if wpisane in n] + ([wpisane] if wpisane and wpisane not in listy else [])
+        return [app_commands.Choice(name=n, value=n) for n in nazwy[:25]]
+
+    @app_commands.command(name="zadanie", description="Dodaje zadanie do listy TO DO (albo pozycję do listy, np. zakupy)")
+    @app_commands.describe(tresc="Co trzeba zrobić / kupić",
+                           termin="Opcjonalnie: dziś / jutro / pt / 30.10 / jutro 18:00",
+                           lista="Opcjonalnie: lista (zakupy, projekty…); puste = lista główna")
     @app_commands.default_permissions(administrator=True)
-    async def zadanie(self, interaction: discord.Interaction, tresc: str, termin: str | None = None):
+    async def zadanie(self, interaction: discord.Interaction, tresc: str, termin: str | None = None, lista: str | None = None):
         try:
             due = parsuj_termin(termin) if termin else None
         except ValueError as e:
             await interaction.response.send_message(f"❌ {e}. Przykłady: `jutro`, `pt 9:00`, `30.10`, `2026-11-05 18:00`.", ephemeral=True)
             return
         try:
-            t = await self.api("POST", "/api/todos", {"title": tresc, "due": due})
+            t = await self.api("POST", "/api/todos", {"title": tresc, "due": due, "lista": lista or "",
+                                                     "kto": interaction.user.display_name})
         except Exception as e:  # noqa: BLE001
             await interaction.response.send_message(f"❌ Lista TO DO nie odpowiada: {e}", ephemeral=True)
             return
-        await interaction.response.send_message(f"📝 Dodane **#{t['id']}** {t['title']}{opis_terminu(t['due'])}")
+        gdzie = f" do listy **{t['lista']}**" if t.get("lista") else ""
+        await interaction.response.send_message(f"📝 Dodane{gdzie} **#{t['id']}** {t['title']}{opis_terminu(t['due'])}")
+
+    @zadanie.autocomplete("lista")
+    async def _zadanie_lista(self, interaction: discord.Interaction, wpisane: str):
+        return await self.podpowiedz_liste(interaction, wpisane)
 
     @app_commands.command(name="zadania", description="Pokazuje listę TO DO (niezrobione)")
+    @app_commands.describe(lista="Opcjonalnie: która lista (zakupy…); puste = lista główna")
     @app_commands.default_permissions(administrator=True)
-    async def zadania(self, interaction: discord.Interaction):
+    async def zadania(self, interaction: discord.Interaction, lista: str | None = None):
         try:
-            tasks = (await self.api("GET", "/api/todos?open=1"))["tasks"]
+            tasks = (await self.api("GET", f"/api/todos?open=1&lista={quote(lista or '')}"))["tasks"]
         except Exception as e:  # noqa: BLE001
             await interaction.response.send_message(f"❌ Lista TO DO nie odpowiada: {e}", ephemeral=True)
             return
@@ -133,8 +152,54 @@ class Todo(commands.Cog):
                 break
             linie.append(l)
             dl += len(l) + 1
+        tytul = f"Lista **{lista}**" if lista else "Do zrobienia"
         await interaction.response.send_message(
-            f"**Do zrobienia ({len(tasks)}):**\n" + "\n".join(linie) + "\n\nOdhacz: `/zrobione numer:`", ephemeral=True)
+            f"**{tytul} ({len(tasks)}):**\n" + "\n".join(linie) + "\n\nOdhacz: `/zrobione numer:`", ephemeral=True)
+
+    @zadania.autocomplete("lista")
+    async def _zadania_lista(self, interaction: discord.Interaction, wpisane: str):
+        return await self.podpowiedz_liste(interaction, wpisane)
+
+    @app_commands.command(name="listy", description="Wszystkie listy TO DO z pozycjami (jak /todo_wszystkie)")
+    @app_commands.default_permissions(administrator=True)
+    async def listy(self, interaction: discord.Interaction):
+        try:
+            tasks = (await self.api("GET", "/api/todos?open=1"))["tasks"]
+        except Exception as e:  # noqa: BLE001
+            await interaction.response.send_message(f"❌ Lista TO DO nie odpowiada: {e}", ephemeral=True)
+            return
+        if not tasks:
+            await interaction.response.send_message("📭 Wszystkie listy są puste.", ephemeral=True)
+            return
+        grupy: dict[str, list] = {}
+        for t in tasks:
+            grupy.setdefault(t.get("lista") or "", []).append(t)
+        embed = discord.Embed(title="📋 Listy TO DO", color=discord.Color.blue())
+        for nazwa in sorted(grupy, key=lambda n: (n != "", n)):
+            pozycje = [f"`#{t['id']}` {t['title']}{opis_terminu(t['due'])}" + (f" · {t['kto']}" if t.get("kto") else "")
+                       for t in grupy[nazwa]]
+            tekst = "\n".join(pozycje)
+            embed.add_field(name=f"{(nazwa or 'zadania').upper()} ({len(pozycje)})",
+                            value=tekst if len(tekst) <= 1000 else tekst[:990] + "\n…", inline=False)
+        await interaction.response.send_message(embed=embed, ephemeral=True)
+
+    @app_commands.command(name="lista_wyczysc", description="Usuwa CAŁĄ listę (wszystkie pozycje), np. zakupy po zakupach")
+    @app_commands.describe(lista="Która lista (nie da się wyczyścić listy głównej tą komendą)")
+    @app_commands.default_permissions(administrator=True)
+    async def lista_wyczysc(self, interaction: discord.Interaction, lista: str):
+        if not lista.strip() or lista.strip().lower() in ("zadania", "główna", "glowna"):
+            await interaction.response.send_message("❌ Listy głównej nie czyszczę — odhaczaj zadania `/zrobione`.", ephemeral=True)
+            return
+        try:
+            r = await self.api("POST", "/api/listy/wyczysc", {"lista": lista})
+        except Exception as e:  # noqa: BLE001
+            await interaction.response.send_message(f"❌ {e}", ephemeral=True)
+            return
+        await interaction.response.send_message(f"🧹 Lista **{lista}** wyczyszczona ({r.get('removed', 0)} poz.).")
+
+    @lista_wyczysc.autocomplete("lista")
+    async def _wyczysc_lista(self, interaction: discord.Interaction, wpisane: str):
+        return await self.podpowiedz_liste(interaction, wpisane)
 
     @app_commands.command(name="zrobione", description="Oznacza zadanie z listy TO DO jako zrobione")
     @app_commands.describe(numer="Numer zadania (#) z /zadania")

@@ -139,17 +139,30 @@ for (const b of bloki) {
 }
 wydarzenia.sort((a, b) => (a.allDay === b.allDay ? a.s - b.s : (a.allDay ? -1 : 1)));
 
+// ---------- Pogoda w miejscu wydarzeń (panel na malince: GET /api/kalendarz/pogoda; węzeł „Pogoda wydarzeń”) ----------
+// Panel geokoduje pole „Miejsce” i bierze prognozę Open-Meteo na godzinę wydarzenia. Brak węzła = brak dopisków.
+const pogWyd = {};
+for (const r of dane('Pogoda wydarzeń')) for (const w of (r.wydarzenia || [])) {
+  if (!w || !w.pogoda) continue;
+  pogWyd[`${w.tytul}|${DateTime.fromISO(w.start, { zone: TZ }).toMillis()}`] = `📍 ${w.miejsce} ${w.pogoda}`;
+}
+const pogDla = w => { const p = pogWyd[`${w.tytul}|${w.s.toMillis()}`]; return p ? ` — ${p}` : ''; };
+
 function linieDnia(dzien) {
   const kon = dzien.plus({ days: 1 });
   return wydarzenia.filter(w => w.s < kon && w.e > dzien || (w.s >= dzien && w.s < kon))
-    .map(w => w.allDay ? `• 🗓️ **${w.tytul}** — cały dzień`
-      : `• **${w.s.toFormat('HH:mm')}** ${w.tytul}${w.s < dzien ? ' (trwa)' : ''}`);
+    .map(w => w.allDay ? `• 🗓️ **${w.tytul}** — cały dzień${pogDla(w)}`
+      : `• **${w.s.toFormat('HH:mm')}** ${w.tytul}${w.s < dzien ? ' (trwa)' : ''}${pogDla(w)}`);
 }
 
 // ---------- Zadania (lista TO DO na malince, GET /api/todos?open=1 -> { tasks: [...] }) ----------
 // due: null | 'RRRR-MM-DD' (do końca dnia) | 'RRRR-MM-DDTHH:MM' (czas lokalny)
 const zad = dane('Zadania');
-const zadania = blad('Zadania', zad) ? [] : (Array.isArray((zad[0] || {}).tasks) ? zad[0].tasks : []);
+const zadaniaWszystkie = blad('Zadania', zad) ? [] : (Array.isArray((zad[0] || {}).tasks) ? zad[0].tasks : []);
+// listy (zakupy, prezenty… — pole "lista", od 2026-11-20) nie są zadaniami: osobno, tylko liczba pozycji
+const zadania = zadaniaWszystkie.filter(t => !t.lista);
+const inneListy = {};
+for (const t of zadaniaWszystkie) if (t && t.lista && !t.done) inneListy[t.lista] = (inneListy[t.lista] || 0) + 1;
 const poTerminie = [], naDzis = [], naJutro = [], wTygodniu = [], bezTerminu = [];
 for (const t of zadania) {
   if (!t || t.done || !t.title) continue;
@@ -390,6 +403,7 @@ const fields = [
   pole('🕐 Zadania na jutro', naJutro.map(x => x.txt)),
   pole('📆 Zadania w tym tygodniu', wTygodniu.map(x => x.txt)),
   pole('📝 Lista TO DO (bez terminu)', bezTerminu.map(x => x.txt)),
+  pole('📋 Listy', Object.entries(inneListy).map(([n, c]) => `• **${n}**: ${c} poz.`)),
   pole(`💳 Do zapłaty (${DNI_PLATNOSC} dni)`, doZaplaty.map(x => x.txt)),
   pole(`⏳ Kończy się (${DNI_KONIEC} dni)`, konczySie.map(x => x.txt)),
   pole('📄 Nowe w Paperlessie (24 h)', linieNowe),

@@ -85,3 +85,17 @@ Sonarr i Radarr mają wbudowane powiadomienia: Settings → Connect → + → **
 
 Backup w briefie pojawia się tylko, gdy monitor z „backup” w nazwie nie jest zielony; awarie — tylko gdy monitor miał < 99,5% w 24 h, padł w ostatnich 12 h albo nadal nie działa.
 Każdy węzeł źródła można usunąć (połącz wtedy sąsiednie węzły) — brief pominie jego sekcję bez błędu.
+
+## Pogoda w miejscu wydarzeń + listy (2026-11-20)
+
+Panel na malince geokoduje pole „Miejsce” wydarzeń z Nextclouda i daje prognozę na godzinę wydarzenia.
+W workflow „poranny brief” (ręcznie w edytorze n8n):
+
+1. Dodaj węzeł **HTTP Request** o nazwie dokładnie **`Pogoda wydarzeń`**:
+   - Method `GET`, URL `http://100.105.181.54:8084/api/kalendarz/pogoda`, Response Format: JSON
+   - Settings → **On Error: Continue** (gdy panel nie odpowie, brief pójdzie bez pogody)
+2. Wepnij go w łańcuch między **Kalendarz** a **Zadania**: `Kalendarz → Pogoda wydarzeń → Zadania`.
+3. W węźle **Złóż brief** podmień cały kod na aktualny `n8n/zloz-brief.js`.
+
+Efekt: przy wydarzeniu z miejscem dopisek `— 📍 Kraków 🌧️ 6°C · opady 70%`. Pozycje z list TO DO (zakupy, prezenty…)
+nie są już wypisywane jako zadania — trafiają do pola **📋 Listy** (liczba pozycji na każdej liście).

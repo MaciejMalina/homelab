@@ -29,6 +29,10 @@ API (JSON):
   GET  /api/siec/speedtest        ostatni wynik (ts, ts_ms, ping, dol, gora) - dla kafelka w Homepage
 POST /api/siec/speedtest
   POST /api/paczka/<id>/odebrana       chowa paczkę z listy (zakładka Dzień, brief)
+  POST /api/kalendarz                  {"tytul", "data": RRRR-MM-DD, "godzina"?: GG:MM, "minuty"?, "miejsce"?}  (serwer śpi -> kolejka + WoL)
+  GET  /api/kalendarz/pogoda           dziś i jutro: wydarzenia z miejscem + pogoda tam (dla porannego raportu n8n)
+  POST /api/reguly                     reguła z kreatora {"id"?, "nazwa", "wl", "gdy": {typ…}, "okno"?, "wtedy": […]}  (lista: GET /api/tab/reguly)
+  POST /api/reguly/<id>/<wl|wyl|usun|test>   włącz / wyłącz / usuń / odpal na próbę
   POST /api/budzik                     {"godzina": "6:30", "dni"?: [0..6] | "pn-pt"|"weekend"|"codziennie"|"jednorazowy"}
   POST /api/budzik/<stop|drzemka>      wyłącza dzwoniący budzik / drzemka BUDZIK_DRZEMKA_MIN
   POST /api/budzik/<id>/<wl|wyl|usun>  stały budzik: włącz / wyłącz, każdy: usuń  (lista: GET /api/tab/budziki)
@@ -531,6 +535,8 @@ def obecnosc(jest):
         print(f"obecnosc: {'ktoś przy biurku' if jest else 'nikogo przy biurku'}", flush=True)
         if jest and OBECNOSC_GNIAZDO and not _obecnosc_pauza():
             threading.Thread(target=_obecnosc_gniazdo, args=("on", "obecność"), daemon=True).start()
+        if jest:
+            _reg_zdarzenie("obecnosc")
 
 
 def straznik_obecnosci():
@@ -583,7 +589,9 @@ def _brief_kalendarz(dzien=0):
         koniec = Z.datetime.fromisoformat(w["koniec"]).astimezone(Z.TZ) if w.get("koniec") else start
         if koniec < n:
             continue   # już się skończyło
-        godz.append(f"o {start.hour}:{start.minute:02d} {w.get('tytul') or 'wydarzenie'}")
+        p = _pogoda_wyd(w) if w.get("miejsce") else None   # pogoda w miejscu wydarzenia (z Yapass)
+        godz.append(f"o {start.hour}:{start.minute:02d} {w.get('tytul') or 'wydarzenie'}"
+                    + (f" ({p['gdzie']}: {_stopnie(p['temp'])}, {p['opis']})" if p else ""))
     czesci = []
     if godz:
         czesci.append(", ".join(godz[:4]) + (f" i jeszcze {len(godz) - 4}" if len(godz) > 4 else ""))
@@ -1498,6 +1506,10 @@ def siec_urzadzenie(mac, b):
         u = znane.get(mac)
         if u is None:
             raise ValueError("nie ma takiego urządzenia")
+        if b.get("usun"):   # „zapomnij”: gdy wróci do sieci, pojawi się znowu jako nowe (z alertem)
+            del znane[mac]
+            Z.pamiec_set("urzadzenia", znane)
+            return {"ok": True, "msg": f"Usunięto {_urz_nazwa(mac, u)}" + (" — jest w sieci, przy następnym skanie wróci jako nowe" if teraz() - (u.get("ostatni") or 0) < SIEC_ONLINE_S else "")}
         if "nazwa" in b:
             u["nazwa"] = " ".join(str(b.get("nazwa") or "").split())[:40] or None
             if u["nazwa"]:
@@ -2016,6 +2028,628 @@ def _pogoda_zdanie(jutro=False):
     return odp
 
 
+# --------------------------------------------------------------------------- komendy lokalne (bez AI) — 2026-11-20
+# Informacje z danych, które panel już ma (zadania, kalendarz, faktury, paczki, maile, Kuma, qBittorrent, Jellyfin,
+# sieć, czujniki PC), sterowanie (gniazda, Discord RPC, zasilanie PC — wyłączanie/usypianie dopiero po „tak”),
+# szybkie (data, kalkulator, ile dni do…, moneta/kostka) i „co umiesz?” (ściąga KOMENDY, widok na panelu).
+KOMENDY = [
+    ("Dzień", ["dzień dobry / brief", "co mam jutro", "co mam w kalendarzu", "jakie mam zadania",
+               "zrobione: <zadanie>", "dodaj zadanie <tekst>", "jaki mam trening", "jaka jest pogoda / jutro",
+               "dodaj do kalendarza dentysta jutro o 15", "zapisz w kalendarzu koncert w sobotę o 18 w Krakowie"]),
+    ("Listy", ["dodaj mleko i chleb do zakupów", "dodaj do listy prezentów rower", "co mam kupić",
+               "co mam na liście prezentów", "jakie mam listy", "kupione mleko", "wyczyść listę zakupów"]),
+    ("Czas", ["obudź mnie o siódmej", "nastaw budzik na 6:30", "jakie mam budziki", "minutnik na 10 minut",
+              "przypomnij mi o 18 o praniu", "która godzina", "jaki dziś dzień", "ile dni do świąt"]),
+    ("Dom i sprzęt", ["włącz / wyłącz monitor", "włącz / wyłącz drukarkę", "włącz / wyłącz stanowisko",
+                      "włącz serwer / komputer / laptop", "wyłącz / uśpij / zablokuj komputer", "dobranoc",
+                      "temperatura komputera", "co nie działa"]),
+    ("Media i Discord", ["pauza / graj / następny", "głośniej / ciszej / głośność 30", "co się pobiera",
+                         "nowe odcinki", "wycisz mikrofon (Discord)", "wyłącz słuchawki (Discord)", "rozłącz z Discorda"]),
+    ("Sprawy", ["faktury do zapłaty", "czy mam paczkę", "ważne maile", "nowe urządzenia w sieci",
+                "ile mam limitu w Claude"]),
+    ("Reguły", ["pokaż reguły", "wyłącz regułę odchodzę od biurka", "włącz regułę pobieranie skończone"]),
+    ("Szybkie", ["ile to 15 razy 23", "ile to 20 procent z 340", "rzuć monetą", "rzuć kostką", "co umiesz"]),
+]
+MIES_GLOS = {m[:4]: i + 1 for i, m in enumerate(["stycznia", "lutego", "marca", "kwietnia", "maja", "czerwca", "lipca",
+                                                  "sierpnia", "wrzesnia", "pazdziernika", "listopada", "grudnia"])}
+SWIETA_GLOS = [("wigili", 12, 24), ("swiat", 12, 24), ("bozego narodzenia", 12, 25), ("sylwestr", 12, 31),
+               ("nowego roku", 1, 1), ("nowy rok", 1, 1), ("walentyn", 2, 14), ("wakacj", 6, 27)]
+_potw = {"do": 0.0, "fn": None}   # czeka na „tak”: fn() wykonuje i zwraca tekst odpowiedzi
+
+
+def _czekaj_na_tak(fn, pytanie):
+    _potw.update(do=teraz() + 30, fn=fn)
+    return pytanie + " Powiedz: tak."
+
+
+def _dzien_opis(iso):
+    try:
+        d = Z.date.fromisoformat(str(iso)[:10])
+    except ValueError:
+        return str(iso)
+    roz = (d - _teraz_pl().date()).days
+    return {0: "dziś", 1: "jutra", -1: "wczoraj"}.get(roz) or f"{d.day} {MIESIACE[d.month - 1]}"
+
+
+def _zadania_otwarte():
+    w = cache.get("todo", 20, todo)
+    return ((w.get("data") or {}).get("tasks") or []) if w.get("ok") else None
+
+
+def _glos_zadania():
+    zad = _zadania_otwarte()
+    if zad is None:
+        return "Lista zadań nie odpowiada."
+    inne = collections.Counter(z.get("lista") for z in zad if z.get("lista"))
+    reszta = (" Na innych listach: " + ", ".join(f"{n} {c}" for n, c in inne.most_common(3)) + ".") if inne else ""
+    zad = [z for z in zad if not z.get("lista")]
+    if not zad:
+        return "Lista zadań jest pusta." + reszta
+    opis = [z.get("title", "?") + (f" (do {_dzien_opis(z['due'])})" if z.get("due") else "") for z in zad[:5]]
+    return (f"Masz {len(zad)} {_odmiana(len(zad), 'zadanie', 'zadania', 'zadań')}: " + "; ".join(opis)
+            + (f" i jeszcze {len(zad) - 5}" if len(zad) > 5 else "") + "." + reszta)
+
+
+# listy jak w Yapass (zakupy, projekty…): „dodaj mleko i chleb do zakupów”, „dodaj do listy prezentów rower”,
+# „co mam na liście zakupów” / „co mam kupić”, „jakie mam listy”, „kupione mleko”, „wyczyść listę zakupów” (po „tak”)
+LISTY_ZNANE = {"zakup": "zakupy", "projekt": "projekty", "prezent": "prezenty", "film": "filmy", "serial": "seriale",
+               "ksiazk": "książki", "gier": "gry", "gry": "gry", "lekow": "leki"}
+
+
+def _listy_nazwy():
+    _, d = http_json(f"{TODO_URL}/api/listy")
+    return [x for x in (d or {}).get("listy") or [] if x.get("nazwa")]
+
+
+def _lista_z(slowo, jawnie):
+    """Nazwa listy z tego, co powiedziano: istniejąca (po rdzeniu), znana (zakupy…) albo — gdy padło „listy” — nowa."""
+    s = _bez_ogonkow(slowo).strip()
+    if not s or s in ("zadan", "zadania"):
+        return None
+    rdzen = s[:5] if len(s) >= 5 else s
+    for x in _listy_nazwy():
+        if _bez_ogonkow(x["nazwa"]).startswith(rdzen):
+            return x["nazwa"]
+    for k, v in LISTY_ZNANE.items():
+        if s.startswith(k):
+            return v
+    return slowo.lower().strip() if jawnie else None
+
+
+def _glos_dodaj_do(lista, tekst):
+    pozycje = [p.strip(" .") for p in re.split(r",|\s+i\s+|\s+oraz\s+", tekst) if p.strip(" .")]
+    for p in pozycje:
+        http_json(f"{TODO_URL}/api/todos", method="POST", body={"title": p, "lista": lista, "kto": "głos"})
+    cache.drop("todo")
+    return f"Dodałem do listy {lista}: {', '.join(pozycje)}."
+
+
+def _glos_lista_pokaz(lista):
+    _, d = http_json(f"{TODO_URL}/api/todos?open=1&lista={urllib.parse.quote(lista)}")
+    poz = [t["title"] for t in (d or {}).get("tasks") or []]
+    if not poz:
+        return f"Lista {lista} jest pusta."
+    return f"Na liście {lista} ({len(poz)}): " + ", ".join(poz[:12]) + (f" i jeszcze {len(poz) - 12}" if len(poz) > 12 else "") + "."
+
+
+def _glos_listy(src, t):
+    if m := re.search(r"\b(?:dodaj|dopisz|wpisz)\w*\s+(.+?)\s+(?:do|na)\s+(listy\s+|liste\s+)?(\w+)\s*$", t):
+        if lista := _lista_z(src[m.start(3):m.end(3)], bool(m.group(2))):
+            return {"odp": _glos_dodaj_do(lista, src[m.start(1):m.end(1)])}
+    if m := re.search(r"\b(?:dodaj|dopisz|wpisz)\w*\s+(?:do|na)\s+(listy\s+|liste\s+)?(\w+)\s*:?\s+(.+)$", t):
+        if lista := _lista_z(src[m.start(2):m.end(2)], bool(m.group(1))):
+            return {"odp": _glos_dodaj_do(lista, src[m.start(3):m.end(3)])}
+    if re.search(r"\bjakie (mam )?listy\b", t):
+        l = _listy_nazwy()
+        return {"odp": ("Masz listy: " + ", ".join(f"{x['nazwa']} ({x['otwarte']})" for x in l) + ".") if l else "Masz tylko listę zadań."}
+    if re.search(r"\bco (mam|trzeba) kupic|\blista zakupow\b", t):
+        return {"odp": _glos_lista_pokaz("zakupy")}
+    if m := re.search(r"\b(?:co (?:mam|jest) na|pokaz\w*|przeczytaj|czytaj|jaka jest)\s+(?:moj\w*\s+)?lis[tc]\w*\s+(\w+)", t):
+        if lista := _lista_z(src[m.start(1):m.end(1)], False):
+            return {"odp": _glos_lista_pokaz(lista)}
+    if m := re.search(r"\b(?:wyczysc|usun|skasuj)\w*\s+(?:cal\w*\s+)?lis[tc]\w*\s+(\w+)", t):
+        lista = _lista_z(src[m.start(1):m.end(1)], False)
+        if not lista:
+            return {"odp": "Nie ma takiej listy. Listy zadań głosem nie czyszczę."}
+        n = next((x["otwarte"] + x["zrobione"] for x in _listy_nazwy() if x["nazwa"] == lista), 0)
+
+        def wyczysc():
+            http_json(f"{TODO_URL}/api/listy/wyczysc", method="POST", body={"lista": lista})
+            cache.drop("todo")
+            return f"Lista {lista} wyczyszczona."
+        return {"odp": _czekaj_na_tak(wyczysc, f"Wyczyścić całą listę {lista}, {n} {_odmiana(n, 'pozycja', 'pozycje', 'pozycji')}?")}
+    if m := re.search(r"\b(kupion\w*|kupilem|kupilam|skresl\w*)\s+(.+)", t):
+        fraza = re.sub(r"\s+z\s+(listy\s+)?\w+$", "", src[m.start(2):m.end(2)])
+        return {"odp": _glos_odhacz(fraza)}
+    return None
+
+
+def _glos_odhacz(fraza):
+    import difflib
+    zad = _zadania_otwarte() or []
+    if not zad:
+        return "Nie masz otwartych zadań."
+    f = _bez_ogonkow(fraza).strip(" .")
+    ocena = [(max(difflib.SequenceMatcher(None, f, _bez_ogonkow(z.get("title", ""))).ratio(),
+                  0.95 if f and f in _bez_ogonkow(z.get("title", "")) else 0), z) for z in zad]
+    wynik, z = max(ocena, key=lambda x: x[0])
+    if wynik < 0.55:
+        return f"Nie znalazłem zadania „{fraza}”. Powiedz: jakie mam zadania."
+    http_json(f"{TODO_URL}/api/todos/{z['id']}", method="PATCH", body={"done": True})
+    cache.drop("todo")
+    return f"Odhaczone: {z.get('title')}."
+
+
+def _glos_faktury():
+    p = _z_pamieci("paperless", Z.paperless_pobierz)
+    f = ((p.get("data") or {}).get("faktury") or []) if p.get("ok") else None
+    if f is None:
+        return "Nie mam danych z Paperlessa."
+    if not f:
+        return "Nie masz faktur do zapłaty w najbliższym miesiącu."
+    def kiedy(x):
+        d = x["dni"]
+        return "termin dziś" if d == 0 else f"po terminie {-d} {_odmiana(-d, 'dzień', 'dni', 'dni')}" if d < 0 else f"za {d} {_odmiana(d, 'dzień', 'dni', 'dni')}"
+    return (f"Do zapłaty {len(f)}: " + "; ".join(f"{x['tytul']}" + (f", {x['kwota']}" if x.get("kwota") else "") + f", {kiedy(x)}"
+                                                for x in f[:4]) + ".")
+
+
+def _glos_paczki():
+    p = _paczki()
+    return ("Do odbioru: " + "; ".join(_paczka_opis(x) for x in p[:4]) + ".") if p else "Nie czeka żadna paczka."
+
+
+def _glos_pobieranie():
+    if not serwer_up():
+        return "Serwer śpi, więc nic się nie pobiera."
+    w = cache.get("qbit-glos", 10, Z.qbit)
+    t = ((w.get("data") or {}).get("torrenty") or []) if w.get("ok") else None
+    if t is None:
+        return "qBittorrent nie odpowiada."
+    akt = [x for x in t if (x.get("postep") or 0) < 1 and not x.get("pauza")]
+    if not akt:
+        return "Nic się teraz nie pobiera."
+    def eta(s):
+        return "" if not s or s >= 8640000 else f", zostało {_czas_opis(max(60, round(s / 60) * 60))}"
+    return (f"Pobiera się {len(akt)}: " + "; ".join(f"{x['nazwa'][:50]} {round(100 * (x.get('postep') or 0))} procent{eta(x.get('eta'))}"
+                                                     for x in akt[:3]) + ".")
+
+
+def _glos_nowe_media():
+    m = (Z.pamiec_get("nowe_media", []) or [])[:4]
+    return ("Ostatnio doszło: " + "; ".join(_media_opis(x) for x in m) + ".") if m else "Nie mam informacji o nowych odcinkach."
+
+
+def _glos_siec():
+    u = _urzadzenia_lista()
+    return f"W sieci jest {sum(x['online'] for x in u)} urządzeń. " + (_brief_siec() or "Wszystkie są znane.")
+
+
+def _glos_komputer():
+    czesci = []
+    for p in Z.pc_stan(("stan",)):
+        if not p.get("online"):
+            continue
+        s = p.get("stan") or {}
+        c, g = s.get("cpu") or {}, s.get("gpu") or {}
+        st = lambda v: f"{round(v)} {_odmiana(round(v), 'stopień', 'stopnie', 'stopni')}"  # noqa: E731
+        el = [f"procesor {st(c['temp'])}" if c.get("temp") else None,
+              f"obciążenie {round(c['obciazenie'])} procent" if c.get("obciazenie") is not None else None,
+              f"karta {st(g['temp'])}" if g.get("temp") else None]
+        czesci.append(f"{p['nazwa']}: " + ", ".join(x for x in el if x))
+    return ("; ".join(czesci) + ".") if czesci else "Żaden komputer nie jest włączony."
+
+
+def _glos_gniazdo(akcja, slowo):
+    rdzen = _bez_ogonkow(slowo)[:5]
+    g = next((x for x in Z.lista_gniazd() if rdzen in _bez_ogonkow(f"{x['id']} {x['nazwa']}")), None)
+    if not g:
+        return f"Nie mam gniazda dla: {slowo}."
+    r = Z.gniazdo_ustaw(g["id"], akcja)
+    cache.drop("dash-gniazda")
+    if akcja == "on" and g["id"] in STANOWISKO:
+        Z.pamiec_set("obecnosc_pauza_do", 0)
+    return f"{g['nazwa']}: {'włączone' if r.get('on') else 'wyłączone'}."
+
+
+def _glos_discord(co):
+    pcs = [p for p in Z.pc_discord() if p.get("online")]
+    pc = next((p for p in pcs if (p.get("discord") or {}).get("polaczony")), None) or (pcs[0] if pcs else None)
+    if not pc:
+        return "Żaden komputer z Discordem nie jest włączony."
+    Z.agent(pc, f"/api/discord/{co}", method="POST", body={}, timeout=6)
+    cache.drop("pc-discord")
+    return {"mikrofon": "Przełączam mikrofon na Discordzie.", "sluchawki": "Przełączam słuchawki na Discordzie.",
+            "rozlacz": "Rozłączam z kanału."}[co]
+
+
+def _glos_zasilanie(akcja, t):
+    pcs = [p for p in Z.pc_online() if p.get("online")]
+    if "laptop" in t:
+        pc = Z.pc_po_id("laptop")
+    elif re.search(r"gaming|stacjonar|\bpc\b", t):
+        pc = Z.pc_po_id("gaming")
+    elif len(pcs) == 1:
+        pc = Z.pc_po_id(pcs[0]["id"])
+    elif not pcs:
+        return "Żaden komputer nie jest włączony."
+    else:
+        return "Który komputer: gaming czy laptop?"
+    if akcja == "zablokuj":
+        Z.agent(pc, "/api/zasilanie/zablokuj", method="POST", body={}, timeout=6)
+        return f"Blokuję {pc['nazwa']}."
+    pyt, robi = {"wylacz": ("wyłączyć", "wyłączam"), "uspij": ("uśpić", "usypiam"), "restart": ("zrestartować", "restartuję")}[akcja]
+
+    def wykonaj():
+        Z.agent(pc, f"/api/zasilanie/{akcja}", method="POST", body={}, timeout=6)
+        return f"Dobrze, {robi} {pc['nazwa']}."
+    return _czekaj_na_tak(wykonaj, f"Na pewno {pyt} {pc['nazwa']}?")
+
+
+def _glos_potwierdzenie(t):
+    if teraz() > _potw["do"]:
+        return None
+    if re.search(r"^(tak|potwierdzam|dawaj|jasne|zgadza sie|zrob to)\b", t):
+        fn = _potw["fn"]
+        _potw.update(do=0, fn=None)
+        return fn()
+    if re.search(r"^(nie|anuluj|stop|zostaw)\b", t):
+        _potw.update(do=0, fn=None)
+        return "Dobrze, nic nie robię."
+    return None
+
+
+def _glos_data():
+    n = _teraz_pl()
+    return f"Dziś {DNI_TYG[n.weekday()]}, {n.day} {MIESIACE[n.month - 1]} {n.year}."
+
+
+def _glos_ile_dni(t):
+    dzis = _teraz_pl().date()
+    cel, nazwa = None, ""
+    for klucz, mm, dd in SWIETA_GLOS:
+        if klucz in t:
+            cel, nazwa = Z.date(dzis.year, mm, dd), klucz
+            break
+    if cel is None and (m := re.search(r"\bdo (\d{1,2})\s+([a-z]+)", _cyfry(t))):
+        mies = MIES_GLOS.get(m.group(2)[:4])
+        if mies and 1 <= int(m.group(1)) <= 31:
+            try:
+                cel = Z.date(dzis.year, mies, int(m.group(1)))
+            except ValueError:
+                return "Nie ma takiego dnia."
+    if cel is None:
+        return None
+    if cel < dzis:
+        cel = cel.replace(year=dzis.year + 1)
+    d = (cel - dzis).days
+    kiedy = f"{cel.day} {MIESIACE[cel.month - 1]}"
+    return "To dziś!" if d == 0 else f"Do {kiedy} {_odmiana(d, 'został', 'zostały', 'zostało')} {d} {_odmiana(d, 'dzień', 'dni', 'dni')}."
+
+
+def _oblicz(wyr):
+    import ast
+    import operator
+    ops = {ast.Add: operator.add, ast.Sub: operator.sub, ast.Mult: operator.mul, ast.Div: operator.truediv,
+           ast.Pow: operator.pow, ast.USub: operator.neg, ast.UAdd: operator.pos}
+
+    def ev(n):
+        if isinstance(n, ast.Constant) and isinstance(n.value, (int, float)):
+            return n.value
+        if isinstance(n, ast.BinOp) and type(n.op) in ops:
+            a, b = ev(n.left), ev(n.right)
+            if isinstance(n.op, ast.Pow) and abs(b) > 10:
+                raise ValueError("za duża potęga")
+            return ops[type(n.op)](a, b)
+        if isinstance(n, ast.UnaryOp) and type(n.op) in ops:
+            return ops[type(n.op)](ev(n.operand))
+        raise ValueError("nieobsługiwane")
+    return ev(ast.parse(wyr, mode="eval").body)
+
+
+def _glos_kalkulator(t):
+    x = _cyfry(t).replace("×", "*").replace("÷", "/")
+    x = re.sub(r"(\d+(?:[.,]\d+)?)\s*procent\w*\s+z\s+(\d+(?:[.,]\d+)?)", r"(\1/100*\2)", x)
+    for wzor, op in ((r"\bplus\b|\bdodac\b|\bi dodac\b", "+"), (r"\bminus\b|\bodjac\b", "-"),
+                     (r"\brazy\b|\bpomnozyc przez\b|\bpomnozone przez\b|(?<=\d)\s*x\s*(?=\d)", "*"),
+                     (r"\bpodzielic przez\b|\bpodzielone przez\b|\bprzez\b|\bdzielone na\b", "/"),
+                     (r"\bdo kwadratu\b", "**2"), (r"\bdo potegi\b", "**")):
+        x = re.sub(wzor, f" {op} ", x)
+    x = re.sub(r"(\d),(\d)", r"\1.\2", x)
+    m = re.search(r"[\d(][\d\s.+\-*/()]*[\d)]", x)
+    if not m or not re.search(r"[+\-*/]", m.group(0)):
+        return None
+    try:
+        w = _oblicz(m.group(0))
+    except (ValueError, SyntaxError, ZeroDivisionError, OverflowError):
+        return "Nie umiem tego policzyć."
+    w = round(w, 4)
+    tekst = str(int(w)) if float(w).is_integer() else str(w).replace(".", ",")
+    return f"To {tekst}."
+
+
+def _komendy_lokalne(src, t):
+    """Komendy bez AI; None = nie rozpoznano (dalej idzie do reszty / AI)."""
+    # informacje
+    if re.search(r"\b(jakie|co) (mam )?(zadani|do zrobienia|na liscie)|\blista zadan|\bmoje zadania|\bile (mam )?zadan|\bna lis[tc]\w* zadan", t):
+        return {"odp": _glos_zadania()}
+    if m := re.search(r"\b(odhacz\w*|zrobion\w*|zrobilem|skonczylem|oznacz jako zrobione)\b\s*:?\s*(?:zadanie\s+)?(.+)", t):
+        return {"odp": _glos_odhacz(src[m.start(2):m.end(2)].strip())}
+    if re.search(r"\bco (mam |jest )?jutro\b|\bjutro w kalendarzu|\bplan na jutro", t):
+        return {"odp": _plan_na_jutro() or "Na jutro nic nie mam.", "mow_limit": BRIEF_ZNAKI}
+    if re.search(r"\b(co mam w|w) kalendarzu|\bkalendarz\b", t):
+        return {"odp": _brief_kalendarz(0) or "Dziś nic w kalendarzu."}
+    if re.search(r"\bfaktur|\bdo zaplaty|\brachunk", t):
+        return {"odp": _glos_faktury()}
+    if re.search(r"\bpaczk|\bprzesylk", t):
+        return {"odp": _glos_paczki()}
+    if re.search(r"\b(mail|maile|maili|poczt)", t):
+        return {"odp": _brief_poczta() or "Nie ma ważnych nieprzeczytanych maili."}
+    if re.search(r"co nie dziala|czy wszystko dziala|status (uslug|serwer)|jak (sie )?(ma|czuje) serwer", t):
+        return {"odp": (_brief_uslugi() or "Wszystkie usługi działają.") + (" Serwer działa." if serwer_up() else " Serwer śpi.")}
+    if re.search(r"co sie pobiera|\bpobieran|\btorrent", t):
+        return {"odp": _glos_pobieranie()}
+    if re.search(r"nowe (odcink|filmy|serial)|co nowego w jellyfin", t):
+        return {"odp": _glos_nowe_media()}
+    if re.search(r"urzadzeni\w* w sieci|kto jest w sieci|(nowe|nieznane) urzadzeni", t):
+        return {"odp": _glos_siec()}
+    if re.search(r"temperatur\w* (komput|procesor|cpu|kart|gpu)|jak (sie )?czuje komputer|obciazeni\w* (komput|procesor)", t):
+        return {"odp": _glos_komputer()}
+    if re.search(r"\b(jaki|co) (mam )?(dzis )?trening|\btrening na dzis", t):
+        return {"odp": _brief_trening() or "Na dziś nie masz zaplanowanego treningu."}
+    # sterowanie
+    if m := re.search(r"\b(wlacz|uruchom|wylacz|zgas)\w*\s+(monitor|drukark\w*|led\w*|swiatl\w*|lamp\w*|glosnik\w*)", t):
+        return {"odp": _glos_gniazdo("off" if m.group(1) in ("wylacz", "zgas") else "on", m.group(2))}
+    if re.search(r"\bmikrofon", t):
+        return {"odp": _glos_discord("mikrofon")}
+    if re.search(r"\bsluchawk", t):
+        return {"odp": _glos_discord("sluchawki")}
+    if re.search(r"\brozlacz\w*( mnie)?( z)? (discord|kanal|rozmow)", t):
+        return {"odp": _glos_discord("rozlacz")}
+    if m := re.search(r"\b(wylacz|uspij|zrestartuj|restartuj|zablokuj)\w*\s+(komp\w*|gaming|pc|laptop|stacjonar\w*)", t):
+        akcja = {"wylacz": "wylacz", "uspij": "uspij", "zrestartuj": "restart", "restartuj": "restart", "zablokuj": "zablokuj"}[m.group(1)]
+        return {"odp": _glos_zasilanie(akcja, t)}
+    # szybkie
+    if re.search(r"\b(jaki|ktory) (jest )?(dzis|dzisiaj) (dzien|jest)|\bjaka (jest )?(dzis )?data|\bktorego (dzis )?(jest|mamy)", t):
+        return {"odp": _glos_data()}
+    if re.search(r"\bile (dni )?(zostalo )?(dni )?do\b", t) and (odp := _glos_ile_dni(t)):
+        return {"odp": odp}
+    if re.search(r"\brzu\w* monet", t):
+        import random
+        return {"odp": random.choice(["Orzeł.", "Reszka."])}
+    if re.search(r"\brzu\w* kostk", t):
+        import random
+        return {"odp": f"Wypadło {random.randint(1, 6)}."}
+    if re.search(r"\b(ile|oblicz|policz)\b", t) and (odp := _glos_kalkulator(t)):
+        return {"odp": odp}
+    if re.search(r"co umiesz|jakie (masz|znasz) komendy|\bpomoc\b|w czym (mi )?pomozesz|co potrafisz", t):
+        return {"odp": "Umiem między innymi: budzik, minutniki i przypomnienia, zadania, kalendarz, pogodę, faktury, paczki, "
+                       "maile, sterowanie monitorem, drukarką i komputerami, muzykę, Discorda, pobieranie i szybkie liczenie. "
+                       "Pełną listę pokazuję na ekranie.", "akcja": {"widok": "komendy"}}
+    return None
+
+
+# --------------------------------------------------------------------------- kalendarz: pogoda w miejscu + dodawanie
+# Z Yapass (2026-11-20). Pogoda dla wydarzeń z „Miejscem”: zakładka Dzień, brief, /api/kalendarz/pogoda (dla porannego
+# raportu n8n o 7:30). Geokodowanie (Nominatim) w tle — zakładka nie czeka; wynik zostaje w pamiec "geo".
+# Dodawanie: głosem („dodaj do kalendarza dentysta jutro o 15 w Krakowie”), /kalendarz na Discordzie, formularz na
+# panelu (POST /api/kalendarz). Nextcloud jest na serwerze: gdy śpi — budzimy go, wydarzenie czeka w pamiec
+# "kal_kolejka" i trafia do kalendarza, gdy serwer wstanie (najwyżej 3 dni prób).
+WMO_IKONA = {0: "☀️", 1: "🌤️", 2: "⛅", 3: "☁️", 45: "🌫️", 48: "🌫️", 51: "🌦️", 53: "🌦️", 55: "🌦️", 56: "🌧️", 57: "🌧️",
+             61: "🌧️", 63: "🌧️", 65: "🌧️", 66: "🌧️", 67: "🌧️", 71: "🌨️", 73: "🌨️", 75: "🌨️", 77: "🌨️",
+             80: "🌧️", 81: "🌧️", 82: "🌧️", 85: "🌨️", 86: "🌨️", 95: "⛈️", 96: "⛈️", 99: "⛈️"}
+DNI_GLOS = [("poniedzial", 0), ("wtor", 1), ("srod", 2), ("czwart", 3), ("piat", 4), ("sobot", 5), ("niedziel", 6)]
+MIES_RDZEN = ["stycz", "lut", "marc", "kwiet", "maj", "czerw", "lip", "sierp", "wrze", "pazdz", "listop", "grud"]
+GODZ_SLOWA_24 = {**GODZ_SLOWA, "trzynast": 13, "czternast": 14, "pietnast": 15, "szesnast": 16, "siedemnast": 17,
+                 "osiemnast": 18, "dziewietnast": 19, "dwudziest": 20}
+_geo_w_toku = set()
+
+
+def _geo_w_tle(miejsce):
+    if miejsce in _geo_w_toku:
+        return
+    _geo_w_toku.add(miejsce)
+
+    def rob():
+        try:
+            Z.geokoduj(miejsce)
+        except Exception as e:  # noqa: BLE001
+            print(f"kalendarz: geokodowanie {miejsce}: {e}", flush=True)
+        finally:
+            _geo_w_toku.discard(miejsce)
+    threading.Thread(target=rob, daemon=True).start()
+
+
+def _pogoda_wyd(w, blokuj=False):
+    """{temp, pp, code, ikona, opis, gdzie} dla wydarzenia z miejscem; None gdy brak / poza prognozą / jeszcze nie wiadomo."""
+    if not w.get("miejsce"):
+        return None
+    g = Z.geo_z_pamieci(w["miejsce"])
+    if g is False:
+        if not blokuj:
+            _geo_w_tle(w["miejsce"])
+            return None
+        g = Z.geokoduj(w["miejsce"])
+    if not g:
+        return None
+    start = Z.datetime.fromisoformat(w["start"]).astimezone(Z.TZ)
+    if (start.date() - _teraz_pl().date()).days > 15:
+        return None
+    try:
+        p = Z.pogoda_w(g[0], g[1], start, bool(w.get("caly_dzien")))
+    except Exception as e:  # noqa: BLE001
+        print(f"kalendarz: pogoda {w['miejsce']}: {e}", flush=True)
+        return None
+    if not p or p.get("temp") is None:
+        return None
+    return {**p, "ikona": WMO_IKONA.get(p.get("code"), "🌡️"), "opis": _pogoda_opis(p.get("code")), "gdzie": g[2]}
+
+
+def _kalendarz_z_pogoda():
+    k = _z_pamieci("kalendarz", Z.kalendarz_pobierz)
+    if not k.get("ok") or not isinstance(k.get("data"), dict):
+        return k
+    wyd = [{**w, "pogoda": _pogoda_wyd(w)} if w.get("miejsce") else w for w in k["data"].get("wydarzenia") or []]
+    return {**k, "data": {**k["data"], "wydarzenia": wyd}}
+
+
+def kalendarz_pogoda_api():
+    """Dla porannego raportu n8n: dziś i jutro, wydarzenia z miejscem i pogodą (geokodowanie czeka, jeśli trzeba)."""
+    k = _z_pamieci("kalendarz", Z.kalendarz_pobierz)
+    dzis = _teraz_pl().date()
+    out = []
+    for w in ((k.get("data") or {}).get("wydarzenia") or []) if k.get("ok") else []:
+        start = Z.datetime.fromisoformat(w["start"]).astimezone(Z.TZ)
+        if not w.get("miejsce") or (start.date() - dzis).days > 1:
+            continue
+        p = _pogoda_wyd(w, blokuj=True)
+        out.append({"tytul": w["tytul"], "start": w["start"], "miejsce": w["miejsce"], "caly_dzien": w.get("caly_dzien"),
+                    "pogoda": (f"{p['ikona']} {round(p['temp'])}°C" + (f" · opady {p['pp']}%" if p.get("pp") else "")) if p else None})
+    return {"wydarzenia": out, "now": teraz()}
+
+
+def kalendarz_zglos(tytul, start, minuty=60, caly_dzien=False, miejsce=None, zrodlo=""):
+    """Dodaje wydarzenie (albo kolejkuje, gdy serwer śpi — i go budzi). Zwraca (dodane_teraz: bool, opis)."""
+    tytul = " ".join(str(tytul or "").split())[:200]
+    if not tytul:
+        raise ValueError("tytuł: pusty")
+    w = {"uid": f"jarvis-{os.urandom(8).hex()}@panel", "tytul": tytul, "start": start, "minuty": int(minuty or 60),
+         "caly_dzien": bool(caly_dzien), "miejsce": (" ".join(str(miejsce).split())[:200] or None) if miejsce else None,
+         "ts": teraz()}
+    print(f"kalendarz: nowe wydarzenie ({zrodlo}) {tytul} {start}{' @ ' + w['miejsce'] if w['miejsce'] else ''}", flush=True)
+    if serwer_up():
+        try:
+            Z.kalendarz_dodaj(w)
+            threading.Thread(target=_kal_odswiez, daemon=True).start()
+            return True, w
+        except Exception as e:  # noqa: BLE001
+            print(f"kalendarz: dodanie nie wyszło ({e}) — do kolejki", flush=True)
+    kol = Z.pamiec_get("kal_kolejka", []) or []
+    Z.pamiec_set("kal_kolejka", kol + [w])
+    if not serwer_up():
+        try:
+            akcja_wake()
+        except Exception as e:  # noqa: BLE001
+            print(f"kalendarz: WoL: {e}", flush=True)
+    return False, w
+
+
+def _kal_odswiez():
+    try:
+        Z.kalendarz_pobierz()
+        cache.drop("kalendarz")
+    except Exception as e:  # noqa: BLE001
+        print(f"kalendarz: odświeżenie: {e}", flush=True)
+
+
+def straznik_kalendarza():
+    while True:
+        time.sleep(60)
+        try:
+            kol = Z.pamiec_get("kal_kolejka", []) or []
+            if not kol or not serwer_up():
+                continue
+            zostaje = []
+            for w in kol:
+                try:
+                    Z.kalendarz_dodaj(w)
+                    print(f"kalendarz: z kolejki dodane {w['tytul']}", flush=True)
+                except Exception as e:  # noqa: BLE001
+                    if teraz() - w.get("ts", 0) < 3 * 86400:
+                        zostaje.append(w)
+                    else:
+                        print(f"kalendarz: porzucam po 3 dniach {w['tytul']}: {e}", flush=True)
+            Z.pamiec_set("kal_kolejka", zostaje)
+            if len(zostaje) < len(kol):
+                _kal_odswiez()
+        except Exception as e:  # noqa: BLE001
+            print(f"kalendarz: kolejka: {e}", flush=True)
+
+
+def _kiedy_wyd(start, caly):
+    d = Z.date.fromisoformat(start[:10])
+    roz = (d - _teraz_pl().date()).days
+    dzien = {0: "dziś", 1: "jutro", 2: "pojutrze"}.get(roz) or f"{DNI_W[d.weekday()]}, {d.day} {MIESIACE[d.month - 1]}"
+    return f"{dzien}, cały dzień" if caly else f"{dzien} o {int(start[11:13])}:{start[14:16]}"
+
+
+def _glos_kalendarz(src, t):
+    """„dodaj do kalendarza dentysta jutro o 15”, „zapisz w kalendarzu koncert w sobotę o 18 w Krakowie na 2 godziny”."""
+    if not (re.search(r"\bkalendarz", t) and re.search(r"\b(dodaj|zapisz|wpisz|wstaw|zaplanuj)", t)):
+        return None
+    spany = [m.span() for m in re.finditer(r"\b(?:dodaj|zapisz|wpisz|wstaw|zaplanuj)\w*(?:\s+mi)?|\b(?:do|w|na)\s+kalendarz\w*|\bwydarzenie\b", t)]
+    tc = _cyfry(t)
+    tc = re.sub(r"\b(o|na)\s+(" + "|".join(sorted(GODZ_SLOWA_24, key=len, reverse=True)) + r")\w*",
+                lambda m: (m.group(1) + " " + str(GODZ_SLOWA_24[m.group(2)])).ljust(len(m.group(0))), tc)
+    def span(m):   # z dopełnieniem: słowa zamienione na cyfry zajmują w tc tyle samo miejsca (spacje) co w src
+        a, e = m.span()
+        while e < len(tc) and tc[e] == " " and src[e] != " ":
+            e += 1
+        return a, e
+    dzis = _teraz_pl().date()
+    dzien = None
+    # data
+    if m := re.search(r"\b(dzis|dzisiaj)\b", tc):
+        dzien = dzis
+    elif m := re.search(r"\bpojutrze\b", tc):
+        dzien = dzis + Z.timedelta(days=2)
+    elif m := re.search(r"\bjutro\b", tc):
+        dzien = dzis + Z.timedelta(days=1)
+    elif m := re.search(r"\b(?:w|we)?\s*\b(" + "|".join(r for r, _ in DNI_GLOS) + r")\w*", tc):
+        wd = dict(DNI_GLOS)[m.group(1)]
+        dzien = dzis + Z.timedelta(days=(wd - dzis.weekday()) % 7 or 7)
+    elif m := re.search(r"\b(\d{1,2})\s+(" + "|".join(MIES_RDZEN) + r")\w*", tc):
+        try:
+            dzien = Z.date(dzis.year, MIES_RDZEN.index(m.group(2)) + 1, int(m.group(1)))
+        except ValueError:
+            return {"odp": "Nie ma takiego dnia."}
+    elif m := re.search(r"\b(\d{1,2})[./](\d{1,2})\b", tc):
+        try:
+            dzien = Z.date(dzis.year, int(m.group(2)), int(m.group(1)))
+        except ValueError:
+            return {"odp": "Nie ma takiego dnia."}
+    if dzien is not None:
+        spany.append(span(m))
+        if dzien < dzis:
+            dzien = dzien.replace(year=dzis.year + 1)
+    # czas trwania („na 2 godziny”, „na pół godziny”)
+    minuty = 60
+    if m := re.search(r"\bna\s+((?:\d+(?:[.,]\d+)?\s*|pol\s+|poltorej\s+)?(?:godzin\w*|minut\w*|kwadrans\w*))", tc):
+        sek, _ = _trwanie(m.group(1))
+        if sek:
+            minuty = max(5, round(sek / 60))
+            spany.append(span(m))
+    # godzina
+    godz = None
+    if m := (re.search(r"\b(?:o|na)\s+(?:godzin\w*\s+)?(\d{1,2})(?:[:.\s]+(\d{2}))?\b(?!\s*(?:godzin|minut))", tc)
+             or re.search(r"\b(\d{1,2})[:.](\d{2})\b", tc)):
+        h, mi = int(m.group(1)), int(m.group(2) or 0)
+        if h <= 23 and mi <= 59:
+            godz = (h, mi)
+            spany.append(span(m))
+    # miejsce: „w Krakowie”, „we Wrocławiu”, „na Rynku” — z wielkiej litery w oryginale
+    miejsce = gdzie = None
+    if m := re.search(r"\b(?:w|we|na)\s+([A-ZŁŚŻŹĆŃÓ][\w\-]*(?:\s+[A-ZŁŚŻŹĆŃÓ0-9][\w\-]*)*)", src):
+        miejsce, gdzie = m.group(1), m.group(0)
+        spany.append(m.span())
+    # tytuł: to, co zostało
+    tytul = src
+    for a, b in sorted(spany, reverse=True):
+        tytul = tytul[:a] + " " + tytul[b:]
+    tytul = re.sub(r"\s+", " ", re.sub(r"(^|\s)(o|w|we|na|do)(?=\s|$)", " ", tytul)).strip(" ,.:-")
+    if not tytul:
+        return {"odp": "Co mam wpisać do kalendarza? Powiedz na przykład: dodaj do kalendarza dentysta jutro o 15."}
+    if dzien is None and godz is None:
+        return {"odp": f"Na kiedy wpisać „{tytul}”? Powiedz na przykład: dodaj do kalendarza {tytul.lower()} jutro o 15."}
+    if dzien is None:
+        dzien = dzis if Z.datetime.combine(dzis, Z.datetime.min.time()).replace(hour=godz[0], minute=godz[1], tzinfo=Z.TZ) > _teraz_pl() else dzis + Z.timedelta(days=1)
+    start = dzien.isoformat() + (f"T{godz[0]:02d}:{godz[1]:02d}" if godz else "")
+    tytul = tytul[:1].upper() + tytul[1:]
+    teraz_dod, w = kalendarz_zglos(tytul, start, minuty, godz is None, miejsce, "głos")
+    odp = f"Dodaję do kalendarza: {tytul}, {_kiedy_wyd(start, godz is None)}" + (f", {gdzie}" if gdzie else "") + "."
+    return {"odp": odp + ("" if teraz_dod else " Serwer śpi — budzę go, wydarzenie trafi do kalendarza, gdy wstanie.")}
+
+
 def jarvis(tekst):
     src = (tekst or "").strip().strip(" .!?")
     t = _bez_ogonkow(src)
@@ -2031,12 +2665,20 @@ def jarvis(tekst):
        (drz and re.search(r"\b(wylacz|anuluj|zatrzymaj)\w*\s+(?:ten\s+)?(?:budzik|drzemk)", t)):
         return {"odp": (budzik_stop() or "Budzik wyłączony.") + " Dzień dobry!"}
 
+    # czeka potwierdzenie „wyłączyć / uśpić komputer?” — „tak” wykonuje, „nie” anuluje (30 s)
+    if odp := _glos_potwierdzenie(t):
+        return {"odp": odp}
+
     # trwa odliczanie „Dobranoc”: każde „anuluj / stop / nie / przerwij” je przerywa
     if dobranoc_trwa() and re.search(r"\b(anuluj|przerwij|stop|nie|zatrzymaj|czekaj)", t):
         dobranoc_anuluj()
         return {"odp": "Anulowane. Nic nie wyłączam.", "akcja": {"dobranoc_anuluj": True}}
     if re.search(r"\bdobranoc\b|\bdobrej nocy\b|\bide spac\b|\bidziemy spac\b", t):
         return dobranoc_start()
+
+    # reguły „gdy → wtedy”: pokaż / włącz / wyłącz regułę <nazwa> (przed gniazdami — „wyłącz regułę … biurka”)
+    if w := _glos_reguly(src, t):
+        return w
 
     # budziki
     if re.search(r"\b(anuluj|usun|odwolaj|skasuj|wylacz)\w*\s+(?:jutrzejsz\w*\s+|ten\s+|moj\w*\s+)?budzik", t):
@@ -2098,6 +2740,14 @@ def jarvis(tekst):
         wol(pc["mac"])
         return {"odp": f"Włączam {kto}. Za chwilę powinien wstać."}
 
+    # kalendarz: „dodaj do kalendarza dentysta jutro o 15” — przed listami i ogólnym „dodaj”
+    if w := _glos_kalendarz(src, t):
+        return w
+
+    # listy (zakupy…) — przed ogólnym „dodaj”, żeby „dodaj mleko do zakupów” nie trafiło na listę główną
+    if w := _glos_listy(src, t):
+        return w
+
     # lista zadań
     if m := re.search(r"\b(dodaj|zapisz|zanotuj)\s+(?:mi\s+)?(?:zadanie|do listy|na liste|do zrobienia|przypomnienie)?\s*:?\s*(.+)", t):
         tytul = src[m.start(2):m.end(2)].strip()
@@ -2111,6 +2761,10 @@ def jarvis(tekst):
                  r"\bpodsumuj\w* dzien|\bpodsumowanie dnia", t):
         _brief_oznacz_dzis()
         return {"odp": brief_tekst(), "mow_limit": BRIEF_ZNAKI}
+
+    # komendy lokalne: informacje, sterowanie, szybkie, „co umiesz” (bez AI)
+    if w := _komendy_lokalne(src, t):
+        return w
 
     # pogoda i godzina
     if re.search(r"pogod|temperatur|ile stopni|czy (bedzie )?pada", t):
@@ -2159,6 +2813,323 @@ def jarvis_api(tekst):
     return w
 
 
+# --------------------------------------------------------------------------- reguły „gdy → wtedy” (kreator na panelu, 2026-11-20)
+# Reguła: {id, nazwa, wl, gdy: {typ, …}, okno: {od, do} | None, wtedy: [{typ, …}], ostatnio, licznik}.
+# Zapis w pamiec.json („reguly”), historia odpaleń w „reguly_hist” (40 ostatnich). Strażnik sprawdza co 20 s;
+# „ktoś siada” idzie od razu z obecnosc(). W tekstach akcji: {nazwa} (plik / urządzenie), {minuty}.
+REG_GDY = {"pobrane": "Pobieranie skończone", "nieobecnosc": "Nikogo przy biurku", "obecnosc": "Ktoś siada przy biurku",
+           "wraca": "Urządzenie wraca do sieci", "godzina": "O godzinie"}
+REG_WTEDY = {"powiedz": "Powiedz i pokaż", "discord": "Wyślij na Discorda", "gniazdo": "Gniazdo",
+             "stanowisko": "Stanowisko", "ekran": "Ekran panelu", "brief": "Brief dnia", "komenda": "Komenda JARVIS-a"}
+REG_HIST_MAX = 40
+_reg_lock = threading.Lock()
+_reg_mark = {}                       # id reguły -> znaczniki (raz na nieobecność / powrót / dzień)
+_reg_qbit = {"snap": None, "ts": 0}  # hash -> postęp z poprzedniego sprawdzenia
+
+REG_STARTOWE = [
+    {"id": "pobrane", "nazwa": "Pobieranie skończone", "wl": True, "gdy": {"typ": "pobrane"}, "okno": None,
+     "wtedy": [{"typ": "powiedz", "tekst": "Pobrano: {nazwa}."}, {"typ": "discord", "tekst": "Pobrano: **{nazwa}**"}]},
+    {"id": "odchodze", "nazwa": "Odchodzę od biurka", "wl": True, "gdy": {"typ": "nieobecnosc", "minuty": 10}, "okno": None,
+     "wtedy": [{"typ": "stanowisko", "akcja": "off"}]},
+    {"id": "telefon", "nazwa": "Telefon wraca do Wi-Fi", "wl": False, "gdy": {"typ": "wraca", "mac": "", "minuty": 60},
+     "okno": {"od": 7, "do": 23}, "wtedy": [{"typ": "powiedz", "tekst": "Witaj w domu."}, {"typ": "brief"}]},
+]
+
+
+def reguly():
+    with _reg_lock:
+        r = Z.pamiec_get("reguly", None)
+        if r is None:   # pierwsze uruchomienie: reguły startowe (telefon wyłączony, póki nie wybierzesz urządzenia)
+            r = [dict(x, ostatnio=None, licznik=0) for x in REG_STARTOWE]
+            Z.pamiec_set("reguly", r)
+        return r
+
+
+def _reg_zapisz(lista):
+    Z.pamiec_set("reguly", lista)
+
+
+def _reg_tekst(v, n=200):
+    return " ".join(str(v or "").split())[:n]
+
+
+def _reg_sprawdz(b):
+    """Dane z kreatora -> poprawna reguła (ValueError z opisem po polsku, gdy coś nie tak)."""
+    nazwa = _reg_tekst(b.get("nazwa"), 40)
+    if not nazwa:
+        raise ValueError("Nazwij regułę")
+    g = b.get("gdy") or {}
+    typ = g.get("typ")
+    if typ not in REG_GDY:
+        raise ValueError("Wybierz, kiedy reguła ma działać")
+    gdy = {"typ": typ}
+    if typ == "nieobecnosc":
+        gdy["minuty"] = int(g.get("minuty") or 10)
+        if not 1 <= gdy["minuty"] <= 240:
+            raise ValueError("Nieobecność: 1–240 minut")
+    elif typ == "wraca":
+        gdy["mac"] = Z.mac_norm(g.get("mac") or "") or ""
+        gdy["minuty"] = int(g.get("minuty") or 60)
+        if not 10 <= gdy["minuty"] <= 1440:
+            raise ValueError("Powrót do sieci: po 10–1440 minutach nieobecności")
+    elif typ == "godzina":
+        m = re.fullmatch(r"(\d{1,2}):(\d{2})", str(g.get("godz") or ""))
+        if not m or int(m.group(1)) > 23 or int(m.group(2)) > 59:
+            raise ValueError("Godzina: GG:MM")
+        gdy["godz"] = f"{int(m.group(1)):02d}:{m.group(2)}"
+        gdy["dni"] = sorted({int(d) for d in (g.get("dni") or []) if str(d).isdigit() and 0 <= int(d) <= 6})
+    elif typ == "pobrane":
+        gdy["filtr"] = _reg_tekst(g.get("filtr"), 40)
+    okno = b.get("okno")
+    if okno:
+        od, do = int(okno.get("od", 0)), int(okno.get("do", 24))
+        if not (0 <= od <= 23 and 1 <= do <= 24) or od == do:
+            raise ValueError("Godziny działania: od 0–23, do 1–24, różne")
+        okno = None if (od, do) == (0, 24) else {"od": od, "do": do}
+    gniazda = {x["id"] for x in Z.lista_gniazd()}
+    wtedy = []
+    for a in (b.get("wtedy") or [])[:6]:
+        t = a.get("typ")
+        if t not in REG_WTEDY:
+            continue
+        w = {"typ": t}
+        if t in ("powiedz", "discord", "komenda"):
+            w["tekst"] = _reg_tekst(a.get("tekst"), 300)
+            if not w["tekst"]:
+                raise ValueError(f"{REG_WTEDY[t]}: wpisz tekst")
+        elif t in ("gniazdo", "stanowisko", "ekran"):
+            w["akcja"] = a.get("akcja") if a.get("akcja") in ("on", "off") else "on"
+            if t == "gniazdo":
+                w["id"] = a.get("id")
+                if w["id"] not in gniazda:
+                    raise ValueError("Wybierz gniazdo")
+        wtedy.append(w)
+    if not wtedy:
+        raise ValueError("Dodaj co najmniej jedno „wtedy”")
+    wl = bool(b.get("wl", True))
+    if typ == "wraca" and not gdy["mac"]:
+        wl = False   # bez wybranego urządzenia nie ma czego pilnować
+    return {"id": re.sub(r"[^\w-]", "", str(b.get("id") or ""))[:20] or os.urandom(4).hex(), "nazwa": nazwa, "wl": wl,
+            "gdy": gdy, "okno": okno, "wtedy": wtedy}
+
+
+def regula_zapisz(b):
+    r = _reg_sprawdz(b)
+    with _reg_lock:
+        lista = Z.pamiec_get("reguly", None) or []
+        stara = next((x for x in lista if x["id"] == r["id"]), None)
+        if stara:
+            r.update(ostatnio=stara.get("ostatnio"), licznik=stara.get("licznik", 0))
+            lista[lista.index(stara)] = r
+        else:
+            if len(lista) >= 30:
+                raise ValueError("Najwyżej 30 reguł")
+            lista.append({**r, "ostatnio": None, "licznik": 0})
+        _reg_zapisz(lista)
+    _reg_mark.pop(r["id"], None)
+    dop = " (wyłączona — wybierz urządzenie)" if r["gdy"]["typ"] == "wraca" and not r["gdy"]["mac"] else ""
+    return {"ok": True, "msg": f"Zapisano regułę „{r['nazwa']}”{dop}", "id": r["id"]}
+
+
+def regula_akcja(rid, akcja):
+    with _reg_lock:
+        lista = Z.pamiec_get("reguly", None) or []
+        r = next((x for x in lista if x["id"] == rid), None)
+        if not r:
+            raise ValueError("nie ma takiej reguły")
+        if akcja == "usun":
+            lista.remove(r)
+            msg = f"Usunięto „{r['nazwa']}”"
+        elif akcja in ("wl", "wyl"):
+            if akcja == "wl" and r["gdy"]["typ"] == "wraca" and not r["gdy"].get("mac"):
+                raise ValueError("Najpierw wybierz urządzenie (Edytuj)")
+            r["wl"] = akcja == "wl"
+            msg = f"„{r['nazwa']}”: {'włączona' if r['wl'] else 'wyłączona'}"
+        else:
+            r = dict(r)
+            msg = None
+        _reg_zapisz(lista)
+    _reg_mark.pop(rid, None)
+    if akcja == "test":
+        threading.Thread(target=_reg_odpal, args=(r, {"nazwa": "Test reguły", "minuty": 0}, True), daemon=True).start()
+        msg = f"Odpalam „{r['nazwa']}” na próbę"
+    return {"ok": True, "msg": msg}
+
+
+def _reg_w_oknie(okno):
+    if not okno:
+        return True
+    h = _teraz_pl().hour
+    od, do = okno["od"], okno["do"]
+    return od <= h < do if od < do else (h >= od or h < do)
+
+
+def _reg_wstaw(tekst, kontekst):
+    return re.sub(r"\{(\w+)\}", lambda m: str(kontekst.get(m.group(1), m.group(0))), tekst)
+
+
+def _reg_wykonaj(a, r, kontekst):
+    t = a["typ"]
+    if t == "powiedz":
+        _powiadom(_reg_wstaw(a["tekst"], kontekst), "⚡")
+        return "powiedziane"
+    if t == "discord":
+        if not Z.discord_wyslij(f"⚡ {r['nazwa']}", _reg_wstaw(a["tekst"], kontekst), ping=False):
+            raise RuntimeError("brak DISCORD_WEBHOOK")
+        return "Discord"
+    if t == "gniazdo":
+        w = Z.gniazdo_ustaw(a["id"], a["akcja"])
+        cache.drop("dash-gniazda")
+        return w.get("msg") or a["id"]
+    if t == "stanowisko":
+        for g in STANOWISKO:
+            Z.gniazdo_ustaw(g, a["akcja"])
+        cache.drop("dash-gniazda")
+        if a["akcja"] == "on":
+            Z.pamiec_set("obecnosc_pauza_do", 0)
+        return f"stanowisko {'włączone' if a['akcja'] == 'on' else 'wyłączone'}"
+    if t == "ekran":
+        ustaw_ekran("on", 5) if a["akcja"] == "on" else ustaw_ekran("sleep")
+        return f"ekran {a['akcja']}"
+    if t == "brief":
+        if _obecnosc_pauza():
+            return "brief pominięty (dobranoc)"
+        tx = brief_tekst()
+        ustaw_alert("☀️ Brief dnia", "info", 5)
+        szyna.publikuj("przypomnienie", {"mow": _do_mowy(tx, BRIEF_ZNAKI), "tekst": "Brief dnia"})
+        return "brief"
+    if t == "komenda":
+        w = jarvis_api(_reg_wstaw(a["tekst"], kontekst))
+        ustaw_alert(f"⚡ {w['odp']}", "info", 5)
+        if not _obecnosc_pauza():
+            szyna.publikuj("przypomnienie", {"mow": w["mow"], "tekst": w["odp"]})
+        return w["odp"][:80]
+    return "?"
+
+
+def _reg_odpal(r, kontekst, test=False):
+    if not test and not _reg_w_oknie(r.get("okno")):
+        print(f"reguły: „{r['nazwa']}” poza godzinami — pomijam", flush=True)
+        return
+    wyniki, ok = [], True
+    for a in r["wtedy"]:
+        try:
+            wyniki.append(_reg_wykonaj(a, r, kontekst))
+        except Exception as e:  # noqa: BLE001  jedna nieudana akcja nie zatrzymuje reszty
+            ok = False
+            wyniki.append(f"{REG_WTEDY.get(a['typ'], a['typ'])}: błąd {e}")
+    opis = ("[test] " if test else "") + (f"{kontekst['nazwa']} → " if kontekst.get("nazwa") and not test else "") + "; ".join(wyniki)
+    print(f"reguły: „{r['nazwa']}” -> {opis}", flush=True)
+    with _reg_lock:
+        lista = Z.pamiec_get("reguly", None) or []
+        for x in lista:
+            if x["id"] == r["id"] and not test:
+                x["ostatnio"], x["licznik"] = teraz(), x.get("licznik", 0) + 1
+        _reg_zapisz(lista)
+        hist = [{"ts": teraz(), "id": r["id"], "nazwa": r["nazwa"], "opis": opis[:300], "ok": ok}]
+        Z.pamiec_set("reguly_hist", (hist + (Z.pamiec_get("reguly_hist", []) or []))[:REG_HIST_MAX])
+
+
+def _reg_zdarzenie(typ, kontekst=None, warunek=None):
+    """Odpala w tle wszystkie włączone reguły danego typu (warunek(r) -> bool dodatkowo filtruje)."""
+    for r in reguly():
+        if r.get("wl") and r["gdy"]["typ"] == typ and (warunek is None or warunek(r)):
+            threading.Thread(target=_reg_odpal, args=(r, dict(kontekst or {})), daemon=True).start()
+
+
+def _reg_krok():
+    t = teraz()
+    aktywne = [r for r in reguly() if r.get("wl")]
+    typy = {r["gdy"]["typ"] for r in aktywne}
+    # nikogo przy biurku od N minut — tylko gdy telefon świeżo (< 3 min) to potwierdza; raz na jedną nieobecność
+    if "nieobecnosc" in typy:
+        with stan_lock:
+            o = dict(OBECNOSC)
+        if o["jest"] is False and t - o["ts"] < 180:
+            for r in aktywne:
+                if r["gdy"]["typ"] == "nieobecnosc" and t - o["od"] >= r["gdy"]["minuty"] * 60:
+                    mk = _reg_mark.setdefault(r["id"], {})
+                    if mk.get("nieob") != o["od"]:
+                        mk["nieob"] = o["od"]
+                        threading.Thread(target=_reg_odpal, args=(r, {"minuty": int((t - o["od"]) // 60)}), daemon=True).start()
+    # urządzenie wraca do sieci po co najmniej N minutach (skan sieci co SIEC_CO_S, „ostatni” = ostatnio widziane)
+    if "wraca" in typy:
+        znane = Z.pamiec_get("urzadzenia", {}) or {}
+        for r in aktywne:
+            if r["gdy"]["typ"] != "wraca" or r["gdy"].get("mac") not in znane:
+                continue
+            u = znane[r["gdy"]["mac"]]
+            ost, mk = u.get("ostatni") or 0, _reg_mark.setdefault(r["id"], {})
+            pop = mk.get("ost")
+            mk["ost"] = ost
+            if pop and ost > pop and ost - pop >= r["gdy"]["minuty"] * 60:
+                threading.Thread(target=_reg_odpal, args=(r, {"nazwa": _urz_nazwa(r["gdy"]["mac"], u),
+                                                               "minuty": int((ost - pop) // 60)}), daemon=True).start()
+    # o godzinie (w wybrane dni tygodnia; pusto = codziennie)
+    if "godzina" in typy:
+        n = _teraz_pl()
+        for r in aktywne:
+            g = r["gdy"]
+            if g["typ"] == "godzina" and g["godz"] == f"{n.hour:02d}:{n.minute:02d}" and (not g["dni"] or n.weekday() in g["dni"]):
+                mk = _reg_mark.setdefault(r["id"], {})
+                if mk.get("dzien") != n.date().isoformat():
+                    mk["dzien"] = n.date().isoformat()
+                    threading.Thread(target=_reg_odpal, args=(r, {}), daemon=True).start()
+    # pobieranie skończone: qBittorrent (na serwerze) co minutę, póki serwer działa; malinka nie trzyma go przy życiu
+    if "pobrane" in typy and t - _reg_qbit["ts"] >= 60 and serwer_up():
+        _reg_qbit["ts"] = t
+        w = Z.qbit()
+        teraz_snap = {x["hash"]: (x.get("postep") or 0, x.get("nazwa") or "?") for x in (w.get("torrenty") or [])}
+        pop = _reg_qbit["snap"]
+        _reg_qbit["snap"] = teraz_snap
+        if pop is not None:
+            for h, (p, nazwa) in teraz_snap.items():
+                if p >= 1 and h in pop and pop[h][0] < 1:
+                    _reg_zdarzenie("pobrane", {"nazwa": nazwa[:120]},
+                                   lambda r, n=nazwa: not r["gdy"].get("filtr") or r["gdy"]["filtr"].lower() in n.lower())
+
+
+def straznik_regul():
+    time.sleep(40)
+    reguly()   # reguły startowe przy pierwszym uruchomieniu
+    while True:
+        try:
+            _reg_krok()
+        except Exception as e:  # noqa: BLE001
+            print(f"reguły: {type(e).__name__}: {e}", flush=True)
+        time.sleep(20)
+
+
+def reguly_tab():
+    return {"reguly": reguly(), "hist": Z.pamiec_get("reguly_hist", []) or [], "gdy": REG_GDY, "wtedy": REG_WTEDY,
+            "gniazda": [{"id": g["id"], "nazwa": g["nazwa"]} for g in Z.lista_gniazd()], "stanowisko": STANOWISKO,
+            "urzadzenia": [{"mac": u["mac"], "nazwa": _urz_nazwa(u["mac"], u), "ip": u["ip"], "online": u["online"]}
+                           for u in _urzadzenia_lista()]}
+
+
+def _glos_reguly(src, t):
+    """„pokaż reguły”, „wyłącz regułę odchodzę od biurka”, „włącz regułę pobieranie”."""
+    if not re.search(r"\bregul", t):
+        return None
+    import difflib
+    m = re.search(r"\b(wlacz|wylacz)\w*\s+regul\w*\s+(.+)", t)
+    if m:
+        cel = _bez_ogonkow(m.group(2)).strip(" .")
+        lista = reguly()
+        nazwy = {_bez_ogonkow(r["nazwa"].lower()): r for r in lista}
+        traf = difflib.get_close_matches(cel, list(nazwy), n=1, cutoff=0.4) or [n for n in nazwy if cel[:6] in n]
+        if not traf:
+            return {"odp": "Nie znam takiej reguły. Mam: " + ", ".join(r["nazwa"] for r in lista) + "."}
+        try:
+            w = regula_akcja(nazwy[traf[0]]["id"], "wl" if m.group(1) == "wlacz" else "wyl")
+        except ValueError as e:
+            return {"odp": str(e)}
+        return {"odp": w["msg"].replace("„", "").replace("”", "") + "."}
+    wl = [r["nazwa"] for r in reguly() if r.get("wl")]
+    return {"odp": (f"Działają reguły: {', '.join(wl)}." if wl else "Żadna reguła nie jest włączona.") + " Pokazuję na panelu.",
+            "akcja": {"widok": "reguly"}}
+
+
 # --------------------------------------------------------------------------- zakładki
 def dash():
     with stan_lock:
@@ -2193,7 +3164,7 @@ def _z_pamieci(klucz, pobierz, co_ile=600):
 
 
 def tab_dzien():
-    return {"kalendarz": _z_pamieci("kalendarz", Z.kalendarz_pobierz),
+    return {"kalendarz": _kalendarz_z_pogoda(),
             "paperless": _z_pamieci("paperless", Z.paperless_pobierz),
             "poczta": _poczta(),
             "todo": cache.get("todo", 20, todo), "serwer": cache.get("serwer", 10, serwer),
@@ -2235,6 +3206,10 @@ TABS = {
     "pogoda": lambda: {"pogoda": cache.get("pogoda-szczegoly", 900, pogoda_szczegoly)},
     "docker": lambda: {"docker": cache.get("docker", 8, docker_wszystko)},
     "budziki": budziki_lista,
+    "komendy": lambda: {"grupy": KOMENDY, "now": teraz()},
+    "listy": lambda: {"todo": todo(), "now": teraz()},
+    "wydarzenie": lambda: {"now": teraz(), "serwer": serwer_up()},
+    "reguly": reguly_tab,
 }
 
 
@@ -2344,6 +3319,8 @@ class H(BaseHTTPRequestHandler):
             return self.odpowiedz(200, {"ok": True})
         if sc == "/api/dash":
             return self.odpowiedz(200, dash())
+        if sc == "/api/kalendarz/pogoda":   # poranny raport n8n (serwer -> malinka po LAN/Tailscale)
+            return self.odpowiedz(200, kalendarz_pogoda_api())
         if sc == "/api/siec/speedtest":   # tylko odczyt ostatniego wyniku; sam pomiar to POST
             w = Z.pamiec_get("speedtest") or {}
             return self.odpowiedz(200, {**w, "ts_ms": int(w["ts"] * 1000) if w.get("ts") else None})
@@ -2425,6 +3402,22 @@ class H(BaseHTTPRequestHandler):
             swieze = teraz() - (d.get("ts") or 0) < 90
             return self.odpowiedz(200, {"ok": True, "msg": "Limity odświeżone" if swieze else
                                         (d.get("blad") or "Odświeżane najwyżej raz na minutę")})
+        if sc == "/api/kalendarz":
+            data = str(b.get("data") or "")
+            if not re.fullmatch(r"\d{4}-\d{2}-\d{2}", data):
+                raise ValueError("data: RRRR-MM-DD")
+            g = str(b.get("godzina") or "").strip()
+            if g and not re.fullmatch(r"\d{1,2}:\d{2}", g):
+                raise ValueError("godzina: GG:MM albo puste (cały dzień)")
+            start = data + (f"T{int(g.split(':')[0]):02d}:{g.split(':')[1]}" if g else "")
+            dodane, w = kalendarz_zglos(b.get("tytul"), start, b.get("minuty") or 60, not g, b.get("miejsce"), b.get("zrodlo") or "API")
+            opis = f"{w['tytul']}, {_kiedy_wyd(start, not g)}" + (f", {w['miejsce']}" if w.get("miejsce") else "")
+            return self.odpowiedz(200, {"ok": True, "dodane": dodane,
+                                        "msg": f"W kalendarzu: {opis}" if dodane else f"Czeka na serwer (budzę go): {opis}"})
+        if sc == "/api/reguly":
+            return self.odpowiedz(200, regula_zapisz(b))
+        if m := re.fullmatch(r"/api/reguly/([\w-]{1,20})/(wl|wyl|usun|test)", sc):
+            return self.odpowiedz(200, regula_akcja(m.group(1), m.group(2)))
         if sc == "/api/budzik":
             g = str(b.get("godzina") or "")
             m = re.fullmatch(r"\s*(\d{1,2})[:.](\d{2})\s*", g) or re.fullmatch(r"\s*(\d{1,2})()\s*", g)
@@ -2465,7 +3458,7 @@ class H(BaseHTTPRequestHandler):
             return self.odpowiedz(200, w)
         if sc == "/api/todo":
             st, d = http_json(f"{TODO_URL}/api/todos", method="POST",
-                              body={"title": b.get("title"), "due": b.get("due")})
+                              body={"title": b.get("title"), "due": b.get("due"), "lista": b.get("lista") or "", "kto": "panel"})
             cache.drop("todo")
             return self.odpowiedz(st, d)
         self.blad(404, "nie ma")
@@ -2480,7 +3473,7 @@ class H(BaseHTTPRequestHandler):
             return self.blad(404, "nie ma")
         b = self.cialo()
         st, d = http_json(f"{TODO_URL}/api/todos/{m.group(1)}", method="PATCH",
-                          body={k: v for k, v in b.items() if k in ("title", "due", "done")})
+                          body={k: v for k, v in b.items() if k in ("title", "due", "done", "lista")})
         cache.drop("todo")
         return self.odpowiedz(st, d)
 
@@ -2499,4 +3492,6 @@ if __name__ == "__main__":
     threading.Thread(target=straznik_claude, daemon=True).start()
     threading.Thread(target=straznik_powiadomien_claude, daemon=True).start()
     threading.Thread(target=straznik_zdrowia, daemon=True).start()
+    threading.Thread(target=straznik_kalendarza, daemon=True).start()
+    threading.Thread(target=straznik_regul, daemon=True).start()
     ThreadingHTTPServer(("0.0.0.0", PORT), H).serve_forever()
