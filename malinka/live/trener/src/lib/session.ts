@@ -2,24 +2,31 @@
 import { prisma, exerciseByName } from "./db";
 import { parseStrength } from "./coach";
 import { todayPL } from "./time";
+import { asKind, fmtPlanTarget, type Kind } from "./kinds";
 
 export interface SetDTO {
   weight: number | null;
   reps: number | null;
+  seconds: number | null;
+  meters: number | null;
   rpe: number | null;
   warmup: boolean;
   done: boolean;
 }
+export type PrevSet = { weight: number | null; reps: number | null; seconds: number | null; meters: number | null; warmup: boolean };
 export interface ItemDTO {
   exerciseId: number;
   name: string;
   category: string;
+  kind: Kind;
+  /** czy ćwiczenie ma zdjęcia/instrukcję z biblioteki */
+  info: boolean;
   rest: number;
   notes: string;
   target: string;
   sets: SetDTO[];
   /** serie z poprzedniego treningu z tym ćwiczeniem */
-  prev: { weight: number | null; reps: number | null; warmup: boolean }[];
+  prev: PrevSet[];
 }
 export interface SessionDTO {
   id: number;
@@ -39,7 +46,7 @@ export async function previousSets(exerciseId: number, excludeSessionId: number)
     orderBy: { session: { startedAt: "desc" } },
     include: { sets: { where: { done: true }, orderBy: { order: "asc" } } },
   });
-  return (last?.sets ?? []).map((s) => ({ weight: s.weight, reps: s.reps, warmup: s.warmup }));
+  return (last?.sets ?? []).map((s) => ({ weight: s.weight, reps: s.reps, seconds: s.seconds, meters: s.meters, warmup: s.warmup }));
 }
 
 export async function loadSession(id: number): Promise<SessionDTO | null> {
@@ -55,10 +62,12 @@ export async function loadSession(id: number): Promise<SessionDTO | null> {
       exerciseId: e.exerciseId,
       name: e.exercise.name,
       category: e.exercise.category,
+      kind: asKind(e.exercise.kind),
+      info: !!(e.exercise.images || e.exercise.instructions),
       rest: e.exercise.rest,
       notes: e.notes,
       target: e.target,
-      sets: e.sets.map((x) => ({ weight: x.weight, reps: x.reps, rpe: x.rpe, warmup: x.warmup, done: x.done })),
+      sets: e.sets.map((x) => ({ weight: x.weight, reps: x.reps, seconds: x.seconds, meters: x.meters, rpe: x.rpe, warmup: x.warmup, done: x.done })),
       prev: await previousSets(e.exerciseId, s.id),
     });
   }
@@ -104,6 +113,8 @@ export async function saveSession(id: number, body: { name?: string; notes?: str
               order: j,
               weight: num(x.weight),
               reps: num(x.reps) === null ? null : Math.round(num(x.reps)!),
+              seconds: num(x.seconds) === null ? null : Math.round(num(x.seconds)!),
+              meters: num(x.meters),
               rpe: num(x.rpe),
               warmup: !!x.warmup,
               done: !!x.done,
@@ -130,15 +141,18 @@ export async function createSession(opts: { plannedId?: number | null; name?: st
   for (let i = 0; i < plan.length; i++) {
     const p = plan[i];
     const ex = await exerciseByName(p.nazwa);
-    const reps = firstNum(p.powtorzenia);
+    const kind = asKind(ex.kind);
+    const reps = kind === "time" || kind === "distance" ? null : firstNum(p.powtorzenia ?? "");
+    const seconds = kind === "time" ? (p.czas_s ?? firstNum(p.powtorzenia ?? "")) : null;
+    const meters = kind === "distance" ? (p.dystans_m ?? null) : null;
     const serie = Math.min(Math.max(1, Number(p.serie) || 1), 10);
     await prisma.sessionExercise.create({
       data: {
         sessionId: s.id,
         exerciseId: ex.id,
         order: i,
-        target: `${serie}×${p.powtorzenia}${p.ciezar_kg ? ` @ ${p.ciezar_kg} kg` : ""}${p.rpe ? ` RPE ${p.rpe}` : ""}${p.uwagi ? ` — ${p.uwagi}` : ""}`.slice(0, 200),
-        sets: { create: Array.from({ length: serie }, (_, j) => ({ order: j, weight: p.ciezar_kg ?? null, reps, rpe: null })) },
+        target: fmtPlanTarget({ ...p, serie }).slice(0, 200),
+        sets: { create: Array.from({ length: serie }, (_, j) => ({ order: j, weight: p.ciezar_kg ?? null, reps, seconds, meters, rpe: null })) },
       },
     });
   }

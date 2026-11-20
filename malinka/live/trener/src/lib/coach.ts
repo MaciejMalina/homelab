@@ -6,7 +6,8 @@ import { addDays, fmtDate, todayPL, weekdayLong } from "./time";
 import { PLAN_SPORTS, PLAN_TO_INTERVALS, type PlanSport, sportGroup, sportName, ICON, PLAN_ICON } from "./sport";
 import { createEvents, deleteEvent, intervalsConfigured } from "./intervals";
 import { notify, COLOR } from "./discord";
-import { e1rm, fmtKg } from "./strength";
+import { asKind } from "./kinds";
+import { bestOf, recordsBroken } from "./bests";
 
 const SYSTEM = `Jesteś osobistym trenerem Macieja — doświadczonym trenerem biegania, przygotowania motorycznego i siłowania na rękę (armwrestlingu). Odpowiadasz zawsze po polsku, konkretnie i rzeczowo, bez lania wody i bez przesadnych pochwał. Jeśli coś idzie źle (za szybkie łatwe biegi, brak progresji, za mało snu, ryzyko przetrenowania, przeciążenie łokcia/nadgarstka), mówisz to wprost.
 
@@ -89,7 +90,6 @@ export async function strengthRecords(sessionId: number) {
     include: { exercises: { include: { exercise: true, sets: true } } },
   });
   const rekordy: string[] = [];
-  const bezCiezaru = (w: number | null) => w == null || w <= 0;
   for (const e of s.exercises) {
     const robocze = e.sets.filter((x) => x.done && !x.warmup);
     if (!robocze.length) continue;
@@ -97,14 +97,8 @@ export async function strengthRecords(sessionId: number) {
       where: { done: true, warmup: false, item: { exerciseId: e.exerciseId, sessionId: { not: sessionId } } },
     });
     if (!wczesniej.length) continue;
-    // ćwiczenia z ciężarem: szacowane 1RM
-    const teraz = Math.max(0, ...robocze.map((x) => e1rm(x.weight, x.reps) ?? 0));
-    const best = Math.max(0, ...wczesniej.map((x) => e1rm(x.weight, x.reps) ?? 0));
-    if (teraz > best && best > 0) rekordy.push(`${e.exercise.name}: szac. 1RM ${fmtKg(teraz)} (było ${fmtKg(best)})`);
-    // z masą ciała (np. podciąganie): najwięcej powtórzeń w serii
-    const powt = Math.max(0, ...robocze.filter((x) => bezCiezaru(x.weight)).map((x) => x.reps ?? 0));
-    const powtBest = Math.max(0, ...wczesniej.filter((x) => bezCiezaru(x.weight)).map((x) => x.reps ?? 0));
-    if (powt > powtBest && powtBest > 0) rekordy.push(`${e.exercise.name}: ${powt} powt. w serii (było ${powtBest})`);
+    const kind = asKind(e.exercise.kind);
+    rekordy.push(...recordsBroken(e.exercise.name, bestOf(kind, robocze), bestOf(kind, wczesniej)));
   }
   return rekordy;
 }
@@ -166,12 +160,14 @@ const PLAN_TOOL: Tool = {
               description: "WYMAGANE dla Siłownia",
               items: {
                 type: "object",
-                required: ["nazwa", "serie", "powtorzenia"],
+                required: ["nazwa", "serie"],
                 properties: {
-                  nazwa: { type: "string" },
+                  nazwa: { type: "string", description: "Nazwa z katalogu ćwiczeń (dokładnie jak w danych)" },
                   serie: { type: "integer" },
-                  powtorzenia: { type: "string", description: "np. '5' albo '8-10'" },
-                  ciezar_kg: { type: ["number", "null"] },
+                  powtorzenia: { type: "string", description: "Dla ćwiczeń na powtórzenia: np. '5' albo '8-10'" },
+                  czas_s: { type: ["integer", "null"], description: "Dla ćwiczeń na czas (plank, zwis, deska bokiem): czas jednej serii w sekundach" },
+                  dystans_m: { type: ["number", "null"], description: "Dla ćwiczeń na dystans (spacer farmera, sanie): dystans jednej serii w metrach" },
+                  ciezar_kg: { type: ["number", "null"], description: "Ciężar; przy ćwiczeniach z masą ciała — tylko obciążenie DODATKOWE (lub null)" },
                   rpe: { type: ["number", "null"] },
                   przerwa_s: { type: ["integer", "null"] },
                   uwagi: { type: "string" },
@@ -194,14 +190,16 @@ interface PlanInput {
     opis: string;
     czas_min: number;
     kroki_intervals?: string;
-    cwiczenia?: { nazwa: string; serie: number; powtorzenia: string; ciezar_kg?: number | null; rpe?: number | null; przerwa_s?: number | null; uwagi?: string }[];
+    cwiczenia?: StrengthItem[];
   }[];
 }
 
 export interface StrengthItem {
   nazwa: string;
   serie: number;
-  powtorzenia: string;
+  powtorzenia?: string;
+  czas_s?: number | null;
+  dystans_m?: number | null;
   ciezar_kg?: number | null;
   rpe?: number | null;
   przerwa_s?: number | null;
@@ -237,7 +235,7 @@ ${keep.length ? `Wcześniej w tym tygodniu było zaplanowane: ${keep.map((k) => 
 ${uwagi ? `Uwagi Macieja do tego planu: ${uwagi}` : ""}
 Zasady zapisu:
 - Każdy dzień siłowni zapisz jako DWIE sesje tego samego dnia, w tej kolejności: najpierw "Bieg" z tytułem zaczynającym się od "Bieżnia" (ok. 30 min, z kroki_intervals), potem "Siłownia" (FBW wg zasad: podciąganie → armwrestling → nogi pod bieganie → pchanie/core).
-- Dla siłowni podaj konkretne ciężary w kg wyliczone z dotychczasowych wyników (jeśli brak danych — RPE i ciężar null). Ćwiczenia z masą ciała (podciąganie, pompki, dipy): ciezar_kg = null, a przy podciąganiu z obciążeniem — tylko ciężar DODATKOWY w kg. Używaj nazw ćwiczeń z katalogu w danych (np. "Podciąganie nachwytem", "Pronacja z młotkiem / hantlem z jednej strony"), żeby historia się łączyła.
+- Dla siłowni podaj konkretne ciężary w kg wyliczone z dotychczasowych wyników (jeśli brak danych — RPE i ciężar null). Ćwiczenia z masą ciała (podciąganie, pompki, dipy): ciezar_kg = null, a przy podciąganiu z obciążeniem — tylko ciężar DODATKOWY w kg. Używaj DOKŁADNIE nazw z „Katalogu ćwiczeń” w danych, żeby historia się łączyła. Ćwiczenia oznaczone [czas] zapisuj z czas_s (bez powtórzeń), [dystans] z dystans_m i ciezar_kg, [masa ciała] z powtórzeniami i ewentualnym obciążeniem dodatkowym.
 - Dla biegów podaj tempa absolutne dopasowane do aktualnej formy z danych.
 - Dni bez treningu pomiń albo wpisz jako "Odpoczynek".`,
       },

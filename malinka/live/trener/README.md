@@ -11,6 +11,11 @@ nogi pod bieganie, FBW. Każda siłownia w planie = ok. 30 min bieżni, potem tr
 - Stos: Next.js 15 (standalone) + Prisma 6 (klient bez silnika Rust, sterownik better-sqlite3) + SQLite w `./data`
 - Harmonogram w procesie appki: synchronizacja co 20 min, plan na kolejny tydzień w niedzielę o 19:00 (zmiana w Ustawieniach)
 - Powiadomienia: webhook Discorda JARVIS-a; poranny brief n8n pobiera `GET /api/brief`
+- Ćwiczenia: ~55 podstawowych (pod podciąganie, armwrestling, nogi biegacza) + biblioteka
+  [free-exercise-db](https://github.com/yuhonas/free-exercise-db) (876 ćw., domena publiczna/Unlicense) z nazwami
+  przetłumaczonymi na polski (`src/data/exercise-lib.json`). Zdjęcia ładowane z GitHuba dopiero przy oglądaniu (ⓘ).
+  Typy serii: kg×powt., masa ciała (+kg), czas (+kg), dystans (kg + m). Po zmianie katalogu podbij `CATALOG_VERSION`
+  w `src/lib/exercises.ts` — appka zsynchronizuje bazę przy starcie (historii nie rusza).
 
 ## Jednorazowa konfiguracja kont
 

@@ -1,7 +1,7 @@
 import Link from "next/link";
 import { prisma } from "@/lib/db";
 import { fmtDate, todayPL } from "@/lib/time";
-import { e1rm, fmtKg } from "@/lib/strength";
+import { exerciseBests } from "@/lib/context";
 import StartStrength from "@/components/StartStrength";
 
 export const dynamic = "force-dynamic";
@@ -17,16 +17,8 @@ export default async function Silownia() {
     include: { exercises: { include: { sets: true, exercise: true } } },
   });
 
-  // rekordy (szac. 1RM) dla wszystkich ćwiczeń
-  const sets = await prisma.strengthSet.findMany({ where: { done: true, warmup: false }, include: { item: { include: { exercise: true, session: true } } } });
-  const best = new Map<string, { kg: number; set: string; date: string }>();
-  for (const s of sets) {
-    const v = e1rm(s.weight, s.reps);
-    if (!v) continue;
-    const k = s.item.exercise.name;
-    if (!best.has(k) || best.get(k)!.kg < v) best.set(k, { kg: v, set: `${s.weight}×${s.reps}`, date: s.item.session.date });
-  }
-  const top = [...best.entries()].sort((a, b) => b[1].kg - a[1].kg).slice(0, 8);
+  // najlepsze wyniki (cała historia), ostatnio trenowane na górze
+  const top = [...(await exerciseBests(3650)).entries()].sort((a, b) => b[1].last.localeCompare(a[1].last)).slice(0, 12);
 
   return (
     <>
@@ -44,12 +36,12 @@ export default async function Silownia() {
 
       {top.length > 0 && (
         <>
-          <h2>Rekordy (szacowane 1RM)</h2>
+          <h2>Najlepsze wyniki</h2>
           <div className="card">
             <table className="list">
               <tbody>
                 {top.map(([n, v]) => (
-                  <tr key={n}><td>{n}</td><td style={{ textAlign: "right" }}><b>{fmtKg(v.kg)}</b> <span className="mut small">{v.set} · {fmtDate(v.date)}</span></td></tr>
+                  <tr key={n}><td>{n}</td><td style={{ textAlign: "right" }}><b>{v.text}</b> <span className="mut small">· {fmtDate(v.last)}</span></td></tr>
                 ))}
               </tbody>
             </table>

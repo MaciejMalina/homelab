@@ -96,13 +96,27 @@ model Wellness {
 }
 
 model Exercise {
-  id        Int     @id @default(autoincrement())
-  name      String  @unique
-  category  String
-  compound  Boolean @default(false)
+  id           Int     @id @default(autoincrement())
+  name         String  @unique
+  category     String
+  compound     Boolean @default(false)
   /// domyślna przerwa w sekundach
-  rest      Int     @default(90)
-  createdAt DateTime @default(now())
+  rest         Int     @default(90)
+  /// typ serii: weight_reps (kg×powt.) | bodyweight (powt. + opcjonalne obciążenie) | time (czas + opcjonalne kg) | distance (kg + metry)
+  kind         String  @default("weight_reps")
+  /// true = podstawowy katalog appki (pokazywany domyślnie), false = z biblioteki free-exercise-db
+  core         Boolean @default(false)
+  nameEn       String?
+  /// id w free-exercise-db (zdjęcia, instrukcje)
+  libId        String? @unique
+  equipment    String  @default("")
+  muscles      String  @default("")
+  level        String  @default("")
+  /// JSON: ścieżki zdjęć w repo free-exercise-db
+  images       String?
+  /// JSON: kroki wykonania (po angielsku)
+  instructions String?
+  createdAt    DateTime @default(now())
   items     SessionExercise[]
 }
 
@@ -138,6 +152,10 @@ model StrengthSet {
   weight            Float?
   reps              Int?
   rpe               Float?
+  /// dla ćwiczeń na czas
+  seconds           Int?
+  /// dla ćwiczeń na dystans
+  meters            Float?
   warmup            Boolean         @default(false)
   done              Boolean         @default(false)
   item              SessionExercise @relation(fields: [sessionExerciseId], references: [id], onDelete: Cascade)

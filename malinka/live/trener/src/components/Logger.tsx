@@ -6,18 +6,22 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useRouter } from "next/navigation";
 import Link from "next/link";
 import type { ItemDTO, SessionDTO, SetDTO } from "@/lib/session";
+import { fmtSet, hasResult, KIND_LABEL, KINDS, type Kind } from "@/lib/kinds";
+import { bestOf, describeBest } from "@/lib/bests";
 import Md from "./Md";
+import NumInput from "./NumInput";
+import ExerciseInfo from "./ExerciseInfo";
 
-interface Ex { id: number; name: string; category: string; rest: number }
+interface Ex { id: number; name: string; nameEn: string | null; category: string; kind: Kind; rest: number; core: boolean; muscles: string; info: boolean; used: number }
 
-const e1rm = (w: number | null, r: number | null) => (w && r && r <= 12 ? (r === 1 ? w : w * (1 + r / 30)) : 0);
-const fmtNum = (n: number | null) => (n == null ? "" : String(n).replace(".", ","));
-const parseNum = (t: string) => {
-  const v = t.replace(",", ".").trim();
-  if (v === "") return null;
-  const n = Number(v);
-  return isFinite(n) ? n : null;
+/** Kolumny zależnie od typu serii: [etykieta ciężaru, etykieta wyniku, tryb pola wyniku, pole wyniku] */
+const KOLUMNY: Record<Kind, { kg: string; res: string; mode: "int" | "time" | "decimal"; field: "reps" | "seconds" | "meters" }> = {
+  weight_reps: { kg: "kg", res: "Powt.", mode: "int", field: "reps" },
+  bodyweight: { kg: "+kg", res: "Powt.", mode: "int", field: "reps" },
+  time: { kg: "+kg", res: "Czas", mode: "time", field: "seconds" },
+  distance: { kg: "kg", res: "Metry", mode: "decimal", field: "meters" },
 };
+const pustaSeria = (): SetDTO => ({ weight: null, reps: null, seconds: null, meters: null, rpe: null, warmup: false, done: false });
 const clock = (s: number) => {
   const h = Math.floor(s / 3600);
   const m = Math.floor((s % 3600) / 60);
@@ -52,6 +56,7 @@ export default function Logger({ initial }: { initial: SessionDTO }) {
   const [now, setNow] = useState(Date.now());
   const [restEnd, setRestEnd] = useState<number | null>(null);
   const [picker, setPicker] = useState(false);
+  const [info, setInfo] = useState<number | null>(null);
   const [finishing, setFinishing] = useState(false);
   const [records, setRecords] = useState<string[] | null>(null);
   const finished = !!initial.finishedAt;
@@ -131,12 +136,17 @@ export default function Logger({ initial }: { initial: SessionDTO }) {
     const it = items[i];
     const s = it.sets[k];
     if (!s.done) {
-      // pusta seria -> weź wartości z poprzedniego razu (albo z poprzedniej serii)
+      // puste pola -> wartości z poprzedniego razu (albo z poprzedniej serii)
       const ref = it.prev[k] ?? it.sets[k - 1] ?? null;
-      const weight = s.weight ?? ref?.weight ?? null;
-      const reps = s.reps ?? ref?.reps ?? null;
-      if (reps == null) return; // bez powtórzeń nie zaliczamy
-      updSet(i, k, { weight, reps, done: true });
+      const gotowa = {
+        ...s,
+        weight: s.weight ?? ref?.weight ?? null,
+        reps: s.reps ?? ref?.reps ?? null,
+        seconds: s.seconds ?? ref?.seconds ?? null,
+        meters: s.meters ?? ref?.meters ?? null,
+      };
+      if (!hasResult(it.kind, gotowa)) return; // bez wyniku (powt. / czas / dystans) nie zaliczamy
+      updSet(i, k, { ...gotowa, done: true });
       if (!finished) setRestEnd(Date.now() + (s.warmup ? Math.min(60, it.rest) : it.rest) * 1000);
     } else updSet(i, k, { done: false });
   };
@@ -144,7 +154,10 @@ export default function Logger({ initial }: { initial: SessionDTO }) {
   const addSet = (i: number) =>
     upd(i, (it) => {
       const last = it.sets[it.sets.length - 1];
-      return { ...it, sets: [...it.sets, { weight: last?.weight ?? null, reps: last?.reps ?? null, rpe: null, warmup: false, done: false }] };
+      return {
+        ...it,
+        sets: [...it.sets, { ...pustaSeria(), weight: last?.weight ?? null, reps: last?.reps ?? null, seconds: last?.seconds ?? null, meters: last?.meters ?? null }],
+      };
     });
   const removeSet = (i: number) => upd(i, (it) => ({ ...it, sets: it.sets.slice(0, -1) }));
   const move = (i: number, d: -1 | 1) =>
@@ -167,11 +180,13 @@ export default function Logger({ initial }: { initial: SessionDTO }) {
         exerciseId: e.id,
         name: e.name,
         category: e.category,
+        kind: e.kind,
+        info: e.info,
         rest: e.rest,
         notes: "",
         target: "",
         prev: p,
-        sets: Array.from({ length: Math.min(n, 8) }, () => ({ weight: null, reps: null, rpe: null, warmup: false, done: false })),
+        sets: Array.from({ length: Math.min(n, 8) }, pustaSeria),
       },
     ]);
   }
@@ -220,16 +235,26 @@ export default function Logger({ initial }: { initial: SessionDTO }) {
       )}
 
       {items.map((it, i) => {
-        const best = Math.max(0, ...it.sets.filter((s) => s.done && !s.warmup).map((s) => e1rm(s.weight, s.reps)));
-        const maxReps = Math.max(0, ...it.sets.filter((s) => s.done && !s.warmup && !s.weight).map((s) => s.reps ?? 0));
+        const dzis = describeBest(bestOf(it.kind, it.sets.filter((s) => s.done)));
+        const kol = KOLUMNY[it.kind];
         return (
           <div key={`${it.exerciseId}-${i}`} className="card ex">
             <div className="ex-head">
               <div className="grow">
-                <h3>{it.name}</h3>
+                <h3>
+                  {it.name}{" "}
+                  {it.info && (
+                    <button onClick={() => setInfo(it.exerciseId)} aria-label="Jak wykonać" style={{ padding: "2px 8px", fontSize: 13 }}>ⓘ</button>
+                  )}
+                </h3>
                 {it.target && <div className="small"><span className="tag acc">cel: {it.target}</span></div>}
               </div>
               <ItemMenu
+                kind={it.kind}
+                onKind={async (k) => {
+                  await fetch(`/api/exercises/${it.exerciseId}`, { method: "PATCH", headers: { "content-type": "application/json" }, body: JSON.stringify({ kind: k }) });
+                  setItems((xs) => xs.map((x) => (x.exerciseId === it.exerciseId ? { ...x, kind: k } : x)));
+                }}
                 rest={it.rest}
                 onRest={(r) => upd(i, (x) => ({ ...x, rest: r }))}
                 onUp={() => move(i, -1)}
@@ -239,7 +264,7 @@ export default function Logger({ initial }: { initial: SessionDTO }) {
             </div>
             <table className="sets">
               <thead>
-                <tr><th>Seria</th><th>Poprzednio</th><th>kg</th><th>Powt.</th><th>✓</th></tr>
+                <tr><th>Seria</th><th>Poprzednio</th><th>{kol.kg}</th><th>{kol.res}</th><th>✓</th></tr>
               </thead>
               <tbody>
                 {it.sets.map((s, k) => {
@@ -252,12 +277,17 @@ export default function Logger({ initial }: { initial: SessionDTO }) {
                           {s.warmup ? "R" : nr}
                         </button>
                       </td>
-                      <td className="prev">{p ? (p.weight ? `${fmtNum(p.weight)}×${p.reps ?? ""}` : `${p.reps ?? "?"} powt.`) : "—"}</td>
-                      <td style={{ width: "26%" }}>
-                        <input inputMode="decimal" placeholder={p?.weight ? fmtNum(p.weight) : "—"} value={fmtNum(s.weight)} onChange={(e) => updSet(i, k, { weight: parseNum(e.target.value) })} onFocus={(e) => e.target.select()} />
+                      <td className="prev">{p ? fmtSet(it.kind, p) : "—"}</td>
+                      <td style={{ width: "24%" }}>
+                        <NumInput mode="decimal" value={s.weight} placeholder={p?.weight ? String(p.weight).replace(".", ",") : "—"} onChange={(v) => updSet(i, k, { weight: v })} />
                       </td>
-                      <td style={{ width: "20%" }}>
-                        <input inputMode="numeric" placeholder={p?.reps != null ? String(p.reps) : ""} value={s.reps ?? ""} onChange={(e) => updSet(i, k, { reps: parseNum(e.target.value) })} onFocus={(e) => e.target.select()} />
+                      <td style={{ width: "22%" }}>
+                        <NumInput
+                          mode={kol.mode}
+                          value={s[kol.field]}
+                          placeholder={p?.[kol.field] != null ? (kol.mode === "time" ? (p.seconds! >= 60 ? `${Math.floor(p.seconds! / 60)}:${String(p.seconds! % 60).padStart(2, "0")}` : String(p.seconds)) : String(p[kol.field]).replace(".", ",")) : kol.mode === "time" ? "s / m:ss" : ""}
+                          onChange={(v) => updSet(i, k, { [kol.field]: v } as Partial<SetDTO>)}
+                        />
                       </td>
                       <td>
                         <button className={`tick ${s.done ? "on" : ""}`} onClick={() => toggleDone(i, k)} aria-label="Zalicz serię">✓</button>
@@ -271,8 +301,7 @@ export default function Logger({ initial }: { initial: SessionDTO }) {
               <button onClick={() => addSet(i)}>＋ Seria</button>
               <button onClick={() => removeSet(i)} disabled={!it.sets.length}>− Seria</button>
             </div>
-            {best > 0 && <div className="small mut" style={{ marginTop: 6 }}>Szac. 1RM dziś: {Math.round(best * 10) / 10} kg</div>}
-            {best === 0 && maxReps > 0 && <div className="small mut" style={{ marginTop: 6 }}>Najlepsza seria dziś: {maxReps} powt.</div>}
+            {dzis && <div className="small mut" style={{ marginTop: 6 }}>Dziś najlepiej: {dzis}</div>}
           </div>
         );
       })}
@@ -302,16 +331,36 @@ export default function Logger({ initial }: { initial: SessionDTO }) {
         </div>
       )}
 
-      {picker && <ExercisePicker onPick={addExercise} onClose={() => setPicker(false)} />}
+      {picker && <ExercisePicker onPick={addExercise} onInfo={setInfo} onClose={() => setPicker(false)} />}
+      {info !== null && <ExerciseInfo id={info} onClose={() => setInfo(null)} />}
     </>
   );
 }
 
-function ItemMenu({ rest, onRest, onUp, onDown, onRemove }: { rest: number; onRest: (r: number) => void; onUp: () => void; onDown: () => void; onRemove: () => void }) {
+function ItemMenu({
+  kind,
+  onKind,
+  rest,
+  onRest,
+  onUp,
+  onDown,
+  onRemove,
+}: {
+  kind: Kind;
+  onKind: (k: Kind) => void;
+  rest: number;
+  onRest: (r: number) => void;
+  onUp: () => void;
+  onDown: () => void;
+  onRemove: () => void;
+}) {
   const [open, setOpen] = useState(false);
   if (!open) return <button onClick={() => setOpen(true)} aria-label="Opcje" style={{ padding: "6px 10px" }}>⋯</button>;
   return (
     <div className="row" style={{ justifyContent: "flex-end" }}>
+      <select value={kind} onChange={(e) => onKind(e.target.value as Kind)} style={{ width: "auto", padding: "8px" }} aria-label="Typ serii">
+        {KINDS.map((k) => <option key={k} value={k}>{KIND_LABEL[k]}</option>)}
+      </select>
       <button onClick={() => onRest(Math.max(15, rest - 15))}>−</button>
       <span className="small">⏱ {mmss(rest)}</span>
       <button onClick={() => onRest(Math.min(600, rest + 15))}>+</button>
@@ -323,42 +372,86 @@ function ItemMenu({ rest, onRest, onUp, onDown, onRemove }: { rest: number; onRe
   );
 }
 
-function ExercisePicker({ onPick, onClose }: { onPick: (e: Ex) => void; onClose: () => void }) {
+function ExercisePicker({ onPick, onInfo, onClose }: { onPick: (e: Ex) => void; onInfo: (id: number) => void; onClose: () => void }) {
   const [all, setAll] = useState<Ex[]>([]);
   const [q, setQ] = useState("");
+  const [kat, setKat] = useState("");
+  const [nowyTyp, setNowyTyp] = useState<Kind | "">("");
   useEffect(() => {
-    fetch("/api/exercises").then((r) => r.json()).then(setAll).catch(() => {});
+    fetch("/api/exercises").then((r) => r.json()).then((x) => Array.isArray(x) && setAll(x)).catch(() => {});
   }, []);
-  const list = useMemo(() => {
+  const kategorie = useMemo(() => [...new Set(all.map((e) => e.category))].sort((a, b) => a.localeCompare(b, "pl")), [all]);
+  const { lista, ile } = useMemo(() => {
     const t = q.trim().toLowerCase();
-    return t ? all.filter((e) => e.name.toLowerCase().includes(t) || e.category.toLowerCase().includes(t)) : all;
-  }, [all, q]);
+    let x = all;
+    if (kat) x = x.filter((e) => e.category === kat);
+    if (t) {
+      const slowa = t.split(/\s+/);
+      x = x.filter((e) => {
+        const h = `${e.name} ${e.nameEn ?? ""} ${e.category} ${e.muscles}`.toLowerCase();
+        return slowa.every((w) => h.includes(w));
+      });
+    } else if (!kat) {
+      x = x.filter((e) => e.core || e.used > 0); // bez wyszukiwania: Twoje i podstawowe
+    }
+    // najpierw używane, potem podstawowe, potem reszta
+    x = [...x].sort((a, b) => b.used - a.used || Number(b.core) - Number(a.core) || a.name.localeCompare(b.name, "pl"));
+    return { lista: x.slice(0, 80), ile: x.length };
+  }, [all, q, kat]);
   const exact = all.some((e) => e.name.toLowerCase() === q.trim().toLowerCase());
   return (
     <>
       <div className="sheet-bg" onClick={onClose} />
       <div className="sheet">
-        <div className="row" style={{ marginBottom: 10, flexWrap: "nowrap" }}>
-          <input autoFocus placeholder="Szukaj ćwiczenia…" value={q} onChange={(e) => setQ(e.target.value)} />
+        <div className="row" style={{ marginBottom: 8, flexWrap: "nowrap" }}>
+          <input autoFocus placeholder={`Szukaj w ${all.length || "…"} ćwiczeniach (PL / EN)…`} value={q} onChange={(e) => setQ(e.target.value)} />
           <button onClick={onClose}>✕</button>
         </div>
+        <div className="row" style={{ marginBottom: 8, flexWrap: "nowrap", overflowX: "auto", paddingBottom: 4 }}>
+          <button className={`tag ${kat === "" ? "acc" : ""}`} style={{ border: "none", whiteSpace: "nowrap" }} onClick={() => setKat("")}>
+            {q ? "Wszystkie" : "Moje i podstawowe"}
+          </button>
+          {kategorie.map((k) => (
+            <button key={k} className={`tag ${kat === k ? "acc" : ""}`} style={{ border: "none", whiteSpace: "nowrap" }} onClick={() => setKat(kat === k ? "" : k)}>
+              {k}
+            </button>
+          ))}
+        </div>
         {q.trim() && !exact && (
-          <button
-            className="pick pri"
-            onClick={async () => {
-              const e = await fetch("/api/exercises", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ name: q.trim() }) }).then((r) => r.json());
-              if (e?.id) onPick(e);
-            }}
-          >
-            ＋ Nowe ćwiczenie: „{q.trim()}”
-          </button>
+          <div className="row" style={{ marginBottom: 8, flexWrap: "nowrap" }}>
+            <select value={nowyTyp} onChange={(e) => setNowyTyp(e.target.value as Kind | "")} style={{ width: "auto" }} aria-label="Typ nowego ćwiczenia">
+              <option value="">typ: auto</option>
+              {KINDS.map((k) => <option key={k} value={k}>{KIND_LABEL[k]}</option>)}
+            </select>
+            <button
+              className="pri grow"
+              onClick={async () => {
+                const e = await fetch("/api/exercises", {
+                  method: "POST",
+                  headers: { "content-type": "application/json" },
+                  body: JSON.stringify({ name: q.trim(), kind: nowyTyp || undefined }),
+                }).then((r) => r.json());
+                if (e?.id) onPick(e);
+              }}
+            >
+              ＋ Nowe: „{q.trim()}”
+            </button>
+          </div>
         )}
-        {list.map((e) => (
-          <button key={e.id} className="pick" onClick={() => onPick(e)}>
-            <span>{e.name}</span>
-            <span className="mut small">{e.category}</span>
-          </button>
+        {lista.map((e) => (
+          <div key={e.id} className="row" style={{ flexWrap: "nowrap", gap: 6, marginBottom: 6 }}>
+            <button className="pick grow" style={{ marginBottom: 0 }} onClick={() => onPick(e)}>
+              <span>
+                {e.name}
+                {e.kind !== "weight_reps" && <span className="mut small"> · {KIND_LABEL[e.kind]}</span>}
+              </span>
+              <span className="mut small">{e.used ? `${e.used}×` : e.category}</span>
+            </button>
+            {e.info && <button onClick={() => onInfo(e.id)} aria-label="Jak wykonać" style={{ padding: "8px 10px" }}>ⓘ</button>}
+          </div>
         ))}
+        {ile > lista.length && <div className="small mut">…i {ile - lista.length} więcej — zawęź wyszukiwanie.</div>}
+        {!lista.length && all.length > 0 && <div className="small mut">Nic nie znaleziono — dodaj jako nowe ćwiczenie.</div>}
       </div>
     </>
   );

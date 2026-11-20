@@ -6,6 +6,7 @@ import PlanControls from "@/components/PlanControls";
 import StartStrength from "@/components/StartStrength";
 import ActionButton from "@/components/ActionButton";
 import { doneIds } from "@/lib/move";
+import { fmtPlanTarget } from "@/lib/kinds";
 
 export const dynamic = "force-dynamic";
 
@@ -65,7 +66,7 @@ export default async function PlanPage() {
                                 <tr key={i}>
                                   <td>{x.nazwa}{x.uwagi ? <div className="small mut">{x.uwagi}</div> : null}</td>
                                   <td style={{ whiteSpace: "nowrap", textAlign: "right" }}>
-                                    {x.serie}×{x.powtorzenia}{x.ciezar_kg ? ` @ ${String(x.ciezar_kg).replace(".", ",")} kg` : ""}{x.rpe ? ` · RPE ${x.rpe}` : ""}
+                                    {fmtPlanTarget({ ...x, uwagi: null })}
                                   </td>
                                 </tr>
                               ))}

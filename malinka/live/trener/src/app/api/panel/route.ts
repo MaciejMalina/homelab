@@ -3,6 +3,7 @@ import { prisma } from "@/lib/db";
 import { goalStatus } from "@/lib/context";
 import { addDays, todayPL, weekStart, weekdayShort } from "@/lib/time";
 import { PLAN_ICON, sportGroup, sportName } from "@/lib/sport";
+import { fmtSec } from "@/lib/kinds";
 
 export const dynamic = "force-dynamic";
 
@@ -16,7 +17,7 @@ function sila(json: string | null): Cwiczenie[] | null {
     return arr.map((x: Record<string, unknown>) => ({
       nazwa: String(x.nazwa ?? ""),
       serie: typeof x.serie === "number" ? x.serie : null,
-      powt: x.powtorzenia == null ? null : String(x.powtorzenia),
+      powt: x.czas_s ? fmtSec(Number(x.czas_s)) : x.dystans_m ? `${Math.round(Number(x.dystans_m))} m` : x.powtorzenia == null ? null : String(x.powtorzenia),
       kg: typeof x.ciezar_kg === "number" ? x.ciezar_kg : null,
       uwagi: x.uwagi == null ? null : String(x.uwagi),
     }));

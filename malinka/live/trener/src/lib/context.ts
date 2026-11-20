@@ -2,7 +2,10 @@
 import { prisma, getSettings } from "./db";
 import { addDays, fmtDuration, fmtPace, todayPL, weekdayLong, weekStart } from "./time";
 import { sportGroup, sportName } from "./sport";
-import { bestHalfPrediction, e1rm } from "./strength";
+import { bestHalfPrediction } from "./strength";
+import { asKind, fmtSet, KIND_LABEL, type Kind } from "./kinds";
+import { bestOf, describeBest, type Best } from "./bests";
+import { CORE_NAMES } from "./exercises";
 
 /** Główny miernik siły: podciąganie nachwytem bez obciążenia (maks. powtórzeń w serii) */
 const PULLUP = /^podciąganie nachwytem/i;
@@ -37,22 +40,27 @@ export async function goalStatus() {
   };
 }
 
-/** Najlepsze wyniki w każdym ćwiczeniu (90 dni): szac. 1RM dla serii z ciężarem, maks. powtórzeń bez ciężaru */
+/** Najlepsze wyniki w każdym ćwiczeniu (domyślnie 90 dni, serie robocze) — zależnie od typu serii */
 export async function exerciseBests(days = 90) {
   const sets = await prisma.strengthSet.findMany({
     where: { done: true, warmup: false, item: { session: { date: { gte: addDays(todayPL(), -days) } } } },
     include: { item: { include: { exercise: true, session: true } } },
   });
-  const best = new Map<string, { kg: number; set: string; reps: number; date: string }>();
+  const grupy = new Map<string, { kind: Kind; sets: typeof sets; last: string }>();
   for (const st of sets) {
     const name = st.item.exercise.name;
-    const cur = best.get(name) ?? { kg: 0, set: "", reps: 0, date: "" };
-    const v = e1rm(st.weight, st.reps);
-    if (v && v > cur.kg) Object.assign(cur, { kg: v, set: `${st.weight}kg×${st.reps}`, date: st.item.session.date });
-    if (bezObciazenia(st.weight) && st.reps && st.reps > cur.reps) Object.assign(cur, { reps: st.reps, date: cur.date || st.item.session.date });
-    best.set(name, cur);
+    const g = grupy.get(name) ?? { kind: asKind(st.item.exercise.kind), sets: [], last: "" };
+    g.sets.push(st);
+    if (st.item.session.date > g.last) g.last = st.item.session.date;
+    grupy.set(name, g);
   }
-  return best;
+  const out = new Map<string, { kind: Kind; best: Best; text: string; last: string }>();
+  for (const [name, g] of grupy) {
+    const best = bestOf(g.kind, g.sets);
+    const text = describeBest(best);
+    if (text) out.set(name, { kind: g.kind, best, text, last: g.last });
+  }
+  return out;
 }
 
 function actLine(a: {
@@ -90,7 +98,8 @@ export async function strengthSummary(sessionId: number) {
   for (const e of s.exercises) {
     const done = e.sets.filter((x) => x.done);
     if (!done.length) continue;
-    const txt = done.map((x) => `${x.warmup ? "r:" : ""}${x.weight ? `${x.weight}kg×${x.reps ?? 0}` : `${x.reps ?? 0} powt.`}${x.rpe ? `@${x.rpe}` : ""}`).join(", ");
+    const kind = asKind(e.exercise.kind);
+    const txt = done.map((x) => `${x.warmup ? "r: " : ""}${fmtSet(kind, x)}${x.rpe ? ` @RPE ${x.rpe}` : ""}`).join(", ");
     lines.push(`  • ${e.exercise.name}: ${txt}${e.target ? ` (cel: ${e.target})` : ""}`);
   }
   if (s.notes) lines.push(`  notatka: ${s.notes}`);
@@ -165,11 +174,12 @@ export async function buildContext(opts: { days?: number } = {}) {
   const bests = await exerciseBests();
   if (bests.size) {
     out.push(`\n## Najlepsze wyniki w ćwiczeniach (90 dni, serie robocze)`);
-    for (const [n, v] of [...bests.entries()].sort()) {
-      const parts = [v.kg ? `szac. 1RM ${v.kg} kg (${v.set})` : null, v.reps ? `maks. ${v.reps} powt. bez ciężaru` : null].filter(Boolean);
-      if (parts.length) out.push(`- ${n}: ${parts.join(", ")}`);
-    }
+    for (const [n, v] of [...bests.entries()].sort()) out.push(`- ${n} [${KIND_LABEL[v.kind]}]: ${v.text}`);
   }
+
+  out.push(`\n## Katalog ćwiczeń (preferowane nazwy; typ serii w nawiasie)`);
+  out.push(CORE_NAMES.map((c) => `${c.name} [${KIND_LABEL[c.kind]}]`).join("; "));
+  out.push(`(Można użyć też innych ćwiczeń z biblioteki ~900 pozycji, np. po polsku „Rosyjskie skręty”, „Deska bokiem”, „Wspinanie po linie”.)`);
 
   out.push(`\n## Tygodnie (pon) — bieg km / rower km / basen m / siłownia sesje / obciążenie`);
   for (const [w, v] of Object.entries(tyg).sort()) {
