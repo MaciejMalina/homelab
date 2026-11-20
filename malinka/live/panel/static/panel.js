@@ -763,11 +763,32 @@ RENDER.siec = (d) => {
       ${kafel("Ping", s ? s.ping : "–", "ms", KOL.morski)}${kafel("Pobier.", s ? Math.round(s.dol) : "–", "Mb/s", KOL.ok)}${kafel("Wysył.", s ? Math.round(s.gora) : "–", "Mb/s", KOL.fiolet)}</div>
     <div class="przyg mala" style="margin:6px 0">${s ? "Ostatni test " + temuOd(s.ts) : "Jeszcze nie testowano"} · z malinki przez ZTE (25 MB ↓, 10 MB ↑)</div>
     <button class="glowny" data-akcja="speedtest-malinka" data-dlugie style="margin-top:auto">⇅ Testuj łącze</button>`;
-  return `<div class="siatka" style="grid-template-columns:1.1fr 1fr .9fr">
+  const urz = d.urzadzenia || [];
+  const nowe = urz.filter((u) => !u.znane), znane = urz.filter((u) => u.znane);
+  const lista = !urz.length ? pustoHtml("Pierwszy skan sieci za chwilę") :
+    (nowe.length ? `<div class="dzien-naglowek uwaga-t">Nowe — do zatwierdzenia (${nowe.length})</div>${nowe.map(urzWiersz).join("")}` : "") +
+    `<div class="dzien-naglowek">Znane (${znane.length})</div>${znane.map(urzWiersz).join("") || pustoHtml("—")}`;
+  return `<div class="siatka" style="grid-template-columns:1fr 1fr 1.15fr">
     <div class="karta"><h2>Router 5G (ZTE)<span class="prawo">${z && z.kreski != null ? "▂▄▆█".slice(0, Math.max(1, Math.min(4, z.kreski))) : ""}</span></h2><div class="przewijane" data-scroll="zte">${zte}</div></div>
-    <div class="karta"><h2>AdGuard</h2><div class="przewijane" data-scroll="ag">${ad}</div></div>
-    <div class="karta"><h2>Speedtest</h2>${sp}</div></div>`;
+    <div class="siatka" style="grid-template-rows:1fr auto;gap:8px;min-height:0">
+      <div class="karta"><h2>AdGuard</h2><div class="przewijane" data-scroll="ag">${ad}</div></div>
+      <div class="karta"><h2>Speedtest</h2>${sp}</div></div>
+    <div class="karta"><h2>Urządzenia<span class="prawo">${urz.filter((u) => u.online).length} w sieci</span></h2><div class="przewijane" data-scroll="urz">${lista}</div></div></div>`;
 };
+
+// urządzenia w sieci: nowe (nieznane) na górze; ✎ = nazwa (nadanie nazwy zatwierdza), „Znane ✓” = zatwierdź bez nazwy
+let edytowanyMac = null;
+function urzWiersz(u) {
+  if (edytowanyMac === u.mac) {
+    return `<div class="wiersz"><input type="text" class="tekst" id="urz-nazwa" maxlength="40" placeholder="Nazwa, np. Telefon Ani" value="${esc(u.nazwa || u.host || "")}">
+      <button class="maly" data-akcja="urz-zapisz" data-mac="${esc(u.mac)}">Zapisz</button><button class="maly" data-akcja="urz-anuluj">✕</button></div>`;
+  }
+  const nazwa = u.nazwa || u.host || (u.prywatny ? "prywatny MAC" : "bez nazwy");
+  const opis = [u.ip, u.mac, u.online ? null : u.ostatni ? `widziane ${temuOd(u.ostatni)}` : "jeszcze nie widziane"].filter(Boolean).join(" · ");
+  return `<div class="wiersz"><span class="v"><span style="color:${u.online ? KOL.ok : KOL.brak}">●</span> ${esc(nazwa)}<div class="mala przyg" style="overflow:hidden;text-overflow:ellipsis">${esc(opis)}</div></span>
+    <span class="k" style="display:flex;gap:4px">${u.znane ? "" : `<button class="maly" data-akcja="urz-znane" data-mac="${esc(u.mac)}">Znane ✓</button>`}<button class="maly" data-akcja="urz-edytuj" data-mac="${esc(u.mac)}">✎</button></span></div>`;
+}
+function urzPrzerysuj() { blokadaRenderu = 0; if (dane.siec) renderuj("siec", dane.siec, true); }
 
 // ------------------------------------------------------------------ Trening + minutnik przerw
 const minutnik = { koniec: null, dl: 90, zagrany: false };
@@ -1211,6 +1232,20 @@ document.addEventListener("click", (e) => {
       });
       break;
     case "qbit": akcjaPost(b, `/api/media/qbit/${b.dataset.hash}/${b.dataset.cmd}`); break;
+    case "urz-znane": akcjaPost(b, `/api/siec/urzadzenie/${encodeURIComponent(b.dataset.mac)}`, { znane: true }); break;
+    case "urz-edytuj": {
+      edytowanyMac = b.dataset.mac; urzPrzerysuj();
+      blokadaRenderu = Date.now() + 120000;   // nie przerysowuj, póki piszesz (odświeżanie co 15 s skasowałoby tekst)
+      const i = $("urz-nazwa"); if (i) { i.focus(); i.select(); }
+      break;
+    }
+    case "urz-anuluj": edytowanyMac = null; urzPrzerysuj(); break;
+    case "urz-zapisz": {
+      const i = $("urz-nazwa"); const nazwa = i ? i.value : "";
+      edytowanyMac = null; blokadaRenderu = 0;
+      akcjaPost(b, `/api/siec/urzadzenie/${encodeURIComponent(b.dataset.mac)}`, { nazwa });
+      break;
+    }
     case "speedtest-malinka": akcjaPost(b, "/api/siec/speedtest", {}, (r) => toast(`Łącze: ↓ ${r.dol} · ↑ ${r.gora} Mb/s · ${r.ping} ms`)); break;
     case "led": akcjaPost(b, "/api/swiatlo", body, () => {}); break;
     case "minutnik": {
@@ -1225,6 +1260,12 @@ document.addEventListener("click", (e) => {
     }
     default: break;
   }
+});
+
+document.addEventListener("keydown", (e) => {
+  if (e.key !== "Enter" || !e.target || e.target.id !== "urz-nazwa") return;
+  e.preventDefault();
+  const z = document.querySelector('[data-akcja="urz-zapisz"]'); if (z) z.click();
 });
 
 // suwaki: podgląd od razu, wysyłka co 300 ms i na puszczeniu

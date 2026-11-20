@@ -10,6 +10,7 @@ import http.cookiejar
 import json
 import os
 import re
+import socket
 import ssl
 import tempfile
 import threading
@@ -552,6 +553,93 @@ def adguard():
     domeny = [{"domena": d, "n": n} for wpis in (s.get("top_blocked_domains") or [])[:5] for d, n in wpis.items()]
     return {"zapytania": zap, "zablokowane": blok, "proc": round(100 * blok / zap, 1) if zap else 0,
             "czas_ms": round((s.get("avg_processing_time") or 0) * 1000, 1), "klienci": klienci, "blokowane": domeny}
+
+
+
+# --------------------------------------------------------------------------- urządzenia w sieci (alert o nowym)
+# ZTE (lan_station_list) zna klientów DHCP z MAC-iem, ale nie widzi urządzeń z Wi-Fi za Archerem, więc malinka
+# dodatkowo „puka” w całą podsieć (pakiet UDP wymusza zapytanie ARP) i czyta tablicę ARP jądra. Panel chodzi
+# w network_mode: host, więc /proc/net/arp to tablica malinki. AdGuard nie pomoże: nie ma DHCP ani MAC-ów.
+SIEC_PREFIKS = E("SIEC_PREFIKS", "192.168.254.")
+_MAC_RE = re.compile(r"^[0-9A-F]{2}(:[0-9A-F]{2}){5}$")
+
+
+def mac_norm(m):
+    m = str(m or "").strip().upper().replace("-", ":")
+    return m if _MAC_RE.match(m) and m not in ("00:00:00:00:00:00", "FF:FF:FF:FF:FF:FF") else None
+
+
+def mac_prywatny(mac):
+    """Bit „lokalnie administrowany”: losowy MAC, jaki dają telefony/laptopy z prywatnym adresem Wi-Fi."""
+    return bool(int(mac[1], 16) & 2)
+
+
+def zte_urzadzenia():
+    if not ZTE_PASS:
+        return []
+    with _zte_lock:
+        if _zte_get("loginfo").get("loginfo") != "ok" and time.time() - _zte["zalogowany"] > 30:
+            _zte_login()
+        d = _zte_get("lan_station_list", multi=False)
+    out = []
+    for x in d.get("lan_station_list") or []:
+        mac = mac_norm(x.get("mac_addr"))
+        if mac:
+            host = str(x.get("hostname") or "").strip()
+            out.append({"mac": mac, "ip": x.get("ip_addr"), "host": None if host in ("", "--") else host[:40]})
+    return out
+
+
+def arp_urzadzenia(czekaj=3.0):
+    s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+    try:
+        s.setblocking(False)
+        for i in range(1, 255):
+            try:
+                s.sendto(b"\0", (f"{SIEC_PREFIKS}{i}", 9))   # port discard — chodzi tylko o zapytanie ARP
+            except OSError:
+                pass
+        time.sleep(czekaj)   # gniazdo otwarte do końca czekania, żeby jądro dokończyło zapytania
+    finally:
+        s.close()
+    out = []
+    with open("/proc/net/arp", encoding="ascii") as f:
+        next(f, None)
+        for w in f:
+            c = w.split()
+            if len(c) >= 4 and c[0].startswith(SIEC_PREFIKS) and int(c[2], 16) & 2:
+                mac = mac_norm(c[3])
+                if mac:
+                    out.append({"mac": mac, "ip": c[0], "host": None})
+    return out
+
+
+def urzadzenia_sieci():
+    """({MAC: {ip, host, zrodla}}, [błędy]) z ZTE i ARP; błąd jednego źródła nie blokuje drugiego."""
+    wynik, bledy = {}, []
+    for nazwa, fn in (("zte", zte_urzadzenia), ("arp", arp_urzadzenia)):
+        try:
+            for u in fn():
+                w = wynik.setdefault(u["mac"], {"ip": u["ip"], "host": None, "zrodla": []})
+                w["host"] = w["host"] or u["host"]
+                w["zrodla"].append(nazwa)
+        except Exception as e:  # noqa: BLE001
+            bledy.append(f"{nazwa}: {type(e).__name__}: {e}"[:200])
+    return wynik, bledy
+
+
+DISCORD_WEBHOOK, DISCORD_USER_ID = E("DISCORD_WEBHOOK", "").strip(), E("DISCORD_USER_ID", "").strip()
+
+
+def discord_wyslij(tytul, opis, kolor=0xF0A020, ping=True):
+    """Embed przez webhook (ten sam co mail-notifier). False = brak DISCORD_WEBHOOK w .env."""
+    if not DISCORD_WEBHOOK:
+        return False
+    body = {"embeds": [{"title": tytul[:250], "description": opis[:4000], "color": kolor}]}
+    if ping and DISCORD_USER_ID:
+        body["content"] = f"<@{DISCORD_USER_ID}>"
+    zadanie(DISCORD_WEBHOOK, method="POST", body=body, timeout=10)
+    return True
 
 
 _speed_lock = threading.Lock()

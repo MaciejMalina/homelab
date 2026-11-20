@@ -280,3 +280,6 @@ pre.logi { margin: 0; font: 11px/1.35 ui-monospace, "Roboto Mono", monospace; co
 #widok .siatka > *, #widok .siatka > * > * { min-width: 0; }
 #widok .kafel .wa { font-size: 18px; }
 #widok .kafel .et { font-size: 9px; letter-spacing: .05em; }
+input.tekst { flex: 1; min-width: 0; min-height: 30px; padding: 3px 10px; font: inherit; font-size: 13px; color: inherit;
+  background: var(--karta2); border: 1px solid var(--ramka); border-radius: 10px; outline: none; }
+input.tekst:focus { border-color: var(--akcent); }

@@ -29,6 +29,7 @@ API (JSON):
   GET  /api/siec/speedtest        ostatni wynik (ts, ts_ms, ping, dol, gora) - dla kafelka w Homepage
 POST /api/siec/speedtest
   POST /api/paczka/<id>/odebrana       chowa paczkę z listy (zakładka Dzień, brief)
+  POST /api/siec/urzadzenie/<MAC>      {"znane"?: bool, "nazwa"?: str}  zatwierdzenie / nazwa urządzenia w sieci
   POST /api/claude                     {"zdarzenie": UserPromptSubmit|Stop|Notification, "typ", "sesja", "projekt"}
                                        <- hook Claude Code z laptopa: „skończył” (>= CLAUDE_MIN_S) / „czeka na zgodę”
   POST /api/dobranoc/anuluj             przerywa odliczanie „Dobranoc” (dotknięcie ekranu)
@@ -629,7 +630,7 @@ def brief_tekst():
     out = [f"{'Dzień dobry' if 5 <= n.hour < 18 else 'Dobry wieczór'}. Jest {n.hour}:{n.minute:02d}, "
            f"{DNI_TYG[n.weekday()]} {n.day} {MIESIACE[n.month - 1]}."]
     for fn in (_pogoda_zdanie, _brief_kalendarz, _brief_przypomnienia, _brief_poczta, _brief_paczki, _brief_media,
-               _brief_trening, _brief_uslugi):
+               _brief_trening, _brief_uslugi, _brief_siec):
         try:
             z = fn()
             if z:
@@ -1128,6 +1129,145 @@ def nowosci_przy_siadaniu():
     return {"odp": t, "mow": _do_mowy(t, BRIEF_ZNAKI), "tytul": "Nowości"}
 
 
+# --------------------------------------------------------------------------- sieć: alert o nowym nieznanym urządzeniu
+# Co SIEC_CO_S lista z ZTE + skan ARP malinki -> pamiec "urzadzenia" {MAC: {nazwa, host, ip, pierwszy, ostatni, znane}}.
+# Pierwsze uruchomienie: wszystko, co jest w sieci, = znane (decyzja 2026-11-20). Nowy MAC -> Discord + baner i komunikat
+# głosowy na panelu. W ciche godziny (SIEC_CISZA_OD..SIEC_CISZA_DO) nic nie budzi: zbiorczo na Discordzie po
+# SIEC_CISZA_DO i w briefie. Zatwierdzanie i nazwy: zakładka Sieć. Tylko alert, bez blokowania w routerze.
+SIEC_CO_S = int(E("SIEC_CO_S", "300"))
+SIEC_CISZA_OD, SIEC_CISZA_DO = int(E("SIEC_CISZA_OD", "23")), int(E("SIEC_CISZA_DO", "7"))
+SIEC_ONLINE_S = 15 * 60   # widziane w ostatnich 3 skanach = „w sieci”
+_siec_lock = threading.Lock()
+
+
+def _siec_cisza():
+    h = _teraz_pl().hour
+    if SIEC_CISZA_OD > SIEC_CISZA_DO:
+        return h >= SIEC_CISZA_OD or h < SIEC_CISZA_DO
+    return SIEC_CISZA_OD <= h < SIEC_CISZA_DO
+
+
+def _urz_nazwa(mac, u):
+    return u.get("nazwa") or u.get("host") or ("prywatny MAC (telefon/laptop)" if Z.mac_prywatny(mac) else "bez nazwy")
+
+
+def _siec_powiadom(nowe, rano=False):
+    """nowe: [(MAC, wpis)]. rano=True: zbiorczo za noc, tylko Discord (resztę powie brief)."""
+    jedno = len(nowe) == 1
+    tytul = ("W nocy: n" if rano else "N") + ("owe nieznane urządzenie w sieci" if jedno else f"owe nieznane urządzenia w sieci ({len(nowe)})")
+    linie = "\n".join(f"• **{_urz_nazwa(m, u)}** · {u.get('ip') or '?'} · `{m}` · od {time.strftime('%d.%m %H:%M', time.localtime(u['pierwszy']))}"
+                      for m, u in nowe[:15])
+    try:
+        if not Z.discord_wyslij("🛜 " + tytul, linie + "\n\nZatwierdź albo nadaj nazwę na panelu: zakładka Sieć."):
+            print("sieć: brak DISCORD_WEBHOOK w .env — bez Discorda", flush=True)
+    except Exception as e:  # noqa: BLE001
+        print(f"sieć: Discord: {e}", flush=True)
+    if rano:
+        return
+    m, u = nowe[0]
+    ustaw_alert(f"🛜 {tytul}: {_urz_nazwa(m, u)}, {u.get('ip') or m}" + ("" if jedno else f" i jeszcze {len(nowe) - 1}"), "warn", 10)
+    if not _obecnosc_pauza():
+        mow = "W sieci pojawiło się nowe, nieznane urządzenie." if jedno else f"W sieci pojawiły się nowe, nieznane urządzenia: {len(nowe)}."
+        szyna.publikuj("przypomnienie", {"mow": mow + " Szczegóły w zakładce Sieć.", "tekst": tytul})
+
+
+def _siec_krok():
+    widziane, bledy = Z.urzadzenia_sieci()
+    for b in bledy:
+        print(f"sieć: {b}", flush=True)
+    if not widziane:
+        return
+    t, cisza = teraz(), _siec_cisza()
+    with _siec_lock:
+        znane = Z.pamiec_get("urzadzenia", None)
+        pierwszy_raz = znane is None
+        znane = znane or {}
+        if pierwszy_raz:   # komputery z WoL znamy z .env, nawet jeśli teraz są wyłączone
+            for nazwa, mac in [("Serwer", SERVER_MAC)] + [(pc["nazwa"], pc["mac"]) for pc in Z.lista_pc()]:
+                if Z.mac_norm(mac):
+                    znane.setdefault(Z.mac_norm(mac), {"nazwa": nazwa, "pierwszy": t, "znane": True})
+        nowe = []
+        for mac, w in widziane.items():
+            u = znane.get(mac)
+            if u is None:
+                u = znane[mac] = {"nazwa": None, "pierwszy": t, "znane": pierwszy_raz}
+                if not pierwszy_raz:
+                    nowe.append(mac)
+            u.update(ip=w["ip"], host=w["host"] or u.get("host"), ostatni=t)
+        Z.pamiec_set("urzadzenia", znane)
+        noc = list(Z.pamiec_get("urzadzenia_noc", []) or [])
+        if nowe and cisza:
+            noc += [m for m in nowe if m not in noc]
+            Z.pamiec_set("urzadzenia_noc", noc)
+        rano = []
+        if noc and not cisza:   # pierwszy skan po ciszy: zbiorczo to, czego w nocy nie zatwierdzono
+            rano = [(m, dict(znane[m])) for m in noc if m in znane and not znane[m].get("znane")]
+            Z.pamiec_set("urzadzenia_noc", [])
+        nowe_wpisy = [(m, dict(znane[m])) for m in nowe]
+    if pierwszy_raz:
+        print(f"sieć: pierwsze uruchomienie — {len(widziane)} {_odmiana(len(widziane), 'urządzenie', 'urządzenia', 'urządzeń')} w sieci zapamiętane jako znane", flush=True)
+    if nowe_wpisy:
+        print("sieć: nowe " + ", ".join(f"{m} {u.get('ip')}" for m, u in nowe_wpisy) + (" (cisza — rano)" if cisza else ""), flush=True)
+        if not cisza:
+            _siec_powiadom(nowe_wpisy)
+    if rano:
+        _siec_powiadom(rano, rano=True)
+
+
+def straznik_sieci():
+    time.sleep(30)   # najpierw niech wstanie reszta panelu
+    while True:
+        try:
+            _siec_krok()
+        except Exception as e:  # noqa: BLE001
+            print(f"sieć: {type(e).__name__}: {e}", flush=True)
+        time.sleep(SIEC_CO_S)
+
+
+def _urzadzenia_lista():
+    t = teraz()
+    out = [{"mac": m, "nazwa": u.get("nazwa"), "host": u.get("host"), "ip": u.get("ip"), "znane": bool(u.get("znane")),
+            "prywatny": Z.mac_prywatny(m), "pierwszy": u.get("pierwszy"), "ostatni": u.get("ostatni"),
+            "online": t - (u.get("ostatni") or 0) < SIEC_ONLINE_S}
+           for m, u in (Z.pamiec_get("urzadzenia", {}) or {}).items()]
+
+    def ip_klucz(ip):
+        try:
+            return tuple(int(x) for x in str(ip).split("."))
+        except ValueError:
+            return (999,)
+    return sorted(out, key=lambda x: (x["znane"], not x["online"], ip_klucz(x["ip"])))
+
+
+def siec_urzadzenie(mac, b):
+    mac = Z.mac_norm(mac)
+    if not mac:
+        raise ValueError("zły adres MAC")
+    with _siec_lock:
+        znane = Z.pamiec_get("urzadzenia", {}) or {}
+        u = znane.get(mac)
+        if u is None:
+            raise ValueError("nie ma takiego urządzenia")
+        if "nazwa" in b:
+            u["nazwa"] = " ".join(str(b.get("nazwa") or "").split())[:40] or None
+            if u["nazwa"]:
+                u["znane"] = True   # nadanie nazwy = zatwierdzenie
+        if "znane" in b:
+            u["znane"] = bool(b["znane"])
+        Z.pamiec_set("urzadzenia", znane)
+    return {"ok": True, "msg": f"{_urz_nazwa(mac, u)}: " + ("znane ✓" if u["znane"] else "do zatwierdzenia")}
+
+
+def _brief_siec():
+    n = [u for u in _urzadzenia_lista() if not u["znane"]]
+    if not n:
+        return None
+    opis = "; ".join((u["nazwa"] or u["host"] or ("telefon lub laptop z prywatnym MAC" if u["prywatny"] else "bez nazwy"))
+                     + (f", adres .{u['ip'].rsplit('.', 1)[-1]}" if u["ip"] else "") for u in n[:3])
+    return (("Nieznane urządzenie w sieci: " if len(n) == 1 else f"Nieznane urządzenia w sieci ({len(n)}): ")
+            + opis + (f" i jeszcze {len(n) - 3}" if len(n) > 3 else "") + ". Zatwierdź w zakładce Sieć.")
+
+
 # --------------------------------------------------------------------------- Claude Code (hooki z laptopa)
 # UserPromptSubmit = start pracy; Stop = koniec (powiadamiamy, gdy trwało >= CLAUDE_MIN_S — krótkie odpowiedzi
 # pomijamy); Notification permission_prompt = czeka na zgodę. idle_prompt pomijamy (dubluje Stop po ~60 s).
@@ -1509,7 +1649,7 @@ TABS = {
     "media": tab_media,
     "serwery": tab_serwery,
     "siec": lambda: {"zte": cache.get("zte", 15, Z.zte), "adguard": cache.get("adguard", 60, Z.adguard),
-                     "speedtest": Z.pamiec_get("speedtest")},
+                     "speedtest": Z.pamiec_get("speedtest"), "urzadzenia": _urzadzenia_lista()},
     "trening": lambda: {"trening": cache.get("tab-trening", 60, Z.trening)},
     "swiatlo": lambda: {"wled": cache.get("wled", 3, Z.wled)},
     # widoki szczegółowe otwierane z Przeglądu i Serwerów (nie mają własnej ikony na pasku)
@@ -1693,6 +1833,8 @@ class H(BaseHTTPRequestHandler):
             return self.odpowiedz(200, {"ok": True})
         if sc == "/api/siec/speedtest":
             return self.odpowiedz(200, {"ok": True, **Z.speedtest()})
+        if m := re.fullmatch(r"/api/siec/urzadzenie/([0-9A-Fa-f:%-]{12,40})", sc):
+            return self.odpowiedz(200, siec_urzadzenie(urllib.parse.unquote(m.group(1)), b))
         if sc == "/api/swiatlo":
             Z.wled_ustaw(b)
             cache.drop("wled")
@@ -1748,4 +1890,5 @@ if __name__ == "__main__":
     threading.Thread(target=straznik_przypomnien, daemon=True).start()
     threading.Thread(target=probkowanie_pc, daemon=True).start()
     threading.Thread(target=zbieranie_mediow, daemon=True).start()
+    threading.Thread(target=straznik_sieci, daemon=True).start()
     ThreadingHTTPServer(("0.0.0.0", PORT), H).serve_forever()
