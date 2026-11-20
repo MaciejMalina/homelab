@@ -97,6 +97,10 @@ public class MainActivity extends Activity {
         zaladuj();
         h.postDelayed(przeladujOkresowo, PRZELADUJ_CO_MS);
 
+        // 1.7: klaśnięcia wyłączone także u tych, którzy mieli je włączone (fałszywe wybudzenia od dwukliku myszką)
+        if (!prefs.getBoolean("migracja_17", false)) {
+            prefs.edit().putBoolean("klaski", false).putBoolean("migracja_17", true).apply();
+        }
         gesty = new Gesty(this, h, this::gestDoStrony, this::obecnoscDoStrony);
         glos = new Glos(this, h, this::glosDoStrony);
         poprosOUprawnienia();
@@ -423,9 +427,14 @@ public class MainActivity extends Activity {
         TextView t8 = new TextView(this);
         t8.setText("Maks. wzmocnienie mikrofonu 1–16 (niżej = mniej szumu)");
         EditText micWzm = poleLiczby(prefs.getFloat("mic_wzm", 8f));
+        TextView t10 = new TextView(this);
+        t10.setText("Źródło mikrofonu (sprawdź w podglądzie, które łapie najlepiej z Twojego miejsca)");
+        android.widget.Spinner zrodloLista = new android.widget.Spinner(this);
+        zrodloLista.setAdapter(new android.widget.ArrayAdapter<>(this, android.R.layout.simple_spinner_dropdown_item, Glos.NAZWY_ZRODEL));
+        zrodloLista.setSelection(Math.max(0, Math.min(Glos.NAZWY_ZRODEL.length - 1, prefs.getInt("mic_zrodlo", 0))));
         CheckBox klaskiPole = new CheckBox(this);
         klaskiPole.setText("Podwójne klaśnięcie = słuchaj polecenia");
-        klaskiPole.setChecked(prefs.getBoolean("klaski", true));
+        klaskiPole.setChecked(prefs.getBoolean("klaski", false));
         TextView t9 = new TextView(this);
         t9.setText("Klaśnięcie: dB ponad szum tła 6–40 (wyżej = trzeba głośniej)");
         EditText klaskDb = poleLiczby(prefs.getFloat("klask_db", Glos.KLASK_DB));
@@ -494,6 +503,8 @@ public class MainActivity extends Activity {
         l.addView(micProg);
         l.addView(t8);
         l.addView(micWzm);
+        l.addView(t10);
+        l.addView(zrodloLista);
         l.addView(klaskiPole);
         l.addView(t9);
         l.addView(klaskDb);
@@ -530,6 +541,7 @@ public class MainActivity extends Activity {
                             .putFloat("mic_prog", liczba(micProg, 0.4f, 0.1f, 0.95f))
                             .putFloat("mic_wzm", liczba(micWzm, 8f, 1f, 16f))
                             .putBoolean("klaski", klaskiPole.isChecked())
+                            .putInt("mic_zrodlo", Math.max(0, zrodloLista.getSelectedItemPosition()))
                             .putFloat("klask_db", liczba(klaskDb, Glos.KLASK_DB, 6f, 40f)).apply();
                     poprosOUprawnienia();
                     if (gesty != null) {

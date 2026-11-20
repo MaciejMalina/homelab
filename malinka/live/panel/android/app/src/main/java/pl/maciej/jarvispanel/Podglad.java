@@ -106,8 +106,9 @@ final class Podglad extends View {
             y += lh;
         }
         if (glos != null) {
-            c.drawText(String.format(Locale.ROOT, "Mikrofon: %.0f dBFS  wzm ×%.1f (max ×%.1f)",
-                    glos.diagPoziom, glos.diagWzm, glos.diagWzmMax), x, y, tekst);
+            String zr = Glos.NAZWY_ZRODEL[Math.max(0, Math.min(Glos.NAZWY_ZRODEL.length - 1, glos.diagZrodlo))];
+            c.drawText(String.format(Locale.ROOT, "Mikrofon: %.0f dBFS  wzm ×%.1f (max ×%.1f)  źródło: %s",
+                    glos.diagPoziom, glos.diagWzm, glos.diagWzmMax, zr.replaceAll(" \\(.*", "")), x, y, tekst);
             y += lh;
             // pasek wyniku „Hey Jarvis”: szary = szczyt z ~2 s, kolor = teraz, biała kreska = próg
             float pw = w - x - m;

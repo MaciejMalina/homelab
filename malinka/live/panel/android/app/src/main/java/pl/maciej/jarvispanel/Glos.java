@@ -58,7 +58,10 @@ final class Glos {
     private static final float WZM_MAX = 8f;          // maks. automatyczne wzmocnienie (mikrofon VOICE_RECOGNITION w Redmi jest ~20 dB za cichy)
     private static final float CEL_SZCZYT = 16000f;   // AGC: szczyt mowy po wzmocnieniu ok. -6 dBFS
     private static final int RAMEK_WAKE = 2;          // tyle KOLEJNYCH kawałków 80 ms musi przekroczyć próg (1 = dawne zachowanie)
-    static final float KLASK_DB = 18f;                // klaśnięcie: o ile dB ponad szum tła (prefs klask_db)
+    static final float KLASK_DB = 18f;
+    /** Kolejność = wartość mic_zrodlo w ustawieniach (VOICE_RECOGNITION, MIC, VOICE_COMMUNICATION, UNPROCESSED). */
+    static final String[] NAZWY_ZRODEL = {"Rozpoznawanie mowy (domyślne, z redukcją szumów)", "Mikrofon (MIC)",
+            "Rozmowa (VOICE_COMMUNICATION)", "Bez przetwarzania (UNPROCESSED)"};                // klaśnięcie: o ile dB ponad szum tła (prefs klask_db)
     private static final long CZEKAJ_NA_ODPOWIEDZ_MS = 20_000;
     private static final long MAX_MOWIENIE_MS = 90_000;
 
@@ -105,6 +108,7 @@ final class Glos {
     volatile float diagKlaskProg = KLASK_DB;
     volatile Klaskacz diagKlaskacz = null;
     volatile String diagZdarzenie = "—";
+    volatile int diagZrodlo = 0;
 
     Glos(Activity act, Handler h, Sluchacz sluchacz) {
         this.act = act;
@@ -272,7 +276,8 @@ final class Glos {
             int zr = Math.max(0, Math.min(zrodla.length - 1, pr.getInt("mic_zrodlo", 0)));
             float wzm = Math.max(1f, Math.min(16f, pr.getFloat("mic_wzm", WZM_MAX)));
             float prog = Math.max(0.1f, Math.min(0.95f, pr.getFloat("mic_prog", PROG)));
-            boolean klaski = pr.getBoolean("klaski", true);
+            boolean klaski = pr.getBoolean("klaski", false);   // 1.7: domyślnie wyłączone (dwuklik myszką = fałszywe klaśnięcie)
+            diagZrodlo = zr;
             float klaskDb = Math.max(6f, Math.min(40f, pr.getFloat("klask_db", KLASK_DB)));
             Klaskacz klaskacz = klaski ? new Klaskacz(klaskDb) : null;
             diagProg = prog;
