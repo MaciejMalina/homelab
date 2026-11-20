@@ -638,7 +638,8 @@ def discord_wyslij(tytul, opis, kolor=0xF0A020, ping=True):
     body = {"embeds": [{"title": tytul[:250], "description": opis[:4000], "color": kolor}]}
     if ping and DISCORD_USER_ID:
         body["content"] = f"<@{DISCORD_USER_ID}>"
-    zadanie(DISCORD_WEBHOOK, method="POST", body=body, timeout=10)
+    # Discord (Cloudflare) odrzuca domyślny User-Agent Pythona (403) — przedstawiamy się jak bot
+    zadanie(DISCORD_WEBHOOK, method="POST", body=body, timeout=10, headers={"User-Agent": "DiscordBot (jarvis-panel, 1.0)"})
     return True
 
 

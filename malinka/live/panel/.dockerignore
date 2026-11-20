@@ -1,0 +1,7 @@
+# kontekst budowania: tylko kod (Dockerfile kopiuje app.py, zrodla.py, static/)
+data/
+.env
+*.bak*
+android/
+__pycache__/
+*.pyc

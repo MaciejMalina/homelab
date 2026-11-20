@@ -32,6 +32,7 @@ POST /api/siec/speedtest
   POST /api/budzik                     {"godzina": "6:30", "dni"?: [0..6] | "pn-pt"|"weekend"|"codziennie"|"jednorazowy"}
   POST /api/budzik/<stop|drzemka>      wyłącza dzwoniący budzik / drzemka BUDZIK_DRZEMKA_MIN
   POST /api/budzik/<id>/<wl|wyl|usun>  stały budzik: włącz / wyłącz, każdy: usuń  (lista: GET /api/tab/budziki)
+  POST /api/zdrowie/raport             wynik common/jarvis-zdrowie.py z malinki/serwera (tylko z LAN) -> raport tygodniowy na Discordzie
   POST /api/claude-limity/odswiez      limity Claude teraz (najwyżej raz na minutę; samo co CLAUDE_CO_S)
   POST /api/siec/urzadzenie/<MAC>      {"znane"?: bool, "nazwa"?: str}  zatwierdzenie / nazwa urządzenia w sieci
   POST /api/claude                     {"zdarzenie": UserPromptSubmit|Stop|Notification, "typ", "sesja", "projekt"}
@@ -1517,6 +1518,150 @@ def _brief_siec():
             + opis + (f" i jeszcze {len(n) - 3}" if len(n) > 3 else "") + ". Zatwierdź w zakładce Sieć.")
 
 
+# --------------------------------------------------------------------------- raport zdrowia (sobota)
+# common/jarvis-zdrowie.py (cron root: malinka sob. 10:00, serwer 10:05 po WoL o 9:55) aktualizuje kontenery i zbiera
+# zdrowie, wynik POST-uje tutaj. Raport idzie na Discord, gdy są wyniki ze wszystkich ZDROWIE_HOSTY albo po
+# ZDROWIE_CZEKAJ_S od pierwszego (wtedy z adnotacją, czego brak). Backupy i usługi dokłada z Uptime Kumy.
+ZDROWIE_HOSTY = [h.strip() for h in E("ZDROWIE_HOSTY", "malinka,serwer").split(",") if h.strip()]
+ZDROWIE_CZEKAJ_S = int(E("ZDROWIE_CZEKAJ_S", "3000"))
+_zdr_lock = threading.Lock()
+
+
+def zdrowie_przyjmij(b):
+    host = re.sub(r"[^\w.-]", "", str(b.get("host") or ""))[:30]
+    if not host:
+        raise ValueError("host: puste")
+    with _zdr_lock:
+        d = Z.pamiec_get("zdrowie", {}) or {}
+        d[host] = {**b, "odebrano": teraz()}
+        Z.pamiec_set("zdrowie", d)
+    print(f"zdrowie: wynik z {host} ({b.get('tryb')}, {len(b.get('zaktualizowane') or [])} zaktualizowanych, "
+          f"{len(b.get('wycofane') or [])} wycofanych)", flush=True)
+    threading.Thread(target=zdrowie_sprawdz, daemon=True).start()
+
+
+def zdrowie_sprawdz():
+    with _zdr_lock:
+        d = Z.pamiec_get("zdrowie", {}) or {}
+        wyslany = float(Z.pamiec_get("zdrowie_wyslany", 0) or 0)
+        swieze = {h: x for h, x in d.items() if x.get("odebrano", 0) > wyslany and teraz() - x["odebrano"] < 3 * 3600}
+        if not swieze:
+            return
+        pierwszy = min(x["odebrano"] for x in swieze.values())
+        if not (all(h in swieze for h in ZDROWIE_HOSTY) or teraz() - pierwszy > ZDROWIE_CZEKAJ_S):
+            return
+        Z.pamiec_set("zdrowie_wyslany", teraz())
+    tytul, opis, zle = _zdrowie_raport(swieze)
+    print(f"zdrowie: wysyłam raport ({len(opis)} znaków)", flush=True)
+    try:
+        if not Z.discord_wyslij(tytul, opis, kolor=0xE5534B if zle else 0x3EE0A1, ping=zle):
+            print("zdrowie: brak DISCORD_WEBHOOK", flush=True)
+    except Exception as e:  # noqa: BLE001
+        print(f"zdrowie: Discord: {e}", flush=True)
+
+
+def straznik_zdrowia():
+    while True:
+        time.sleep(60)
+        try:
+            zdrowie_sprawdz()
+        except Exception as e:  # noqa: BLE001
+            print(f"zdrowie: {type(e).__name__}: {e}", flush=True)
+
+
+def _zdrowie_raport(sw):
+    """(tytuł, opis markdown, czy_coś_złego) z wyników hostów + Kuma."""
+    zle = False
+    test = all(x.get("tryb") == "sprawdz" for x in sw.values())
+    l = []
+    # aktualizacje
+    l.append("**Aktualizacje kontenerów**" + (" (test: tylko sprawdzone, nic nie zmieniono)" if test else ""))
+    for h in sorted(sw):
+        x = sw[h]
+        akt = x.get("zaktualizowane") or []
+        if akt:
+            l.append(f"✅ {h}: " + ", ".join(f"{a['nazwa']}" + (f" ({a.get('z') or '?'} → {a['na']})" if a.get("na") else "") for a in akt))
+        for w in x.get("wycofane") or []:
+            zle = True
+            l.append(f"↩️ {h}: **{w['nazwa']}** nie wstał po aktualizacji ({w['powod']}) — "
+                     + ("przywrócony poprzedni obraz" if w.get("przywrocony") else f"**przywrócenie też nie działa**: {w.get('stan')}"))
+        if x.get("nowe"):
+            l.append(f"🆕 {h} — do aktualizacji: " + ", ".join(n["nazwa"] for n in x["nowe"]))
+        if x.get("nowe_wyjatki"):
+            l.append(f"✋ {h} — nowa wersja (aktualizujesz ręcznie): " + ", ".join(n["nazwa"] for n in x["nowe_wyjatki"]))
+        if not (akt or x.get("wycofane") or x.get("nowe") or x.get("nowe_wyjatki")):
+            l.append(f"▫️ {h}: wszystko aktualne")
+        for b in x.get("bledy") or []:
+            zle = True
+            l.append(f"⚠️ {h}: {b}")
+        if x.get("limit_hub"):
+            zle = True
+            l.append(f"⏳ {h}: Docker Hub odmówił (limit zapytań 429) — niesprawdzone: {', '.join(x['limit_hub'])}. "
+                     "Pomoże `docker login` (darmowe konto) na malince i serwerze.")
+        if x.get("odzyskane"):
+            l.append(f"🧹 {h}: usunięte stare obrazy, odzyskano {x['odzyskane']}")
+    for h in ZDROWIE_HOSTY:
+        if h not in sw:
+            zle = True
+            l.append(f"❌ {h}: brak wyniku" + (" — serwer nie wstał po WoL albo skrypt nie ruszył" if "serw" in h else ""))
+    # kontenery
+    zatrz = [f"{h}: " + ", ".join(sw[h]["zatrzymane"]) for h in sorted(sw) if sw[h].get("zatrzymane")]
+    niezdr = [f"{h}: " + ", ".join(sw[h]["niezdrowe"]) for h in sorted(sw) if sw[h].get("niezdrowe")]
+    if zatrz or niezdr:
+        l.append("\n**Kontenery**")
+        l += [f"⚠️ niezdrowe — {t}" for t in niezdr] + [f"⏸ zatrzymane — {t}" for t in zatrz]
+        zle = zle or bool(niezdr)
+    # dyski + SMART
+    l.append("\n**Dyski**")
+    for h in sorted(sw):
+        dy = sw[h].get("dyski") or []
+        if any(d["proc"] >= 85 for d in dy):
+            zle = True
+        sm = sw[h].get("smart") or []
+        zle_sm = [s for s in sm if s["stan"] not in ("PASSED", "OK", "brak odczytu")]
+        zle = zle or bool(zle_sm)
+        l.append(f"{'⚠️' if any(d['proc'] >= 85 for d in dy) or zle_sm else '💾'} {h}: "
+                 + ", ".join(f"{d['punkt']} {d['proc']}% ({d['wolne_gb']} GB wolne)" for d in dy)
+                 + (" · SMART: " + ", ".join(f"{s['dysk'].rsplit('/', 1)[-1]} {s['stan']}" for s in sm) if sm else ""))
+    # backupy i usługi z Kumy
+    k = cache.get("kuma", 30, kuma)
+    mon = ((k.get("data") or {}).get("monitory") or []) if k.get("ok") else []
+    bk = [m for m in mon if "backup" in (m.get("nazwa") or "").lower() and m.get("typ") != "group"]
+    l.append("\n**Backupy**")
+    if not bk and not any(sw[h].get("backup") for h in sw):
+        l.append("— brak danych (log backupu niedostępny)")
+    if bk:
+        l += [f"{'✅' if m.get('stan') == 'up' else '❌'} {m['nazwa']}: {m.get('stan')}" for m in bk]
+        zle = zle or any(m.get("stan") not in ("up", "pending") for m in bk)
+    for h in sorted(sw):
+        for b in sw[h].get("backup") or []:
+            if b.get("ostatnia"):
+                wiek = (teraz() - b["zmieniony"]) / 3600
+                l.append(f"📄 {h} {b['log'].rsplit('/', 1)[-1]} ({wiek:.0f} h temu): {b['ostatnia'][:110]}")
+                zle = zle or wiek > 30
+    spi = bool(SERVER_IP) and not serwer_up()
+    down = [m["nazwa"] for m in mon if m.get("stan") == "down" and m.get("typ") != "group"
+            and not (spi and SERVER_IP in (m.get("adres") or ""))]
+    l.append("\n**Usługi (Uptime Kuma)**")
+    l.append("❌ nie działa: " + ", ".join(down) if down else "✅ wszystkie działają")
+    zle = zle or bool(down)
+    # system
+    sys_l = []
+    for h in sorted(sw):
+        x = sw[h]
+        a = x.get("apt") or {}
+        sys_l.append(f"{h}: " + ", ".join(t for t in (
+            f"aktualizacje systemu {a['pakiety']}" + (f" (w tym bezpieczeństwa {a['bezpieczenstwo']})" if a.get("bezpieczenstwo") else "") if a else None,
+            f"działa {x['uptime_h']:.0f} h" if x.get("uptime_h") is not None else None,
+            f"{x['temp']}°C" if x.get("temp") else None,
+            (f"skrypt {x['czas_s'] // 60} min" if x["czas_s"] >= 120 else f"skrypt {x['czas_s']} s") if x.get("czas_s") else None) if t))
+    l.append("\n**System**")
+    l += [f"🖥️ {t}" for t in sys_l]
+    data = Z.datetime.fromtimestamp(min(x["odebrano"] for x in sw.values()), Z.TZ)
+    tytul = f"🩺 Raport tygodniowy JARVIS — {data.day} {MIESIACE[data.month - 1]}" + (" (test)" if test else "")
+    return tytul, "\n".join(l)[:4000], zle
+
+
 # --------------------------------------------------------------------------- Claude: limity planu
 # Co CLAUDE_CO_S (nieoficjalne /api/oauth/usage, sesja malinki — zrodla.claude_limity) -> pamiec claude_limity
 # + historia claude_hist (7 dni). Przekroczenie progu z CLAUDE_PROGI albo odnowienie limitu, który próg przekroczył:
@@ -2268,6 +2413,11 @@ class H(BaseHTTPRequestHandler):
             return self.odpowiedz(200, {"ok": True})
         if sc == "/api/siec/speedtest":
             return self.odpowiedz(200, {"ok": True, **Z.speedtest()})
+        if sc == "/api/zdrowie/raport":
+            if self.client_address[0] not in ("127.0.0.1", "::1", "192.168.254.10", "192.168.254.11"):
+                return self.blad(403, "tylko malinka i serwer")
+            zdrowie_przyjmij(b)
+            return self.odpowiedz(200, {"ok": True})
         if sc == "/api/claude-limity/odswiez":
             d = claude_pobierz(60) or {}
             if d.get("disabled"):
@@ -2348,4 +2498,5 @@ if __name__ == "__main__":
     threading.Thread(target=straznik_budzika, daemon=True).start()
     threading.Thread(target=straznik_claude, daemon=True).start()
     threading.Thread(target=straznik_powiadomien_claude, daemon=True).start()
+    threading.Thread(target=straznik_zdrowia, daemon=True).start()
     ThreadingHTTPServer(("0.0.0.0", PORT), H).serve_forever()
