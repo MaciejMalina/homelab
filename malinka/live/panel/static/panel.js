@@ -866,7 +866,12 @@ RENDER.dzien = (d) => {
     }).join("") || pustoHtml("Wszystko zapłacone 🎉");
   }
   const [po, epo] = zrodlo(d.poczta, "Poczta");
-  const poczta = po ? (po.wazne.length ? po.wazne.map((m) => `<div class="wiersz" style="display:block"><div class="v"><b>${esc(m.od)}</b></div><div class="v mala">${esc(m.temat)}</div>
+  const paczki = po && (po.paczki || []).length ? `<div class="dzien-naglowek">📦 Paczki do odbioru</div>` + po.paczki.map((p) =>
+    `<div class="wiersz"><span class="v zawijaj"><b>${esc(p.od)}</b>${p.kod ? ` · kod <b style="font-size:16px;letter-spacing:.06em">${esc(p.kod)}</b>` : ""}` +
+    `<br><span class="mala przyg">${esc(temuOd(p.ts))}</span></span>` +
+    `<button class="maly" data-akcja="paczka-odebrana" data-id="${esc(p.id)}">Odebrana ✓</button></div>`).join("") +
+    `<div class="dzien-naglowek">Ważne maile</div>` : "";
+  const poczta = po ? paczki + (po.wazne.length ? po.wazne.map((m) => `<div class="wiersz" style="display:block"><div class="v"><b>${esc(m.od)}</b></div><div class="v mala">${esc(m.temat)}</div>
       <div class="mala przyg">${esc(m.konto)} · ${esc(temuOd(m.ts))}</div></div>`).join("") : pustoHtml("Brak ważnych nieprzeczytanych 🎉")) +
     (po.zalegle.length ? `<div class="dzien-naglowek">Z nocy</div>` + po.zalegle.map((m) => `<div class="wiersz"><span class="v"><b>${esc(m.od)}</b> — ${esc(m.temat)}</span></div>`).join("") : "") +
     `<div class="mala przyg" style="margin-top:6px">Pominięte (promocje itp.): ${po.pominiete} — w porannym briefie</div>` : epo;
@@ -1193,6 +1198,7 @@ document.addEventListener("click", (e) => {
     case "pogoda-otworz": otworzWidok("pogoda"); break;
     case "pc-wykresy": otworzWidok("pc"); break;
     case "pc-procesy": otworzWidok("procesy"); break;
+    case "paczka-odebrana": akcjaPost(b, `/api/paczka/${encodeURIComponent(b.dataset.id)}/odebrana`, {}, (r) => { toast(r.msg); odswiezTeraz(); }); break;
     case "docker-otworz": otworzWidok("docker"); break;
     case "widok-wstecz": widokWstecz(); break;
     case "docker-logi":
@@ -1434,7 +1440,7 @@ window.jarvisObecnosc = (jest) => {
     const br = r && r.brief;
     if (!br || !br.odp) return;
     wake(wakeMin);
-    pokazGlos("Brief dnia", br.odp);
+    pokazGlos(br.tytul || "Brief dnia", br.odp);
     if (B && B.mow) try { B.mow(br.mow || br.odp); } catch (e) { /* stara appka */ }
     schowajGlos(Math.min(60000, 6000 + br.odp.length * 60));
   }).catch(() => { /* offline */ });

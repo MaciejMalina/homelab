@@ -525,6 +525,19 @@ def dodaj_przypomnienia(stan, maile):
     del p[:-MAKS_PRZYPOMNIEN]
 
 
+MAKS_PACZEK = 15
+
+
+def zapisz_paczki(stan, wazne):
+    """Paczki do odbioru (z kodem) dla panelu na malince — zakładka Dzień, brief i komunikat przy siadaniu."""
+    p = stan.setdefault("paczki", [])
+    for m in wazne:
+        if m.get("typ") == "paczka":
+            p.append({"id": f"{m['konto']}:{m.get('uv')}:{m.get('uid')}", "ts": time.time(),
+                      "od": m["od"][:80], "temat": m["temat"][:150], "kod": m.get("kod")})
+    del p[:-MAKS_PACZEK]
+
+
 def wyslij_wazne(user, wazne, stan):
     pilne = [m for m in wazne if m["typ"] in PILNE]
     reszta = [m for m in wazne if m["typ"] not in PILNE]
@@ -657,6 +670,7 @@ def main():
                 if wazne or pominiete:
                     log(f"{user}: {len(wazne)} ważnych, {len(pominiete)} do podsumowania")
                 if wazne:
+                    zapisz_paczki(stan, wazne)
                     wyslij_wazne(user, wazne, stan)
                 wyslij_przypomnienia(przypomnij)
                 zapisz_stan(stan)

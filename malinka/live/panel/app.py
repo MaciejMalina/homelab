@@ -28,6 +28,7 @@ API (JSON):
   POST /api/media/qbit/<hash>/<start|stop>
   GET  /api/siec/speedtest        ostatni wynik (ts, ts_ms, ping, dol, gora) - dla kafelka w Homepage
 POST /api/siec/speedtest
+  POST /api/paczka/<id>/odebrana       chowa paczkę z listy (zakładka Dzień, brief)
   POST /api/claude                     {"zdarzenie": UserPromptSubmit|Stop|Notification, "typ", "sesja", "projekt"}
                                        <- hook Claude Code z laptopa: „skończył” (>= CLAUDE_MIN_S) / „czeka na zgodę”
   POST /api/dobranoc/anuluj             przerywa odliczanie „Dobranoc” (dotknięcie ekranu)
@@ -586,7 +587,7 @@ def _brief_kalendarz(dzien=0):
 
 
 def _brief_poczta():
-    p = cache.get("poczta", 30, Z.poczta)
+    p = _poczta()
     d = (p.get("data") or {}) if p.get("ok") else {}
     wazne = d.get("wazne") or []
     if not wazne:
@@ -627,7 +628,8 @@ def brief_tekst():
     n = _teraz_pl()
     out = [f"{'Dzień dobry' if 5 <= n.hour < 18 else 'Dobry wieczór'}. Jest {n.hour}:{n.minute:02d}, "
            f"{DNI_TYG[n.weekday()]} {n.day} {MIESIACE[n.month - 1]}."]
-    for fn in (_pogoda_zdanie, _brief_kalendarz, _brief_przypomnienia, _brief_poczta, _brief_trening, _brief_uslugi):
+    for fn in (_pogoda_zdanie, _brief_kalendarz, _brief_przypomnienia, _brief_poczta, _brief_paczki, _brief_media,
+               _brief_trening, _brief_uslugi):
         try:
             z = fn()
             if z:
@@ -1019,6 +1021,113 @@ def _tab_pc():
     return {**w, "data": pcs}
 
 
+# --------------------------------------------------------------------------- paczki do odbioru i nowe w Jellyfinie
+# Paczki: mail-notifier zapisuje maile o paczkach (z kodem odbioru) w swoim stanie; tu chowamy te oznaczone
+# „Odebrana” (pamiec paczki_odebrane). Nowe odcinki/filmy: gdy serwer działa, co 10 min historia importów
+# Sonarra/Radarra -> pamiec nowe_media. Jedno i drugie ogłaszamy raz: w briefie albo przy siadaniu do biurka.
+MEDIA_CO_S = 600
+
+
+def _poczta():
+    w = cache.get("poczta", 30, Z.poczta)
+    if not w.get("ok") or not isinstance(w.get("data"), dict) or "paczki" not in w["data"]:
+        return w
+    odebrane = set(Z.pamiec_get("paczki_odebrane", []) or [])
+    return {**w, "data": {**w["data"], "paczki": [p for p in w["data"]["paczki"] if p.get("id") not in odebrane]}}
+
+
+def paczka_odebrana(pid):
+    lista = [x for x in (Z.pamiec_get("paczki_odebrane", []) or []) if x != pid] + [pid]
+    Z.pamiec_set("paczki_odebrane", lista[-60:])
+    cache.drop("poczta")
+    return {"ok": True, "msg": "Paczka odebrana — schowana z listy"}
+
+
+def _paczki():
+    w = _poczta()
+    return ((w.get("data") or {}).get("paczki") or []) if w.get("ok") else []
+
+
+def _paczka_opis(p):
+    od = re.sub(r"\s*<[^>]*>", "", str(p.get("od") or "")).strip().strip('"') or "przesyłka"
+    return f"{od}, kod {p['kod']}" if p.get("kod") else od
+
+
+def _media_opis(m):
+    if m.get("odc"):
+        mm = re.match(r"S(\d+)E(\d+)", m["odc"])
+        return f"{m['tytul']}, sezon {int(mm.group(1))}, odcinek {int(mm.group(2))}" if mm else f"{m['tytul']} {m['odc']}"
+    return f"{m['tytul']}" + (f" ({m['rok']})" if m.get("rok") else "")
+
+
+def zbieranie_mediow():
+    while True:
+        try:
+            if serwer_up():
+                pobrane = Z.media_pobrane()
+                znane = Z.pamiec_get("nowe_media", None)
+                if znane is None:   # pierwsze uruchomienie: cała dotychczasowa historia = już ogłoszona
+                    Z.pamiec_set("nowe_media", [{**m, "ogloszone": True} for m in pobrane][:40])
+                else:
+                    ids = {m["id"] for m in znane}
+                    nowe = [{**m, "ogloszone": False} for m in pobrane if m["id"] not in ids]
+                    if nowe:
+                        print(f"media: nowe {', '.join(_media_opis(m) for m in nowe)}", flush=True)
+                        Z.pamiec_set("nowe_media", (nowe + znane)[:40])
+        except Exception as e:  # noqa: BLE001
+            print(f"media: {e}", flush=True)
+        time.sleep(MEDIA_CO_S)
+
+
+def _nowe_media(oznacz):
+    """Odcinki/filmy jeszcze nieogłoszone; oznacz=True -> od teraz ogłoszone."""
+    wszystkie = Z.pamiec_get("nowe_media", []) or []
+    nowe = [m for m in wszystkie if not m.get("ogloszone")]
+    if oznacz and nowe:
+        Z.pamiec_set("nowe_media", [{**m, "ogloszone": True} for m in wszystkie])
+    return nowe
+
+
+def _nowe_paczki(oznacz):
+    """Paczki (nieodebrane) jeszcze nieogłoszone; oznacz=True -> od teraz ogłoszone."""
+    ogl = list(Z.pamiec_get("paczki_ogloszone", []) or [])
+    nowe = [p for p in _paczki() if p.get("id") not in set(ogl)]
+    if oznacz and nowe:
+        Z.pamiec_set("paczki_ogloszone", (ogl + [p["id"] for p in nowe])[-60:])
+    return nowe
+
+
+def _brief_paczki():
+    p = _paczki()
+    _nowe_paczki(oznacz=True)   # brief mówi o wszystkich czekających — od teraz ogłoszone
+    if not p:
+        return None
+    return ("Paczka do odbioru: " if len(p) == 1 else f"Paczki do odbioru ({len(p)}): ") + "; ".join(_paczka_opis(x) for x in p[:3]) + "."
+
+
+def _brief_media():
+    media = _nowe_media(oznacz=True)
+    if not media:
+        return None
+    return "Nowe w Jellyfinie: " + "; ".join(_media_opis(m) for m in media[:4]) + (f" i jeszcze {len(media) - 4}" if len(media) > 4 else "") + "."
+
+
+def nowosci_przy_siadaniu():
+    """Komunikat przy powrocie do biurka (gdy dziś brief już był): tylko to, czego jeszcze nie ogłoszono."""
+    media, paczki = _nowe_media(oznacz=True), _nowe_paczki(oznacz=True)
+    czesci = []
+    if media:
+        czesci.append("Nowe w Jellyfinie: " + "; ".join(_media_opis(m) for m in media[:4]) + ".")
+    if paczki:
+        czesci.append(("Nowa paczka do odbioru: " if len(paczki) == 1 else "Nowe paczki do odbioru: ")
+                      + "; ".join(_paczka_opis(p) for p in paczki[:3]) + ".")
+    if not czesci:
+        return None
+    t = " ".join(czesci)
+    print(f"nowości przy siadaniu: {t}", flush=True)
+    return {"odp": t, "mow": _do_mowy(t, BRIEF_ZNAKI), "tytul": "Nowości"}
+
+
 # --------------------------------------------------------------------------- Claude Code (hooki z laptopa)
 # UserPromptSubmit = start pracy; Stop = koniec (powiadamiamy, gdy trwało >= CLAUDE_MIN_S — krótkie odpowiedzi
 # pomijamy); Notification permission_prompt = czeka na zgodę. idle_prompt pomijamy (dubluje Stop po ~60 s).
@@ -1186,6 +1295,7 @@ def _do_mowy(tekst, limit=500):
     """Odpowiedź do czytania na głos: bez znaczników markdown, najwyżej ~limit znaków (urwane na końcu zdania)."""
     t = re.sub(r"[*_`#>|]", "", tekst or "")
     t = re.sub(r"\s+", " ", t).strip()
+    t = re.sub(r"\bkod (\d{4,8})\b", lambda m: "kod " + " ".join(m.group(1)), t)   # kod odbioru cyfra po cyfrze
     if len(t) > limit:
         cut = max(t.rfind(". ", 0, limit), t.rfind("! ", 0, limit), t.rfind("? ", 0, limit))
         t = t[:cut + 1] if cut > 100 else t[:limit] + "…"
@@ -1369,7 +1479,7 @@ def _z_pamieci(klucz, pobierz, co_ile=600):
 def tab_dzien():
     return {"kalendarz": _z_pamieci("kalendarz", Z.kalendarz_pobierz),
             "paperless": _z_pamieci("paperless", Z.paperless_pobierz),
-            "poczta": cache.get("poczta", 30, Z.poczta),
+            "poczta": _poczta(),
             "todo": cache.get("todo", 20, todo), "serwer": cache.get("serwer", 10, serwer)}
 
 
@@ -1589,6 +1699,8 @@ class H(BaseHTTPRequestHandler):
             return self.odpowiedz(200, {"ok": True})
         if sc == "/api/jarvis":
             return self.odpowiedz(200, jarvis_api(b.get("tekst")))
+        if m := re.fullmatch(r"/api/paczka/([\w:.@+-]{1,200})/odebrana", sc):
+            return self.odpowiedz(200, paczka_odebrana(m.group(1)))
         if sc == "/api/claude":
             return self.odpowiedz(200, claude_zdarzenie(b))
         if sc == "/api/dobranoc/anuluj":
@@ -1598,6 +1710,8 @@ class H(BaseHTTPRequestHandler):
             jest = b.get("twarz")
             obecnosc(jest)
             br = brief_auto() if jest is True else None
+            if jest is True and not br and not _obecnosc_pauza():
+                br = nowosci_przy_siadaniu()
             return self.odpowiedz(200, {"brief": br}) if br else self.odpowiedz(204)
         if m := re.fullmatch(r"/api/gniazdo/([\w-]+)/(on|off|toggle)", sc):
             w = Z.gniazdo_ustaw(m.group(1), m.group(2))
@@ -1633,4 +1747,5 @@ if __name__ == "__main__":
     threading.Thread(target=straznik_obecnosci, daemon=True).start()
     threading.Thread(target=straznik_przypomnien, daemon=True).start()
     threading.Thread(target=probkowanie_pc, daemon=True).start()
+    threading.Thread(target=zbieranie_mediow, daemon=True).start()
     ThreadingHTTPServer(("0.0.0.0", PORT), H).serve_forever()

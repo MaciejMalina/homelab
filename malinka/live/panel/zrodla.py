@@ -389,6 +389,26 @@ def sonarr():
     return {"kolejka": kolejka, "nadchodzace": nadch}
 
 
+def media_pobrane():
+    """Ostatnio pobrane (zaimportowane) odcinki z Sonarra i filmy z Radarra — do ogłaszania „nowe w Jellyfinie”."""
+    out = []
+    if SONARR_URL and SONARR_KEY:
+        h = _arr(SONARR_URL, SONARR_KEY, "/api/v3/history?page=1&pageSize=30&sortKey=date&sortDirection=descending"
+                                         "&includeSeries=true&includeEpisode=true") or {}
+        for r in h.get("records", []):
+            if r.get("eventType") == "downloadFolderImported":
+                out.append({"id": f"s{r.get('id')}", "tytul": (r.get("series") or {}).get("title") or "?",
+                            "odc": _odc(r.get("episode") or {}), "ts": r.get("date")})
+    if RADARR_URL and RADARR_KEY:
+        h = _arr(RADARR_URL, RADARR_KEY, "/api/v3/history?page=1&pageSize=30&sortKey=date&sortDirection=descending"
+                                         "&includeMovie=true") or {}
+        for r in h.get("records", []):
+            if r.get("eventType") == "downloadFolderImported":
+                m = r.get("movie") or {}
+                out.append({"id": f"r{r.get('id')}", "tytul": m.get("title") or "?", "rok": m.get("year"), "ts": r.get("date")})
+    return out
+
+
 def radarr():
     if not (RADARR_URL and RADARR_KEY):
         return {"disabled": True}
@@ -787,4 +807,5 @@ def poczta():
     return {"wazne": [{"od": m.get("od"), "temat": m.get("temat"), "konto": str(m.get("konto", "")).split("@")[0], "ts": m.get("ts")}
                       for m in przyp[:12]],
             "zalegle": [{"od": m.get("od"), "temat": m.get("temat")} for m in (s.get("zalegle") or [])[:8]],
+            "paczki": [p for p in (s.get("paczki") or []) if time.time() - (p.get("ts") or 0) < 7 * 86400],
             "pominiete": len(s.get("pominiete") or [])}
