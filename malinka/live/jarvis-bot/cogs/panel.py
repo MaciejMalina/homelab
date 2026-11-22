@@ -1,4 +1,4 @@
-"""JARVIS — panel na telefonie: /ekran, /panel_alert, /budzik, /budziki, /budzik_usun, /kalendarz + wysyłanie stanu kanałów głosowych
+"""JARVIS — panel na telefonie: /ekran, /panel_alert, /budzik, /budziki, /budzik_usun, /kalendarz, /wydarzenia + wysyłanie stanu kanałów głosowych
 (kto siedzi, wyciszenia) do zakładki "Discord" na panelu.
 
 Rozmawia z kontenerem jarvis_panel na malince (bot i panel chodzą w network_mode: host,
@@ -182,8 +182,8 @@ class Panel(commands.Cog):
         await interaction.response.send_message(f"🗑️ {r.get('msg', 'Usunięty')}", ephemeral=True)
 
 
-    # ------------------------------------------------------------------ kalendarz (Nextcloud przez panel; z Yapass)
-    @app_commands.command(name="kalendarz", description="Dodaje wydarzenie do kalendarza (Nextcloud); śpiący serwer zostanie obudzony")
+    # ------------------------------------------------------------------ kalendarz (Google przez panel; z Yapass)
+    @app_commands.command(name="kalendarz", description="Dodaje wydarzenie do Kalendarza Google")
     @app_commands.describe(tytul="Co, np. Dentysta", kiedy="np. jutro 18:00 / pt 9:30 / 30.11 / 2026-12-03 (bez godziny = cały dzień)",
                            miejsce="Opcjonalnie: gdzie (dostanie pogodę w raporcie)", minuty="Czas trwania (domyślnie 60)")
     @app_commands.default_permissions(administrator=True)
@@ -206,6 +206,52 @@ class Panel(commands.Cog):
             await interaction.response.send_message(f"❌ {e}", ephemeral=True)
             return
         await interaction.response.send_message(f"📅 {r.get('msg', 'Dodane')}")
+
+    @app_commands.command(name="wydarzenia", description="Najbliższe wydarzenia z kalendarza (30 dni) z pogodą; można też usunąć")
+    @app_commands.default_permissions(administrator=True)
+    async def wydarzenia(self, interaction: discord.Interaction):
+        try:
+            d = await self.api_get("/api/kalendarz/lista")
+        except Exception as e:  # noqa: BLE001
+            await interaction.response.send_message(f"❌ {e}", ephemeral=True)
+            return
+        lista = d.get("wydarzenia") or []
+        if not lista:
+            await interaction.response.send_message("📭 W najbliższych 30 dniach nic nie ma w kalendarzu.")
+            return
+        linie = [f"**{i}. {w['tytul']}** — {w['kiedy']}" + (f"\n  📍 {w['miejsce']}" + (f" · {w['pogoda']}" if w.get("pogoda") else "") if w.get("miejsce") else "")
+                 for i, w in enumerate(lista, 1)]
+        embed = discord.Embed(title="📅 Najbliższe wydarzenia", description="\n".join(linie)[:4000], color=0x238636)
+        embed.set_footer(text="Żeby usunąć — wybierz wydarzenie z listy poniżej")
+        await interaction.response.send_message(embed=embed, view=UsunWydarzenie(self, lista, interaction.user.id))
+
+
+class UsunWydarzenie(discord.ui.View):
+    """Lista wyboru pod /wydarzenia: wybór = usunięcie z Kalendarza Google (tylko osoba, która wywołała komendę)."""
+
+    def __init__(self, cog, lista, autor):
+        super().__init__(timeout=300)
+        self.cog, self.autor = cog, autor
+        self.lista = {w["id"]: w for w in lista[:25]}
+        wybor = discord.ui.Select(placeholder="🗑️ Usuń wydarzenie…", min_values=1, max_values=1, options=[
+            discord.SelectOption(label=w["tytul"][:100], description=w["kiedy"][:100], value=w["id"]) for w in lista[:25]])
+        wybor.callback = self.usun
+        self.add_item(wybor)
+
+    async def interaction_check(self, interaction: discord.Interaction) -> bool:
+        return interaction.user.id == self.autor
+
+    async def usun(self, interaction: discord.Interaction):
+        eid = interaction.data["values"][0]
+        w = self.lista.get(eid, {})
+        try:
+            r = await self.cog.api("/api/kalendarz/usun", {"id": eid, "tytul": w.get("tytul")})
+        except Exception as e:  # noqa: BLE001
+            await interaction.response.send_message(f"❌ {e}", ephemeral=True)
+            return
+        self.stop()
+        await interaction.response.edit_message(view=None)
+        await interaction.followup.send(f"🗑️ {r.get('msg', 'Usunięte')} ({w.get('kiedy', '')})")
 
 
 async def setup(bot):

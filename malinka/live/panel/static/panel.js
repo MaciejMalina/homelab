@@ -1025,7 +1025,7 @@ WIDOK.wydarzenie = {
       <div class="karta" style="gap:8px"><h2>Co i gdzie</h2>
         ${pole("tytul", "text", noweWyd.tytul, "Tytuł, np. Dentysta")}
         ${pole("miejsce", "text", noweWyd.miejsce, "Miejsce (opcjonalnie) — dostanie pogodę, np. Kraków")}
-        <div class="mala przyg">${w.dane.serwer ? "Serwer działa — wydarzenie trafi do Nextclouda od razu." : "Serwer śpi — obudzę go, wydarzenie trafi do kalendarza, gdy wstanie."}</div></div>
+        <div class="mala przyg">${w.dane.google ? "Trafi od razu do Twojego Kalendarza Google (widać je też w telefonie)." : w.dane.serwer ? "Serwer działa — wydarzenie trafi do Nextclouda od razu." : "Serwer śpi — obudzę go, wydarzenie trafi do kalendarza, gdy wstanie."}</div></div>
       <div class="karta" style="gap:8px"><h2>Kiedy</h2>
         ${pole("data", "date", noweWyd.data, "")}
         ${pole("godz", "time", noweWyd.godz, "")}
@@ -1065,26 +1065,41 @@ WIDOK.komendy = {
 };
 
 // ---------- reguły „gdy → wtedy”: lista + kreator (malinka sprawdza je co 20 s; głosem „pokaż reguły”)
-const REG_NOWA = () => ({ id: "", nazwa: "", wl: true, gdy: { typ: "pobrane", minuty: 10, mac: "", godz: "07:30", dni: [], filtr: "" }, okno: null, wtedy: [] });
+const REG_NOWA = () => ({ id: "", nazwa: "", wl: true, sucho: true, warunek: null, okno: null, wtedy: [],
+  gdy: { typ: "pobrane", minuty: 10, mac: "", godz: "07:30", dni: [], filtr: "", tylko_miejsce: true, mnt: "/mnt/data", proc: 90 } });
 let rk = REG_NOWA();
-const REG_MIN = { nieobecnosc: [5, 10, 15, 30, 60], wraca: [30, 60, 120, 240] };
+const REG_MIN = { nieobecnosc: [5, 10, 15, 30, 60], wraca: [30, 60, 120, 240], znika: [5, 10, 15, 30, 60],
+  przed: [15, 30, 60, 120, 1440], usluga: [1, 5, 15, 30], serwer_wol: [2, 3, 5, 10] };
+const REG_MIN_DOM = { nieobecnosc: 10, wraca: 60, znika: 15, przed: 60, usluga: 5, serwer_wol: 3 };
+const REG_MIN_OPIS = { nieobecnosc: "bez nikogo przy biurku (kamera panelu)", wraca: "nieobecności w sieci", znika: "bez urządzenia w sieci",
+  przed: "przed startem wydarzenia", usluga: "od awarii (usługi serwera tylko, gdy działa)", serwer_wol: "po wysłaniu Wake-on-LAN" };
 const REG_OKNA = [[null, "cały dzień"], [{ od: 7, do: 23 }, "7–23"], [{ od: 8, do: 22 }, "8–22"], [{ od: 22, do: 7 }, "noc 22–7"]];
+const regMin = (m) => (m >= 1440 ? m / 1440 + " d" : m >= 60 ? m / 60 + " h" : m + " min");
 function regUrz(d, mac) { const u = (d.urzadzenia || []).find((x) => x.mac === mac); return u ? u.nazwa : mac || "—"; }
 function regGniazdo(d, id) { const g = (d.gniazda || []).find((x) => x.id === id); return g ? g.nazwa : id; }
 function regOpisGdy(g, d) {
   switch (g.typ) {
     case "pobrane": return "pobieranie skończone" + (g.filtr ? ` (nazwa zawiera „${g.filtr}”)` : "");
-    case "nieobecnosc": return `nikogo przy biurku ${g.minuty} min`;
+    case "nieobecnosc": return `nikogo przy biurku ${regMin(g.minuty)}`;
     case "obecnosc": return "ktoś siada przy biurku";
-    case "wraca": return g.mac ? `${regUrz(d, g.mac)} wraca po ${g.minuty >= 60 ? g.minuty / 60 + " h" : g.minuty + " min"}` : "urządzenie wraca (nie wybrano!)";
+    case "wraca": return g.mac ? `${regUrz(d, g.mac)} wraca po ${regMin(g.minuty)}` : "urządzenie wraca (nie wybrano!)";
+    case "znika": return g.mac ? `${regUrz(d, g.mac)} znika na ${regMin(g.minuty)}` : "urządzenie znika (nie wybrano!)";
     case "godzina": return `o ${g.godz}${g.dni && g.dni.length ? " · " + g.dni.map((x) => DNI_PN[x]).join(", ") : " codziennie"}`;
+    case "przed": return `${regMin(g.minuty)} przed wydarzeniem${g.tylko_miejsce ? " z miejscem" : ""}`;
+    case "dzien_przed": return `o ${g.godz} dzień przed wydarzeniem całodniowym`;
+    case "dobranoc": return "„Dobranoc”";
+    case "usluga": return `usługa nie działa ${regMin(g.minuty)}` + (g.filtr ? ` („${g.filtr}”)` : "");
+    case "serwer_wol": return `serwer nie wstał ${regMin(g.minuty)} po WoL`;
+    case "dysk": return `dysk ${g.mnt} ≥ ${g.proc}%`;
     default: return g.typ;
   }
 }
+function regOpisWar(w) { return !w ? "" : w.typ === "lista" ? ` · jeśli lista „${w.lista}” niepusta` : w.typ === "paczka" ? " · jeśli czeka paczka" : ""; }
 function regOpisWtedy(a, d) {
   const onoff = (x) => (x === "off" ? "wyłącz" : "włącz");
   switch (a.typ) {
     case "powiedz": return `powiedz „${a.tekst}”`;
+    case "baner": return "baner";
     case "discord": return "Discord";
     case "gniazdo": return `${onoff(a.akcja)} ${regGniazdo(d, a.id)}`;
     case "stanowisko": return `${onoff(a.akcja)} stanowisko`;
@@ -1108,36 +1123,45 @@ WIDOK.reguly = {
     const d = w.dane, lista = d.reguly || [];
     const chip = (akt, akcja, attrs, tekst) => `<button class="chip maly ${akt ? "aktywny" : ""}" data-akcja="${akcja}" ${attrs}>${tekst}</button>`;
     const wiersze = lista.map((r) => `<div class="wiersz" style="align-items:flex-start"><span class="v zawijaj" style="${r.wl ? "" : "opacity:.5"}">
-        <b>${esc(r.nazwa)}</b>${rk.id === r.id ? ' <span class="mala" style="color:var(--akcent)">✎ edytujesz</span>' : ""}
-        <div class="mala przyg">gdy ${esc(regOpisGdy(r.gdy, d))}${r.okno ? ` · ${r.okno.od}–${r.okno.do}` : ""} → ${esc(r.wtedy.map((a) => regOpisWtedy(a, d)).join(", "))}</div>
-        <div class="mala przyg">${r.ostatnio ? `ostatnio ${temuOd(r.ostatnio)} · razem ${r.licznik}` : "jeszcze nie działała"}</div></span>
+        <b>${esc(r.nazwa)}</b>${r.sucho ? ' <span class="mala" style="color:var(--pom)">🧪 na sucho</span>' : ""}${rk.id === r.id ? ' <span class="mala" style="color:var(--akcent)">✎ edytujesz</span>' : ""}
+        <div class="mala przyg">gdy ${esc(regOpisGdy(r.gdy, d))}${esc(regOpisWar(r.warunek))}${r.okno ? ` · ${r.okno.od}–${r.okno.do}` : ""} → ${esc(r.wtedy.map((a) => regOpisWtedy(a, d)).join(", "))}</div>
+        <div class="mala przyg">${r.ostatnio ? `ostatnio ${temuOd(r.ostatnio)} · razem ${r.licznik}` : r.sucho ? "jeszcze nic — historia pokaże, co by zrobiła" : "jeszcze nie działała"}</div></span>
       <span class="k" style="display:flex;gap:5px;flex-wrap:wrap;justify-content:flex-end">
         ${chip(r.wl, "reg-cmd", `data-id="${esc(r.id)}" data-cmd="${r.wl ? "wyl" : "wl"}"`, r.wl ? "Wł." : "Wył.")}
+        ${chip(r.sucho, "reg-cmd", `data-id="${esc(r.id)}" data-cmd="${r.sucho ? "naprawde" : "sucho"}"`, r.sucho ? "🧪 Sucho" : "Naprawdę")}
         <button class="maly" data-akcja="reg-edytuj" data-id="${esc(r.id)}">Edytuj</button>
         <button class="maly" data-akcja="reg-cmd" data-id="${esc(r.id)}" data-cmd="test" data-dlugie>Test</button>
         <button class="maly" data-akcja="reg-cmd" data-id="${esc(r.id)}" data-cmd="usun" data-potwierdz>Usuń</button></span></div>`).join("");
-    const hist = (d.hist || []).map((h) => `<div class="wiersz"><span class="v zawijaj"><span class="${h.ok ? "" : "zle-t"}">●</span> <b>${esc(h.nazwa)}</b>
+    const hist = (d.hist || []).map((h) => `<div class="wiersz"><span class="v zawijaj"><span class="${h.ok ? "" : "zle-t"}" style="${h.sucho ? "color:var(--pom)" : ""}">●</span> <b>${esc(h.nazwa)}</b>
         <span class="mala przyg">${esc(h.opis)}</span></span><span class="k mala">${godzMin(h.ts)}<br>${temuOd(h.ts)}</span></div>`).join("");
 
     // --- kreator
     const g = rk.gdy;
     const gdyChipy = Object.entries(d.gdy || {}).map(([k, n]) => chip(g.typ === k, "reg-gdy", `data-typ="${k}"`, esc(n))).join("");
     let param = "";
-    if (REG_MIN[g.typ]) param += `<div class="chipy">${REG_MIN[g.typ].map((m) => chip(g.minuty === m, "reg-min", `data-m="${m}"`, m >= 60 ? m / 60 + " h" : m + " min")).join("")}
-      <span class="mala przyg">${g.typ === "wraca" ? "nieobecności w sieci" : "bez nikogo przy biurku (kamera panelu)"}</span></div>`;
-    if (g.typ === "wraca") param += `<div class="chipy" style="max-height:96px;overflow:auto">${(d.urzadzenia || []).map((u) =>
+    if (REG_MIN[g.typ]) param += `<div class="chipy">${REG_MIN[g.typ].map((m) => chip(g.minuty === m, "reg-min", `data-m="${m}"`, regMin(m))).join("")}
+      <span class="mala przyg">${REG_MIN_OPIS[g.typ]}</span></div>`;
+    if (g.typ === "wraca" || g.typ === "znika") param += `<div class="chipy" style="max-height:96px;overflow:auto">${(d.urzadzenia || []).map((u) =>
       chip(g.mac === u.mac, "reg-mac", `data-mac="${esc(u.mac)}"`, `${u.online ? "🟢" : "⚪"} ${esc(u.nazwa)} <span class="przyg">${esc(u.ip || "")}</span>`)).join("")}</div>
-      <div class="mala przyg">Wybierz swój telefon (nazwy nadasz w zakładce Sieć). Sieć skanuje co 5 min.</div>`;
-    if (g.typ === "godzina") param += `<div class="chipy"><input type="time" class="tekst" id="reg-godz" value="${esc(g.godz)}" style="flex:none;width:130px;min-height:36px;font-size:16px">
-      ${DNI_PN.map((n, i) => chip((g.dni || []).includes(i), "reg-dzien", `data-d="${i}"`, n)).join("")}</div>
-      <div class="mala przyg">Bez zaznaczonych dni = codziennie.</div>`;
-    if (g.typ === "pobrane") param += `<input type="text" class="tekst" id="reg-filtr" value="${esc(g.filtr || "")}" placeholder="Tylko gdy nazwa zawiera… (puste = każde)" style="width:100%;flex:none;min-height:36px">`;
+      <div class="mala przyg">Wybierz urządzenie (np. telefon). Sieć skanuje co 5 min, więc czas jest przybliżony.</div>`;
+    if (g.typ === "godzina" || g.typ === "dzien_przed") param += `<div class="chipy"><input type="time" class="tekst" id="reg-godz" value="${esc(g.godz)}" style="flex:none;width:130px;min-height:36px;font-size:16px">
+      ${g.typ === "godzina" ? DNI_PN.map((n, i) => chip((g.dni || []).includes(i), "reg-dzien", `data-d="${i}"`, n)).join("") : '<span class="mala przyg">dzień wcześniej, gdy jutro jest wydarzenie całodniowe (bez świąt)</span>'}</div>
+      ${g.typ === "godzina" ? '<div class="mala przyg">Bez zaznaczonych dni = codziennie.</div>' : ""}`;
+    if (g.typ === "pobrane" || g.typ === "usluga") param += `<input type="text" class="tekst" id="reg-filtr" value="${esc(g.filtr || "")}" placeholder="Tylko gdy nazwa zawiera… (puste = każda)" style="width:100%;flex:none;min-height:36px">`;
+    if (g.typ === "przed") param += `<div class="chipy">${chip(g.tylko_miejsce, "reg-miejsce", "", "📍 tylko wydarzenia z miejscem")}
+      <span class="mala przyg">w tekście: {nazwa} {miejsce} {pogoda} {parasol} {godzina}</span></div>`;
+    if (g.typ === "dysk") param += `<div class="chipy">${[80, 85, 90, 95].map((p) => chip(g.proc === p, "reg-proc", `data-p="${p}"`, p + "%")).join("")}
+      <span class="mala przyg">${esc(g.mnt)} · sprawdzane co godzinę, gdy serwer działa; ponownie po spadku o 5%</span></div>`;
     if (g.typ === "obecnosc") param += `<div class="mala przyg">Gdy kamera panelu zobaczy kogoś przy biurku (monitor i tak włącza się sam).</div>`;
+    if (g.typ === "dobranoc") param += `<div class="mala przyg">Po odliczeniu „Dobranoc” (anulowane się nie liczy).</div>`;
+    const war = rk.warunek;
+    const warChipy = chip(!war, "reg-war", 'data-w=""', "zawsze") + Object.entries(d.warunki || {}).map(([k, n]) => chip(war && war.typ === k, "reg-war", `data-w="${k}"`, esc(n))).join("")
+      + (war && war.typ === "lista" ? (d.listy || ["zakupy"]).map((n) => chip(war.lista === n, "reg-war-lista", `data-l="${esc(n)}"`, "📋 " + esc(n))).join("") : "");
     const okno = REG_OKNA.map(([o, n]) => chip(JSON.stringify(o) === JSON.stringify(rk.okno), "reg-okno", `data-o='${JSON.stringify(o)}'`, n)).join("");
     const akcje = rk.wtedy.map((a, i) => {
       let p = "";
-      if (["powiedz", "discord", "komenda"].includes(a.typ)) p = `<input type="text" class="tekst" id="reg-t-${i}" value="${esc(a.tekst || "")}"
-        placeholder="${a.typ === "komenda" ? "np. włącz drukarkę / co mam jutro" : "Tekst — {nazwa}, {minuty} podstawią się same"}" style="min-height:34px">`;
+      if (["powiedz", "baner", "discord", "komenda"].includes(a.typ)) p = `<input type="text" class="tekst" id="reg-t-${i}" value="${esc(a.tekst || "")}"
+        placeholder="${a.typ === "komenda" ? "np. włącz drukarkę / co mam jutro" : "Tekst — {nazwa}, {minuty}, {lista}, {paczki} podstawią się same"}" style="min-height:34px">`;
       if (["gniazdo", "stanowisko", "ekran"].includes(a.typ)) p = ["on", "off"].map((x) => chip(a.akcja === x, "reg-onoff", `data-i="${i}" data-x="${x}"`,
         a.typ === "ekran" ? (x === "on" ? "obudź" : "uśpij") : (x === "on" ? "włącz" : "wyłącz"))).join("");
       if (a.typ === "gniazdo") p += (d.gniazda || []).map((gn) => chip(a.id === gn.id, "reg-gn", `data-i="${i}" data-id="${esc(gn.id)}"`, esc(gn.nazwa))).join("");
@@ -1148,16 +1172,18 @@ WIDOK.reguly = {
     const dodaj = Object.entries(d.wtedy || {}).map(([k, n]) => `<button class="chip maly" data-akcja="reg-dodaj-a" data-typ="${k}">＋ ${esc(n)}</button>`).join("");
     return `<div class="siatka" style="grid-template-columns:minmax(0,1fr) minmax(0,1.15fr)">
       <div style="display:flex;flex-direction:column;gap:8px;min-height:0">
-        <div class="karta" style="flex:1.4;min-height:0"><h2>Reguły<span class="prawo">${lista.filter((r) => r.wl).length}/${lista.length} wł.</span></h2>
+        <div class="karta" style="flex:1.4;min-height:0"><h2>Reguły<span class="prawo">${lista.filter((r) => r.wl).length}/${lista.length} wł. · ${lista.filter((r) => r.wl && r.sucho).length} na sucho</span></h2>
           <div class="przewijane" data-scroll="reg">${wiersze || pustoHtml("Brak reguł — utwórz obok")}</div></div>
-        <div class="karta" style="flex:1;min-height:0"><h2>Ostatnio zadziałały</h2><div class="przewijane" data-scroll="regh">${hist || pustoHtml("Jeszcze nic")}</div></div></div>
+        <div class="karta" style="flex:1;min-height:0"><h2>Ostatnio zadziałały<span class="prawo mala">🧪 = tylko zapis</span></h2><div class="przewijane" data-scroll="regh">${hist || pustoHtml("Jeszcze nic")}</div></div></div>
       <div class="karta" style="gap:7px;overflow:auto"><h2>${rk.id ? "Edycja reguły" : "Nowa reguła"}<span class="prawo"><button class="maly" data-akcja="reg-nowa">＋ nowa</button></span></h2>
         <input type="text" class="tekst" id="reg-nazwa" value="${esc(rk.nazwa)}" placeholder="Nazwa, np. Wychodzę z domu" style="width:100%;flex:none;min-height:40px;font-size:16px">
         <div class="mala przyg">GDY</div><div class="chipy">${gdyChipy}</div>${param}
+        <div class="mala przyg">TYLKO JEŚLI</div><div class="chipy">${warChipy}</div>
         <div class="mala przyg">TYLKO W GODZINACH</div><div class="chipy">${okno}</div>
         <div class="mala przyg">WTEDY</div>${akcje || '<div class="mala przyg">Dodaj, co ma się stać:</div>'}
         <div class="chipy">${dodaj}</div>
-        <button class="glowny" data-akcja="reg-zapisz" data-dlugie style="margin-top:auto">⚡ ${rk.id ? "Zapisz zmiany" : "Utwórz regułę"}</button></div></div>`;
+        <div class="chipy" style="margin-top:auto">${chip(rk.sucho, "reg-sucho", "", rk.sucho ? "🧪 Na sucho — najpierw tylko zapisuje, co by zrobiła" : "⚡ Działa od razu naprawdę")}</div>
+        <button class="glowny" data-akcja="reg-zapisz" data-dlugie>⚡ ${rk.id ? "Zapisz zmiany" : "Utwórz regułę"}</button></div></div>`;
   },
 };
 
@@ -1553,7 +1579,7 @@ document.addEventListener("click", (e) => {
     case "reg-nowa": rk = REG_NOWA(); blokadaRenderu = 0; rysujWidok(true); break;
     case "reg-edytuj": {
       const r = ((widok && widok.dane && widok.dane.reguly) || []).find((x) => x.id === b.dataset.id);
-      if (r) { const c = JSON.parse(JSON.stringify(r)); rk = { ...REG_NOWA(), ...c, gdy: { ...REG_NOWA().gdy, ...c.gdy } }; }
+      if (r) { const c = JSON.parse(JSON.stringify(r)); rk = { ...REG_NOWA(), ...c, sucho: !!c.sucho, warunek: c.warunek || null, gdy: { ...REG_NOWA().gdy, ...c.gdy } }; }
       blokadaRenderu = 0; rysujWidok(true); break;
     }
     case "reg-cmd":
@@ -1563,11 +1589,20 @@ document.addEventListener("click", (e) => {
         if (widok) { widok.ost = 0; wczytajWidok(); }
       });
       break;
-    case "reg-gdy": case "reg-min": case "reg-mac": case "reg-dzien": case "reg-okno":
-    case "reg-onoff": case "reg-gn": case "reg-dodaj-a": case "reg-usun-a": {
+    case "reg-gdy": case "reg-min": case "reg-mac": case "reg-dzien": case "reg-okno": case "reg-miejsce": case "reg-proc":
+    case "reg-war": case "reg-war-lista": case "reg-sucho": case "reg-onoff": case "reg-gn": case "reg-dodaj-a": case "reg-usun-a": {
       regZbierz();
       const ds = b.dataset, i = Number(ds.i), g = rk.gdy;
-      if (ds.akcja === "reg-gdy") { g.typ = ds.typ; if (REG_MIN[g.typ] && !REG_MIN[g.typ].includes(g.minuty)) g.minuty = g.typ === "wraca" ? 60 : 10; }
+      if (ds.akcja === "reg-gdy") {
+        g.typ = ds.typ;
+        if (REG_MIN[g.typ] && !REG_MIN[g.typ].includes(g.minuty)) g.minuty = REG_MIN_DOM[g.typ];
+        if (g.typ === "dzien_przed" && g.godz === "07:30") g.godz = "20:00";
+      }
+      if (ds.akcja === "reg-miejsce") g.tylko_miejsce = !g.tylko_miejsce;
+      if (ds.akcja === "reg-proc") g.proc = Number(ds.p);
+      if (ds.akcja === "reg-war") rk.warunek = ds.w ? { typ: ds.w, lista: ds.w === "lista" ? "zakupy" : undefined } : null;
+      if (ds.akcja === "reg-war-lista" && rk.warunek) rk.warunek.lista = ds.l;
+      if (ds.akcja === "reg-sucho") rk.sucho = !rk.sucho;
       if (ds.akcja === "reg-min") g.minuty = Number(ds.m);
       if (ds.akcja === "reg-mac") g.mac = ds.mac;
       if (ds.akcja === "reg-dzien") { const x = Number(ds.d); g.dni = g.dni.includes(x) ? g.dni.filter((y) => y !== x) : [...g.dni, x].sort(); }

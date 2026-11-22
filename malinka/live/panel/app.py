@@ -29,10 +29,14 @@ API (JSON):
   GET  /api/siec/speedtest        ostatni wynik (ts, ts_ms, ping, dol, gora) - dla kafelka w Homepage
 POST /api/siec/speedtest
   POST /api/paczka/<id>/odebrana       chowa paczkę z listy (zakładka Dzień, brief)
-  POST /api/kalendarz                  {"tytul", "data": RRRR-MM-DD, "godzina"?: GG:MM, "minuty"?, "miejsce"?}  (serwer śpi -> kolejka + WoL)
+  POST /api/kalendarz                  {"tytul", "data": RRRR-MM-DD, "godzina"?: GG:MM, "minuty"?, "miejsce"?}  (Google Calendar;
+                                       bez klucza data/google-sa.json: Nextcloud, gdy serwer śpi -> kolejka + WoL)
+  POST /api/kalendarz/usun             {"id", "tytul"?} — usuwa wydarzenie z własnego kalendarza Google
+  GET  /api/kalendarz/lista            najbliższe 30 dni (własny kalendarz) z pogodą — /wydarzenia na Discordzie
+  GET  /api/kalendarz/ics              eksport ICS dla porannego raportu n8n (węzeł „Kalendarz”)
   GET  /api/kalendarz/pogoda           dziś i jutro: wydarzenia z miejscem + pogoda tam (dla porannego raportu n8n)
   POST /api/reguly                     reguła z kreatora {"id"?, "nazwa", "wl", "gdy": {typ…}, "okno"?, "wtedy": […]}  (lista: GET /api/tab/reguly)
-  POST /api/reguly/<id>/<wl|wyl|usun|test>   włącz / wyłącz / usuń / odpal na próbę
+  POST /api/reguly/<id>/<wl|wyl|usun|test|sucho|naprawde>   włącz / wyłącz / usuń / odpal na próbę / tryb na sucho
   POST /api/budzik                     {"godzina": "6:30", "dni"?: [0..6] | "pn-pt"|"weekend"|"codziennie"|"jednorazowy"}
   POST /api/budzik/<stop|drzemka>      wyłącza dzwoniący budzik / drzemka BUDZIK_DRZEMKA_MIN
   POST /api/budzik/<id>/<wl|wyl|usun>  stały budzik: włącz / wyłącz, każdy: usuń  (lista: GET /api/tab/budziki)
@@ -574,7 +578,7 @@ def _bez_emoji(s):
 
 
 def _brief_kalendarz(dzien=0):
-    k = _z_pamieci("kalendarz", Z.kalendarz_pobierz)
+    k = _kal()
     d = (k.get("data") or {}) if k.get("ok") else {}
     n = _teraz_pl()
     data = n.date() + Z.timedelta(days=dzien)
@@ -1193,6 +1197,7 @@ def _dobranoc_wykonaj(ident):
     # 5) panel
     ustaw_ekran("sleep")
     print(f"dobranoc: {'; '.join(wyniki)} | kamera bez automatu do {rano:%d.%m %H:%M}", flush=True)
+    _reg_zdarzenie("dobranoc")
 
 
 def dobranoc_start():
@@ -1892,6 +1897,7 @@ def akcja_wake():
         raise ValueError("brak SERVER_MAC w .env")
     wol(SERVER_MAC)
     _budzenie["ts"] = teraz()
+    _reg_wol["ts"] = _reg_wol["ts"] or teraz()   # reguła „serwer nie wstał po WoL” liczy od pierwszego budzenia
     cache.drop("serwer")
     return {"msg": "Wysłano WoL — serwer wstaje (zwykle 1–3 min)"}
 
@@ -2486,7 +2492,7 @@ def _pogoda_wyd(w, blokuj=False):
 
 
 def _kalendarz_z_pogoda():
-    k = _z_pamieci("kalendarz", Z.kalendarz_pobierz)
+    k = _kal()
     if not k.get("ok") or not isinstance(k.get("data"), dict):
         return k
     wyd = [{**w, "pogoda": _pogoda_wyd(w)} if w.get("miejsce") else w for w in k["data"].get("wydarzenia") or []]
@@ -2495,7 +2501,7 @@ def _kalendarz_z_pogoda():
 
 def kalendarz_pogoda_api():
     """Dla porannego raportu n8n: dziś i jutro, wydarzenia z miejscem i pogodą (geokodowanie czeka, jeśli trzeba)."""
-    k = _z_pamieci("kalendarz", Z.kalendarz_pobierz)
+    k = _kal()
     dzis = _teraz_pl().date()
     out = []
     for w in ((k.get("data") or {}).get("wydarzenia") or []) if k.get("ok") else []:
@@ -2508,6 +2514,17 @@ def kalendarz_pogoda_api():
     return {"wydarzenia": out, "now": teraz()}
 
 
+def kalendarz_lista_api(dni=30):
+    """Najbliższe wydarzenia z własnego kalendarza (bez świąt) z pogodą w miejscu — dla /wydarzenia."""
+    od = Z.datetime.now(Z.TZ)
+    out = []
+    for w in Z.gcal_wydarzenia(od, od + Z.timedelta(days=dni), limit=25, tylko_moje=True)[:25]:
+        p = _pogoda_wyd(w, blokuj=False) if w.get("miejsce") else None
+        out.append({**w, "pogoda": (f"{p['ikona']} {round(p['temp'])}°C" + (f" · opady {p['pp']}%" if p.get("pp") else "")) if p else None,
+                    "kiedy": _kiedy_wyd(w["start"][:16] if not w["caly_dzien"] else w["start"][:10], w["caly_dzien"])})
+    return {"wydarzenia": out, "now": teraz()}
+
+
 def kalendarz_zglos(tytul, start, minuty=60, caly_dzien=False, miejsce=None, zrodlo=""):
     """Dodaje wydarzenie (albo kolejkuje, gdy serwer śpi — i go budzi). Zwraca (dodane_teraz: bool, opis)."""
     tytul = " ".join(str(tytul or "").split())[:200]
@@ -2517,7 +2534,7 @@ def kalendarz_zglos(tytul, start, minuty=60, caly_dzien=False, miejsce=None, zro
          "caly_dzien": bool(caly_dzien), "miejsce": (" ".join(str(miejsce).split())[:200] or None) if miejsce else None,
          "ts": teraz()}
     print(f"kalendarz: nowe wydarzenie ({zrodlo}) {tytul} {start}{' @ ' + w['miejsce'] if w['miejsce'] else ''}", flush=True)
-    if serwer_up():
+    if Z.gcal_aktywny() or serwer_up():
         try:
             Z.kalendarz_dodaj(w)
             threading.Thread(target=_kal_odswiez, daemon=True).start()
@@ -2526,7 +2543,7 @@ def kalendarz_zglos(tytul, start, minuty=60, caly_dzien=False, miejsce=None, zro
             print(f"kalendarz: dodanie nie wyszło ({e}) — do kolejki", flush=True)
     kol = Z.pamiec_get("kal_kolejka", []) or []
     Z.pamiec_set("kal_kolejka", kol + [w])
-    if not serwer_up():
+    if not Z.gcal_aktywny() and not serwer_up():
         try:
             akcja_wake()
         except Exception as e:  # noqa: BLE001
@@ -2547,7 +2564,7 @@ def straznik_kalendarza():
         time.sleep(60)
         try:
             kol = Z.pamiec_get("kal_kolejka", []) or []
-            if not kol or not serwer_up():
+            if not kol or not (Z.gcal_aktywny() or serwer_up()):
                 continue
             zostaje = []
             for w in kol:
@@ -2647,7 +2664,8 @@ def _glos_kalendarz(src, t):
     tytul = tytul[:1].upper() + tytul[1:]
     teraz_dod, w = kalendarz_zglos(tytul, start, minuty, godz is None, miejsce, "głos")
     odp = f"Dodaję do kalendarza: {tytul}, {_kiedy_wyd(start, godz is None)}" + (f", {gdzie}" if gdzie else "") + "."
-    return {"odp": odp + ("" if teraz_dod else " Serwer śpi — budzę go, wydarzenie trafi do kalendarza, gdy wstanie.")}
+    return {"odp": odp + ("" if teraz_dod else " Na razie się nie udało — spróbuję ponownie za minutę." if Z.gcal_aktywny()
+                          else " Serwer śpi — budzę go, wydarzenie trafi do kalendarza, gdy wstanie.")}
 
 
 def jarvis(tekst):
@@ -2814,17 +2832,26 @@ def jarvis_api(tekst):
 
 
 # --------------------------------------------------------------------------- reguły „gdy → wtedy” (kreator na panelu, 2026-11-20)
-# Reguła: {id, nazwa, wl, gdy: {typ, …}, okno: {od, do} | None, wtedy: [{typ, …}], ostatnio, licznik}.
-# Zapis w pamiec.json („reguly”), historia odpaleń w „reguly_hist” (40 ostatnich). Strażnik sprawdza co 20 s;
-# „ktoś siada” idzie od razu z obecnosc(). W tekstach akcji: {nazwa} (plik / urządzenie), {minuty}.
+# Reguła: {id, nazwa, wl, sucho, gdy: {typ, …}, warunek: {typ, …} | None, okno: {od, do} | None, wtedy: [{typ, …}],
+# ostatnio, licznik}. Zapis w pamiec.json („reguly”), historia odpaleń w „reguly_hist” (40 ostatnich). Strażnik sprawdza
+# co 20 s; „ktoś siada” i „Dobranoc” idą od razu. Tryb „na sucho” (2026-11-22): reguła tylko zapisuje w historii, co by
+# zrobiła — nowe reguły zaczynają w nim, wyłącza się go w kreatorze. W tekstach akcji: {nazwa}, {minuty}, {miejsce},
+# {pogoda}, {parasol}, {godzina}, {lista}, {paczki}, {proc}.
 REG_GDY = {"pobrane": "Pobieranie skończone", "nieobecnosc": "Nikogo przy biurku", "obecnosc": "Ktoś siada przy biurku",
-           "wraca": "Urządzenie wraca do sieci", "godzina": "O godzinie"}
-REG_WTEDY = {"powiedz": "Powiedz i pokaż", "discord": "Wyślij na Discorda", "gniazdo": "Gniazdo",
-             "stanowisko": "Stanowisko", "ekran": "Ekran panelu", "brief": "Brief dnia", "komenda": "Komenda JARVIS-a"}
+           "wraca": "Urządzenie wraca do sieci", "znika": "Urządzenie znika z sieci", "godzina": "O godzinie",
+           "przed": "Przed wydarzeniem", "dzien_przed": "Dzień przed całodniowym", "dobranoc": "Dobranoc",
+           "usluga": "Usługa nie działa", "serwer_wol": "Serwer nie wstał po WoL", "dysk": "Dysk serwera pełny"}
+REG_WTEDY = {"powiedz": "Powiedz i pokaż", "baner": "Baner (bez głosu)", "discord": "Wyślij na Discorda",
+             "gniazdo": "Gniazdo", "stanowisko": "Stanowisko", "ekran": "Ekran panelu", "brief": "Brief dnia",
+             "komenda": "Komenda JARVIS-a"}
+REG_WAR = {"lista": "Lista nie jest pusta", "paczka": "Czeka paczka do odbioru"}
 REG_HIST_MAX = 40
 _reg_lock = threading.Lock()
-_reg_mark = {}                       # id reguły -> znaczniki (raz na nieobecność / powrót / dzień)
+_reg_mark = {}                       # id reguły -> znaczniki (raz na nieobecność / powrót / dzień / wydarzenie)
 _reg_qbit = {"snap": None, "ts": 0}  # hash -> postęp z poprzedniego sprawdzenia
+_reg_wol = {"ts": 0.0}               # kiedy wysłano WoL do serwera (dla „serwer nie wstał”)
+_reg_dysk = {"ts": 0.0}
+TELEFON_MAC = E("TELEFON_MAC", "0C:32:3A:C5:AA:2F")
 
 REG_STARTOWE = [
     {"id": "pobrane", "nazwa": "Pobieranie skończone", "wl": True, "gdy": {"typ": "pobrane"}, "okno": None,
@@ -2834,6 +2861,25 @@ REG_STARTOWE = [
     {"id": "telefon", "nazwa": "Telefon wraca do Wi-Fi", "wl": False, "gdy": {"typ": "wraca", "mac": "", "minuty": 60},
      "okno": {"od": 7, "do": 23}, "wtedy": [{"typ": "powiedz", "tekst": "Witaj w domu."}, {"typ": "brief"}]},
 ]
+# wybrane 2026-11-22 (z listy 24 pomysłów: 2, 3, 11, 13, 16, 18, 19, 20) — dokładane raz, startują „na sucho”
+REG_NOWE_2211 = [
+    {"id": "wyjscie-zakupy", "nazwa": "Wychodzę — lista zakupów", "gdy": {"typ": "znika", "mac": TELEFON_MAC, "minuty": 15},
+     "warunek": {"typ": "lista", "lista": "zakupy"}, "wtedy": [{"typ": "discord", "tekst": "🛒 Masz do kupienia: {lista}"}]},
+    {"id": "wyjscie-paczka", "nazwa": "Wychodzę — paczka do odbioru", "gdy": {"typ": "znika", "mac": TELEFON_MAC, "minuty": 15},
+     "warunek": {"typ": "paczka"}, "wtedy": [{"typ": "discord", "tekst": "📦 Po drodze odbierz: {paczki}"}]},
+    {"id": "przed-wydarzeniem", "nazwa": "Godzina przed wydarzeniem", "gdy": {"typ": "przed", "minuty": 60, "tylko_miejsce": True},
+     "wtedy": [{"typ": "powiedz", "tekst": "Za godzinę {nazwa}, {miejsce}: {pogoda}.{parasol}"}]},
+    {"id": "jutro-caly-dzien", "nazwa": "Jutro wydarzenie całodniowe", "gdy": {"typ": "dzien_przed", "godz": "20:00"},
+     "wtedy": [{"typ": "discord", "tekst": "📅 Jutro: **{nazwa}**"}]},
+    {"id": "dobranoc-drukarka", "nazwa": "Dobranoc — drukarka", "gdy": {"typ": "dobranoc"},
+     "wtedy": [{"typ": "gniazdo", "id": "drukarka", "akcja": "off"}]},
+    {"id": "usluga-lezy", "nazwa": "Usługa nie działa", "gdy": {"typ": "usluga", "minuty": 5},
+     "wtedy": [{"typ": "discord", "tekst": "🔴 Od {minuty} min nie działa: **{nazwa}**"}, {"typ": "baner", "tekst": "🔴 Nie działa: {nazwa}"}]},
+    {"id": "serwer-nie-wstal", "nazwa": "Serwer nie wstał po WoL", "gdy": {"typ": "serwer_wol", "minuty": 3},
+     "wtedy": [{"typ": "discord", "tekst": "⚠️ Serwer nie wstał {minuty} min po Wake-on-LAN — sprawdź zasilanie."}]},
+    {"id": "dysk-pelny", "nazwa": "Dysk serwera prawie pełny", "gdy": {"typ": "dysk", "mnt": "/mnt/data", "proc": 90},
+     "wtedy": [{"typ": "discord", "tekst": "💾 Dysk {nazwa} zajęty w {proc}% — czas posprzątać."}]},
+]
 
 
 def reguly():
@@ -2842,6 +2888,11 @@ def reguly():
         if r is None:   # pierwsze uruchomienie: reguły startowe (telefon wyłączony, póki nie wybierzesz urządzenia)
             r = [dict(x, ostatnio=None, licznik=0) for x in REG_STARTOWE]
             Z.pamiec_set("reguly", r)
+        if not Z.pamiec_get("reguly_dodane_2211"):
+            ids = {x["id"] for x in r}
+            r += [dict(x, wl=True, sucho=True, okno=None, ostatnio=None, licznik=0) for x in REG_NOWE_2211 if x["id"] not in ids]
+            Z.pamiec_set("reguly", r)
+            Z.pamiec_set("reguly_dodane_2211", True)
         return r
 
 
@@ -2851,6 +2902,23 @@ def _reg_zapisz(lista):
 
 def _reg_tekst(v, n=200):
     return " ".join(str(v or "").split())[:n]
+
+
+def _reg_int(v, dom, od, do, opis):
+    try:
+        x = int(v if v not in (None, "") else dom)
+    except (TypeError, ValueError):
+        raise ValueError(f"{opis}: liczba") from None
+    if not od <= x <= do:
+        raise ValueError(f"{opis}: {od}–{do}")
+    return x
+
+
+def _reg_godz(v, dom):
+    m = re.fullmatch(r"(\d{1,2}):(\d{2})", str(v or dom))
+    if not m or int(m.group(1)) > 23 or int(m.group(2)) > 59:
+        raise ValueError("Godzina: GG:MM")
+    return f"{int(m.group(1)):02d}:{m.group(2)}"
 
 
 def _reg_sprawdz(b):
@@ -2864,22 +2932,34 @@ def _reg_sprawdz(b):
         raise ValueError("Wybierz, kiedy reguła ma działać")
     gdy = {"typ": typ}
     if typ == "nieobecnosc":
-        gdy["minuty"] = int(g.get("minuty") or 10)
-        if not 1 <= gdy["minuty"] <= 240:
-            raise ValueError("Nieobecność: 1–240 minut")
-    elif typ == "wraca":
+        gdy["minuty"] = _reg_int(g.get("minuty"), 10, 1, 240, "Nieobecność (min)")
+    elif typ in ("wraca", "znika"):
         gdy["mac"] = Z.mac_norm(g.get("mac") or "") or ""
-        gdy["minuty"] = int(g.get("minuty") or 60)
-        if not 10 <= gdy["minuty"] <= 1440:
-            raise ValueError("Powrót do sieci: po 10–1440 minutach nieobecności")
+        gdy["minuty"] = _reg_int(g.get("minuty"), 60 if typ == "wraca" else 15, 5, 1440, "Nieobecność w sieci (min)")
     elif typ == "godzina":
-        m = re.fullmatch(r"(\d{1,2}):(\d{2})", str(g.get("godz") or ""))
-        if not m or int(m.group(1)) > 23 or int(m.group(2)) > 59:
-            raise ValueError("Godzina: GG:MM")
-        gdy["godz"] = f"{int(m.group(1)):02d}:{m.group(2)}"
+        gdy["godz"] = _reg_godz(g.get("godz"), "07:30")
         gdy["dni"] = sorted({int(d) for d in (g.get("dni") or []) if str(d).isdigit() and 0 <= int(d) <= 6})
     elif typ == "pobrane":
         gdy["filtr"] = _reg_tekst(g.get("filtr"), 40)
+    elif typ == "przed":
+        gdy["minuty"] = _reg_int(g.get("minuty"), 60, 5, 1440, "Ile minut przed")
+        gdy["tylko_miejsce"] = bool(g.get("tylko_miejsce", True))
+    elif typ == "dzien_przed":
+        gdy["godz"] = _reg_godz(g.get("godz"), "20:00")
+    elif typ == "usluga":
+        gdy["minuty"] = _reg_int(g.get("minuty"), 5, 1, 120, "Ile minut nie działa")
+        gdy["filtr"] = _reg_tekst(g.get("filtr"), 40)
+    elif typ == "serwer_wol":
+        gdy["minuty"] = _reg_int(g.get("minuty"), 3, 1, 30, "Ile minut po WoL")
+    elif typ == "dysk":
+        gdy["mnt"] = _reg_tekst(g.get("mnt") or "/mnt/data", 60)
+        gdy["proc"] = _reg_int(g.get("proc"), 90, 50, 99, "Próg zajętości (%)")
+    war = None
+    w = b.get("warunek") or {}
+    if w.get("typ") in REG_WAR:
+        war = {"typ": w["typ"]}
+        if w["typ"] == "lista":
+            war["lista"] = _reg_tekst(w.get("lista") or "zakupy", 30).lower()
     okno = b.get("okno")
     if okno:
         od, do = int(okno.get("od", 0)), int(okno.get("do", 24))
@@ -2893,7 +2973,7 @@ def _reg_sprawdz(b):
         if t not in REG_WTEDY:
             continue
         w = {"typ": t}
-        if t in ("powiedz", "discord", "komenda"):
+        if t in ("powiedz", "baner", "discord", "komenda"):
             w["tekst"] = _reg_tekst(a.get("tekst"), 300)
             if not w["tekst"]:
                 raise ValueError(f"{REG_WTEDY[t]}: wpisz tekst")
@@ -2907,10 +2987,10 @@ def _reg_sprawdz(b):
     if not wtedy:
         raise ValueError("Dodaj co najmniej jedno „wtedy”")
     wl = bool(b.get("wl", True))
-    if typ == "wraca" and not gdy["mac"]:
+    if typ in ("wraca", "znika") and not gdy["mac"]:
         wl = False   # bez wybranego urządzenia nie ma czego pilnować
     return {"id": re.sub(r"[^\w-]", "", str(b.get("id") or ""))[:20] or os.urandom(4).hex(), "nazwa": nazwa, "wl": wl,
-            "gdy": gdy, "okno": okno, "wtedy": wtedy}
+            "sucho": bool(b.get("sucho", True)), "gdy": gdy, "warunek": war, "okno": okno, "wtedy": wtedy}
 
 
 def regula_zapisz(b):
@@ -2927,7 +3007,8 @@ def regula_zapisz(b):
             lista.append({**r, "ostatnio": None, "licznik": 0})
         _reg_zapisz(lista)
     _reg_mark.pop(r["id"], None)
-    dop = " (wyłączona — wybierz urządzenie)" if r["gdy"]["typ"] == "wraca" and not r["gdy"]["mac"] else ""
+    dop = " (wyłączona — wybierz urządzenie)" if r["gdy"]["typ"] in ("wraca", "znika") and not r["gdy"]["mac"] else \
+        " — na sucho" if r["sucho"] else ""
     return {"ok": True, "msg": f"Zapisano regułę „{r['nazwa']}”{dop}", "id": r["id"]}
 
 
@@ -2941,10 +3022,13 @@ def regula_akcja(rid, akcja):
             lista.remove(r)
             msg = f"Usunięto „{r['nazwa']}”"
         elif akcja in ("wl", "wyl"):
-            if akcja == "wl" and r["gdy"]["typ"] == "wraca" and not r["gdy"].get("mac"):
+            if akcja == "wl" and r["gdy"]["typ"] in ("wraca", "znika") and not r["gdy"].get("mac"):
                 raise ValueError("Najpierw wybierz urządzenie (Edytuj)")
             r["wl"] = akcja == "wl"
             msg = f"„{r['nazwa']}”: {'włączona' if r['wl'] else 'wyłączona'}"
+        elif akcja in ("sucho", "naprawde"):
+            r["sucho"] = akcja == "sucho"
+            msg = f"„{r['nazwa']}”: " + ("na sucho — tylko zapisuje, co by zrobiła" if r["sucho"] else "działa naprawdę")
         else:
             r = dict(r)
             msg = None
@@ -2952,7 +3036,7 @@ def regula_akcja(rid, akcja):
     _reg_mark.pop(rid, None)
     if akcja == "test":
         threading.Thread(target=_reg_odpal, args=(r, {"nazwa": "Test reguły", "minuty": 0}, True), daemon=True).start()
-        msg = f"Odpalam „{r['nazwa']}” na próbę"
+        msg = f"Odpalam „{r['nazwa']}” naprawdę, na próbę"
     return {"ok": True, "msg": msg}
 
 
@@ -2968,11 +3052,44 @@ def _reg_wstaw(tekst, kontekst):
     return re.sub(r"\{(\w+)\}", lambda m: str(kontekst.get(m.group(1), m.group(0))), tekst)
 
 
+def _reg_lista_pozycje(nazwa):
+    t = (todo() or {}).get("tasks") or []
+    return [z.get("title") for z in t if (z.get("lista") or "") == nazwa and not z.get("done")]
+
+
+def _reg_warunek(r, kontekst):
+    """True = można działać (i kontekst uzupełniony o {lista}/{paczki}); False = warunek niespełniony."""
+    w = r.get("warunek")
+    if not w:
+        return True
+    if w["typ"] == "lista":
+        poz = _reg_lista_pozycje(w["lista"])
+        kontekst["lista"] = ", ".join(poz[:30])
+        return bool(poz)
+    if w["typ"] == "paczka":
+        p = _paczki()
+        kontekst["paczki"] = "; ".join(_paczka_opis(x) for x in p[:5])
+        return bool(p)
+    return True
+
+
+def _reg_opis(a, kontekst):
+    t = a["typ"]
+    if t in ("powiedz", "baner", "discord", "komenda"):
+        return f"{REG_WTEDY[t]}: „{_reg_wstaw(a['tekst'], kontekst)[:120]}”"
+    if t in ("gniazdo", "stanowisko", "ekran"):
+        return f"{REG_WTEDY[t]} {a.get('id', '')} {'włącz' if a['akcja'] == 'on' else 'wyłącz'}".replace("  ", " ")
+    return REG_WTEDY.get(t, t)
+
+
 def _reg_wykonaj(a, r, kontekst):
     t = a["typ"]
     if t == "powiedz":
         _powiadom(_reg_wstaw(a["tekst"], kontekst), "⚡")
         return "powiedziane"
+    if t == "baner":
+        ustaw_alert(_reg_wstaw(a["tekst"], kontekst), "warn", 10)
+        return "baner"
     if t == "discord":
         if not Z.discord_wyslij(f"⚡ {r['nazwa']}", _reg_wstaw(a["tekst"], kontekst), ping=False):
             raise RuntimeError("brak DISCORD_WEBHOOK")
@@ -3007,9 +3124,28 @@ def _reg_wykonaj(a, r, kontekst):
     return "?"
 
 
+def _reg_historia(r, opis, ok, sucho=False):
+    with _reg_lock:
+        hist = [{"ts": teraz(), "id": r["id"], "nazwa": r["nazwa"], "opis": opis[:300], "ok": ok, "sucho": sucho}]
+        Z.pamiec_set("reguly_hist", (hist + (Z.pamiec_get("reguly_hist", []) or []))[:REG_HIST_MAX])
+
+
 def _reg_odpal(r, kontekst, test=False):
     if not test and not _reg_w_oknie(r.get("okno")):
         print(f"reguły: „{r['nazwa']}” poza godzinami — pomijam", flush=True)
+        return
+    try:
+        if not _reg_warunek(r, kontekst):
+            print(f"reguły: „{r['nazwa']}” — warunek niespełniony ({REG_WAR[r['warunek']['typ']]})", flush=True)
+            return
+    except Exception as e:  # noqa: BLE001
+        print(f"reguły: „{r['nazwa']}” — warunek: {e}", flush=True)
+        return
+    co = (f"{kontekst['nazwa']} → " if kontekst.get("nazwa") and not test else "")
+    if r.get("sucho") and not test:
+        opis = "🧪 na sucho, zrobiłaby: " + co + "; ".join(_reg_opis(a, kontekst) for a in r["wtedy"])
+        print(f"reguły: „{r['nazwa']}” {opis}", flush=True)
+        _reg_historia(r, opis, True, sucho=True)
         return
     wyniki, ok = [], True
     for a in r["wtedy"]:
@@ -3018,16 +3154,16 @@ def _reg_odpal(r, kontekst, test=False):
         except Exception as e:  # noqa: BLE001  jedna nieudana akcja nie zatrzymuje reszty
             ok = False
             wyniki.append(f"{REG_WTEDY.get(a['typ'], a['typ'])}: błąd {e}")
-    opis = ("[test] " if test else "") + (f"{kontekst['nazwa']} → " if kontekst.get("nazwa") and not test else "") + "; ".join(wyniki)
+    opis = ("[test] " if test else "") + co + "; ".join(wyniki)
     print(f"reguły: „{r['nazwa']}” -> {opis}", flush=True)
-    with _reg_lock:
-        lista = Z.pamiec_get("reguly", None) or []
-        for x in lista:
-            if x["id"] == r["id"] and not test:
-                x["ostatnio"], x["licznik"] = teraz(), x.get("licznik", 0) + 1
-        _reg_zapisz(lista)
-        hist = [{"ts": teraz(), "id": r["id"], "nazwa": r["nazwa"], "opis": opis[:300], "ok": ok}]
-        Z.pamiec_set("reguly_hist", (hist + (Z.pamiec_get("reguly_hist", []) or []))[:REG_HIST_MAX])
+    if not test:
+        with _reg_lock:
+            lista = Z.pamiec_get("reguly", None) or []
+            for x in lista:
+                if x["id"] == r["id"]:
+                    x["ostatnio"], x["licznik"] = teraz(), x.get("licznik", 0) + 1
+            _reg_zapisz(lista)
+    _reg_historia(r, opis, ok)
 
 
 def _reg_zdarzenie(typ, kontekst=None, warunek=None):
@@ -3035,6 +3171,41 @@ def _reg_zdarzenie(typ, kontekst=None, warunek=None):
     for r in reguly():
         if r.get("wl") and r["gdy"]["typ"] == typ and (warunek is None or warunek(r)):
             threading.Thread(target=_reg_odpal, args=(r, dict(kontekst or {})), daemon=True).start()
+
+
+def _reg_start(r, kontekst):
+    threading.Thread(target=_reg_odpal, args=(r, kontekst), daemon=True).start()
+
+
+def _reg_krok_kalendarz(aktywne, t):
+    k = _kal()
+    wyd = ((k.get("data") or {}).get("wydarzenia") or []) if k.get("ok") else []
+    n = _teraz_pl()
+    for r in aktywne:
+        g, mk = r["gdy"], _reg_mark.setdefault(r["id"], {})
+        if g["typ"] == "przed":
+            juz = mk.setdefault("wyd", set())
+            for w in wyd:
+                if w.get("caly_dzien") or w.get("swieto"):
+                    continue
+                if g.get("tylko_miejsce") and (not w.get("miejsce") or Z.ONLINE_RE.search(w["miejsce"])):
+                    continue
+                st = Z.datetime.fromisoformat(w["start"]).timestamp()
+                klucz = f"{w.get('id') or w['tytul']}|{st}"
+                if st - g["minuty"] * 60 <= t < st and klucz not in juz:
+                    juz.add(klucz)
+                    p = _pogoda_wyd(w, blokuj=True) if w.get("miejsce") else None
+                    _reg_start(r, {"nazwa": w["tytul"], "miejsce": f"w {p['gdzie']}" if p else (w.get("miejsce") or ""),
+                                   "pogoda": (f"{_stopnie(p['temp'])}, {p['opis']}" + (f", szansa opadów {p['pp']} procent" if p.get("pp") else ""))
+                                   if p else "bez prognozy", "parasol": " Weź parasol." if p and (p.get("pp") or 0) >= 50 else "",
+                                   "godzina": Z.datetime.fromisoformat(w["start"]).strftime("%H:%M"),
+                                   "minuty": int((st - t) // 60)})
+        elif g["typ"] == "dzien_przed" and g["godz"] == f"{n.hour:02d}:{n.minute:02d}" and mk.get("dzien") != n.date().isoformat():
+            mk["dzien"] = n.date().isoformat()
+            jutro = (n.date() + Z.timedelta(days=1)).isoformat()
+            tyt = [w["tytul"] for w in wyd if w.get("caly_dzien") and not w.get("swieto") and w["start"][:10] == jutro]
+            if tyt:
+                _reg_start(r, {"nazwa": ", ".join(tyt)})
 
 
 def _reg_krok():
@@ -3051,20 +3222,28 @@ def _reg_krok():
                     mk = _reg_mark.setdefault(r["id"], {})
                     if mk.get("nieob") != o["od"]:
                         mk["nieob"] = o["od"]
-                        threading.Thread(target=_reg_odpal, args=(r, {"minuty": int((t - o["od"]) // 60)}), daemon=True).start()
-    # urządzenie wraca do sieci po co najmniej N minutach (skan sieci co SIEC_CO_S, „ostatni” = ostatnio widziane)
-    if "wraca" in typy:
+                        _reg_start(r, {"minuty": int((t - o["od"]) // 60)})
+    # urządzenie wraca do sieci po ≥ N min / znika z sieci na ≥ N min (skan sieci co SIEC_CO_S)
+    if typy & {"wraca", "znika"}:
         znane = Z.pamiec_get("urzadzenia", {}) or {}
         for r in aktywne:
-            if r["gdy"]["typ"] != "wraca" or r["gdy"].get("mac") not in znane:
+            g = r["gdy"]
+            if g["typ"] not in ("wraca", "znika") or g.get("mac") not in znane:
                 continue
-            u = znane[r["gdy"]["mac"]]
+            u = znane[g["mac"]]
             ost, mk = u.get("ostatni") or 0, _reg_mark.setdefault(r["id"], {})
-            pop = mk.get("ost")
-            mk["ost"] = ost
-            if pop and ost > pop and ost - pop >= r["gdy"]["minuty"] * 60:
-                threading.Thread(target=_reg_odpal, args=(r, {"nazwa": _urz_nazwa(r["gdy"]["mac"], u),
-                                                               "minuty": int((ost - pop) // 60)}), daemon=True).start()
+            if g["typ"] == "wraca":
+                pop = mk.get("ost")
+                mk["ost"] = ost
+                if pop and ost > pop and ost - pop >= g["minuty"] * 60:
+                    _reg_start(r, {"nazwa": _urz_nazwa(g["mac"], u), "minuty": int((ost - pop) // 60)})
+            else:
+                nie_ma = t - ost >= g["minuty"] * 60
+                if "znik" not in mk:   # po starcie panelu: już nieobecne urządzenie nie odpala reguły
+                    mk["znik"] = ost if nie_ma else None
+                elif nie_ma and mk["znik"] != ost:
+                    mk["znik"] = ost
+                    _reg_start(r, {"nazwa": _urz_nazwa(g["mac"], u), "minuty": int((t - ost) // 60)})
     # o godzinie (w wybrane dni tygodnia; pusto = codziennie)
     if "godzina" in typy:
         n = _teraz_pl()
@@ -3074,7 +3253,57 @@ def _reg_krok():
                 mk = _reg_mark.setdefault(r["id"], {})
                 if mk.get("dzien") != n.date().isoformat():
                     mk["dzien"] = n.date().isoformat()
-                    threading.Thread(target=_reg_odpal, args=(r, {}), daemon=True).start()
+                    _reg_start(r, {})
+    if typy & {"przed", "dzien_przed"}:
+        _reg_krok_kalendarz([r for r in aktywne if r["gdy"]["typ"] in ("przed", "dzien_przed")], t)
+    # usługa w Kumie nie działa ≥ N min; usługi serwera tylko gdy serwer działa (śpiący serwer to nie awaria)
+    if "usluga" in typy:
+        k = cache.get("kuma", 30, kuma)
+        mon = ((k.get("data") or {}).get("monitory") or []) if k.get("ok") else []
+        spi = bool(SERVER_IP) and not serwer_up()
+        down = {m["nazwa"] for m in mon if m.get("stan") == "down" and m.get("typ") != "group"
+                and not (spi and SERVER_IP in (m.get("adres") or ""))}
+        for r in aktywne:
+            if r["gdy"]["typ"] != "usluga":
+                continue
+            mk = _reg_mark.setdefault(r["id"], {})
+            od, wyslane = mk.setdefault("od", {}), mk.setdefault("wyslane", set())
+            for nazwa in list(od):
+                if nazwa not in down:
+                    od.pop(nazwa, None)
+                    wyslane.discard(nazwa)
+            for nazwa in down:
+                if r["gdy"].get("filtr") and r["gdy"]["filtr"].lower() not in nazwa.lower():
+                    continue
+                od.setdefault(nazwa, t)
+                if t - od[nazwa] >= r["gdy"]["minuty"] * 60 and nazwa not in wyslane:
+                    wyslane.add(nazwa)
+                    _reg_start(r, {"nazwa": nazwa, "minuty": int((t - od[nazwa]) // 60)})
+    # serwer nie wstał N min po WoL (akcja_wake zapisuje czas)
+    if _reg_wol["ts"] and serwer_up():
+        _reg_wol["ts"] = 0.0
+    if "serwer_wol" in typy and _reg_wol["ts"]:
+        for r in aktywne:
+            if r["gdy"]["typ"] == "serwer_wol" and t - _reg_wol["ts"] >= r["gdy"]["minuty"] * 60:
+                _reg_start(r, {"minuty": int((t - _reg_wol["ts"]) // 60)})
+                _reg_wol["ts"] = 0.0
+                break
+    # dysk serwera: co godzinę, gdy serwer działa; alarm raz, ponownie dopiero po spadku o 5 punktów poniżej progu
+    if "dysk" in typy and t - _reg_dysk["ts"] >= 3600 and serwer_up():
+        _reg_dysk["ts"] = t
+        dyski = {d.get("mnt"): d.get("proc") for d in (Z.glances() or {}).get("dyski") or []}
+        stan = Z.pamiec_get("reguly_dysk", {}) or {}
+        for r in aktywne:
+            g = r["gdy"]
+            if g["typ"] != "dysk" or dyski.get(g["mnt"]) is None:
+                continue
+            proc = round(dyski[g["mnt"]])
+            if proc >= g["proc"] and not stan.get(r["id"]):
+                stan[r["id"]] = True
+                _reg_start(r, {"nazwa": g["mnt"], "proc": proc})
+            elif proc < g["proc"] - 5:
+                stan[r["id"]] = False
+        Z.pamiec_set("reguly_dysk", stan)
     # pobieranie skończone: qBittorrent (na serwerze) co minutę, póki serwer działa; malinka nie trzyma go przy życiu
     if "pobrane" in typy and t - _reg_qbit["ts"] >= 60 and serwer_up():
         _reg_qbit["ts"] = t
@@ -3100,9 +3329,17 @@ def straznik_regul():
         time.sleep(20)
 
 
+def _reg_listy():
+    try:
+        return [x["nazwa"] for x in _listy_nazwy()]
+    except Exception:  # noqa: BLE001  usługa TODO nie odpowiada — kreator i tak działa
+        return []
+
+
 def reguly_tab():
     return {"reguly": reguly(), "hist": Z.pamiec_get("reguly_hist", []) or [], "gdy": REG_GDY, "wtedy": REG_WTEDY,
-            "gniazda": [{"id": g["id"], "nazwa": g["nazwa"]} for g in Z.lista_gniazd()], "stanowisko": STANOWISKO,
+            "warunki": REG_WAR, "gniazda": [{"id": g["id"], "nazwa": g["nazwa"]} for g in Z.lista_gniazd()],
+            "stanowisko": STANOWISKO, "listy": _reg_listy(),
             "urzadzenia": [{"mac": u["mac"], "nazwa": _urz_nazwa(u["mac"], u), "ip": u["ip"], "online": u["online"]}
                            for u in _urzadzenia_lista()]}
 
@@ -3146,6 +3383,17 @@ def dash():
         "gniazda": cache.get("dash-gniazda", 5, Z.gniazda_stan),
         "panel": panel,
     }
+
+
+def _kal():
+    """Kalendarz: Google (zawsze dostępny, odświeżany co 5 min) albo — bez klucza — Nextcloud przez _z_pamieci."""
+    if not Z.gcal_aktywny():
+        return _z_pamieci("kalendarz", Z.kalendarz_pobierz)
+    w = cache.get("kalendarz", 300, Z.kalendarz_pobierz)
+    if w.get("ok") and w["data"] is not None:
+        return {**w, "data": {**w["data"], "aktualne": not w.get("stale")}}
+    zapis = Z.pamiec_get("kalendarz")
+    return {"ok": True, "data": {**zapis, "aktualne": False}, "error": w.get("error")} if zapis else w
 
 
 def _z_pamieci(klucz, pobierz, co_ile=600):
@@ -3208,7 +3456,7 @@ TABS = {
     "budziki": budziki_lista,
     "komendy": lambda: {"grupy": KOMENDY, "now": teraz()},
     "listy": lambda: {"todo": todo(), "now": teraz()},
-    "wydarzenie": lambda: {"now": teraz(), "serwer": serwer_up()},
+    "wydarzenie": lambda: {"now": teraz(), "serwer": serwer_up(), "google": Z.gcal_aktywny()},
     "reguly": reguly_tab,
 }
 
@@ -3321,6 +3569,12 @@ class H(BaseHTTPRequestHandler):
             return self.odpowiedz(200, dash())
         if sc == "/api/kalendarz/pogoda":   # poranny raport n8n (serwer -> malinka po LAN/Tailscale)
             return self.odpowiedz(200, kalendarz_pogoda_api())
+        if sc == "/api/kalendarz/ics":      # poranny raport n8n: węzeł „Kalendarz” (wcześniej eksport z Nextclouda)
+            if not Z.gcal_aktywny():
+                return self.blad(409, "kalendarz Google nieskonfigurowany (brak data/google-sa.json)")
+            return self.odpowiedz(200, typ="text/calendar; charset=utf-8", body=Z.kalendarz_ics().encode("utf-8"))
+        if sc == "/api/kalendarz/lista":    # /wydarzenia na Discordzie: najbliższe 30 dni z pogodą
+            return self.odpowiedz(200, kalendarz_lista_api())
         if sc == "/api/siec/speedtest":   # tylko odczyt ostatniego wyniku; sam pomiar to POST
             w = Z.pamiec_get("speedtest") or {}
             return self.odpowiedz(200, {**w, "ts_ms": int(w["ts"] * 1000) if w.get("ts") else None})
@@ -3413,10 +3667,15 @@ class H(BaseHTTPRequestHandler):
             dodane, w = kalendarz_zglos(b.get("tytul"), start, b.get("minuty") or 60, not g, b.get("miejsce"), b.get("zrodlo") or "API")
             opis = f"{w['tytul']}, {_kiedy_wyd(start, not g)}" + (f", {w['miejsce']}" if w.get("miejsce") else "")
             return self.odpowiedz(200, {"ok": True, "dodane": dodane,
-                                        "msg": f"W kalendarzu: {opis}" if dodane else f"Czeka na serwer (budzę go): {opis}"})
+                                        "msg": f"W kalendarzu: {opis}" if dodane else (f"Na razie się nie udało, ponowię za minutę: {opis}" if Z.gcal_aktywny()
+                                                                                     else f"Czeka na serwer (budzę go): {opis}")})
+        if sc == "/api/kalendarz/usun":   # /wydarzenia na Discordzie (tylko własny kalendarz Google)
+            Z.kalendarz_usun(str(b.get("id") or ""))
+            cache.drop("kalendarz")
+            return self.odpowiedz(200, {"ok": True, "msg": f"Usunięte: {b.get('tytul') or 'wydarzenie'}"})
         if sc == "/api/reguly":
             return self.odpowiedz(200, regula_zapisz(b))
-        if m := re.fullmatch(r"/api/reguly/([\w-]{1,20})/(wl|wyl|usun|test)", sc):
+        if m := re.fullmatch(r"/api/reguly/([\w-]{1,20})/(wl|wyl|usun|test|sucho|naprawde)", sc):
             return self.odpowiedz(200, regula_akcja(m.group(1), m.group(2)))
         if sc == "/api/budzik":
             g = str(b.get("godzina") or "")

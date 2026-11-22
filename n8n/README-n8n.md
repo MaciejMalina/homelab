@@ -99,3 +99,15 @@ W workflow „poranny brief” (ręcznie w edytorze n8n):
 
 Efekt: przy wydarzeniu z miejscem dopisek `— 📍 Kraków 🌧️ 6°C · opady 70%`. Pozycje z list TO DO (zakupy, prezenty…)
 nie są już wypisywane jako zadania — trafiają do pola **📋 Listy** (liczba pozycji na każdej liście).
+
+## Kalendarz z Google zamiast Nextclouda (2026-11-22)
+
+Panel na malince czyta i zapisuje Kalendarz Google (konto serwisowe, klucz w `~/panel/data/google-sa.json`, poza gitem)
+i wystawia gotowy eksport ICS (wydarzenia z kalendarza macmalonet783 + „Święta w Polsce”, cykliczne już rozwinięte).
+W workflow „poranny brief” w węźle **Kalendarz** (HTTP Request) zmień tylko:
+
+- URL: `http://100.105.181.54:8084/api/kalendarz/ics`
+- Authentication: **None** (zamiast Basic Auth do Nextclouda)
+- Response Format zostaje **Text**, kod „Złóż brief” bez zmian.
+
+Kalendarz Nextclouda nie jest już nigdzie czytany (90 wydarzeń przeniesione do Google 2026-11-22, zostaje jako archiwum).

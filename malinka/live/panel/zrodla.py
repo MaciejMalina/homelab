@@ -928,7 +928,12 @@ def _parsuj_ics(tekst):
 
 
 def kalendarz_pobierz():
-    """CalDAV REPORT z <expand> — Nextcloud sam rozwija powtarzające się wydarzenia."""
+    """Google Calendar (gdy jest klucz konta serwisowego), inaczej CalDAV REPORT z <expand> z Nextclouda."""
+    if gcal_aktywny():
+        od = datetime.now(TZ).replace(hour=0, minute=0, second=0, microsecond=0)
+        wynik = {"ts": time.time(), "wydarzenia": gcal_wydarzenia(od, od + timedelta(days=DNI_KAL))[:60], "zrodlo": "google"}
+        pamiec_set("kalendarz", wynik)
+        return wynik
     if not NC_CAL_URLS:
         return None
     od = datetime.now(TZ).replace(hour=0, minute=0, second=0, microsecond=0).astimezone(timezone.utc)
@@ -1039,8 +1044,22 @@ def _ics_tekst(v):
 
 
 def kalendarz_dodaj(w):
-    """PUT nowego wydarzenia do pierwszego kalendarza z NEXTCLOUD_CAL_URLS (serwer musi działać).
+    """Nowe wydarzenie: Google (GCAL_ZAPIS), a bez klucza — PUT do pierwszego kalendarza Nextclouda (serwer musi działać).
     w: {uid, tytul, start (ISO z czasem lokalnym albo RRRR-MM-DD), minuty, caly_dzien, miejsce}"""
+    if gcal_aktywny():
+        if w.get("caly_dzien"):
+            d = date.fromisoformat(w["start"][:10])
+            czas = {"start": {"date": d.isoformat()}, "end": {"date": (d + timedelta(days=1)).isoformat()}}
+        else:
+            st = datetime.fromisoformat(w["start"][:16])
+            kon = st + timedelta(minutes=int(w.get("minuty") or 60))
+            czas = {"start": {"dateTime": st.isoformat(timespec="seconds"), "timeZone": "Europe/Warsaw"},
+                    "end": {"dateTime": kon.isoformat(timespec="seconds"), "timeZone": "Europe/Warsaw"}}
+        e = _g(_g_kal(GCAL_ZAPIS) + "/events", method="POST",
+               body={"summary": w["tytul"], **({"location": w["miejsce"]} if w.get("miejsce") else {}), **czas,
+                     "description": "Dodane przez JARVIS-a"})
+        w["id"] = (e or {}).get("id")
+        return
     if not NC_CAL_URLS:
         raise RuntimeError("brak NEXTCLOUD_CAL_URLS w .env")
     utc = lambda dt: dt.astimezone(timezone.utc).strftime("%Y%m%dT%H%M%SZ")  # noqa: E731
@@ -1055,6 +1074,104 @@ def kalendarz_dodaj(w):
              + ([f"LOCATION:{_ics_tekst(w['miejsce'])}"] if w.get("miejsce") else []) + ["END:VEVENT", "END:VCALENDAR", ""])
     zadanie(NC_CAL_URLS[0].rstrip("/") + f"/{w['uid']}.ics", method="PUT", body="\r\n".join(linie), timeout=10,
             headers={**basic(NC_USER, NC_PASS), "Content-Type": "text/calendar; charset=utf-8", "If-None-Match": "*"})
+
+
+# --------------------------------------------------------------------------- Google Calendar (od 2026-11-22 zamiast Nextclouda)
+# Konto serwisowe (klucz JSON w data/google-sa.json, poza gitem) z dostępem „wprowadzanie zmian” do kalendarza Macieja.
+# Działa niezależnie od serwera (Nextcloud był na serwerze, który śpi). Bez pliku klucza zostaje stary Nextcloud.
+GOOGLE_SA = E("GOOGLE_SA", os.path.join(DATA_DIR, "google-sa.json"))
+GCAL_ZAPIS = E("GCAL_ZAPIS", "macmalonet783@gmail.com")
+GCAL_ODCZYT = [c.strip() for c in E("GCAL_ODCZYT", "macmalonet783@gmail.com,pl.polish#holiday@group.v.calendar.google.com").split(",")
+               if c.strip()]
+GCAL_API = "https://www.googleapis.com/calendar/v3"
+_g_tok = {"t": None, "exp": 0}
+_g_lock = threading.Lock()
+
+
+def gcal_aktywny():
+    return os.path.isfile(GOOGLE_SA)
+
+
+def _g_token():
+    """Token OAuth z konta serwisowego: JWT podpisany RS256 kluczem z pliku, wymieniany na access token (1 h)."""
+    with _g_lock:
+        if _g_tok["t"] and time.time() < _g_tok["exp"] - 120:
+            return _g_tok["t"]
+        from cryptography.hazmat.primitives import hashes, serialization
+        from cryptography.hazmat.primitives.asymmetric import padding
+        with open(GOOGLE_SA, encoding="utf-8") as f:
+            sa = json.load(f)
+        b64 = lambda b: base64.urlsafe_b64encode(b).rstrip(b"=").decode()  # noqa: E731
+        t = int(time.time())
+        nagl = b64(json.dumps({"alg": "RS256", "typ": "JWT"}).encode())
+        tresc = b64(json.dumps({"iss": sa["client_email"], "scope": "https://www.googleapis.com/auth/calendar",
+                                "aud": sa["token_uri"], "iat": t, "exp": t + 3600}).encode())
+        klucz = serialization.load_pem_private_key(sa["private_key"].encode(), None)
+        podpis = b64(klucz.sign(f"{nagl}.{tresc}".encode(), padding.PKCS1v15(), hashes.SHA256()))
+        odp = zadanie(sa["token_uri"], method="POST", form=True, timeout=15,
+                      body={"grant_type": "urn:ietf:params:oauth:grant-type:jwt-bearer", "assertion": f"{nagl}.{tresc}.{podpis}"})
+        _g_tok.update(t=odp["access_token"], exp=t + int(odp.get("expires_in", 3600)))
+        return _g_tok["t"]
+
+
+def _g(sciezka, method="GET", body=None, params=None):
+    url = GCAL_API + sciezka + ("?" + urllib.parse.urlencode(params) if params else "")
+    return zadanie(url, method=method, body=body, timeout=15, headers={"Authorization": "Bearer " + _g_token()})
+
+
+def _g_kal(cal):
+    return "/calendars/" + urllib.parse.quote(cal, safe="")
+
+
+def _g_wydarzenie(e, cal):
+    s, k = e.get("start") or {}, e.get("end") or {}
+    cd = "dateTime" not in s
+    if cd:
+        start = datetime.fromisoformat(s["date"]).replace(tzinfo=TZ)
+        koniec = datetime.fromisoformat(k["date"]).replace(tzinfo=TZ) if k.get("date") else None
+    else:
+        start = datetime.fromisoformat(s["dateTime"]).astimezone(TZ)
+        koniec = datetime.fromisoformat(k["dateTime"]).astimezone(TZ) if k.get("dateTime") else None
+    return {"start": start.isoformat(), "koniec": koniec.isoformat() if koniec else None, "caly_dzien": cd,
+            "tytul": (e.get("summary") or "(bez tytułu)").strip(), "miejsce": (e.get("location") or "").strip() or None,
+            "id": e.get("id"), "swieto": cal != GCAL_ZAPIS}
+
+
+def gcal_wydarzenia(od, do, limit=250, tylko_moje=False):
+    """Wydarzenia ze wszystkich kalendarzy GCAL_ODCZYT (cykliczne rozwinięte przez Google), posortowane."""
+    out = []
+    for cal in ([GCAL_ZAPIS] if tylko_moje else GCAL_ODCZYT):
+        d = _g(_g_kal(cal) + "/events", params={"timeMin": od.isoformat(), "timeMax": do.isoformat(), "singleEvents": "true",
+                                                 "orderBy": "startTime", "maxResults": limit})
+        out += [_g_wydarzenie(e, cal) for e in (d or {}).get("items", []) if e.get("status") != "cancelled"]
+    out.sort(key=lambda w: w["start"])
+    return out
+
+
+def kalendarz_usun(eid):
+    if not re.fullmatch(r"[\w-]{5,1024}", eid or ""):
+        raise ValueError("złe id wydarzenia")
+    _g(_g_kal(GCAL_ZAPIS) + "/events/" + eid, method="DELETE")
+
+
+def _ics_utc(iso):
+    return datetime.fromisoformat(iso).astimezone(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
+
+
+def kalendarz_ics(dni_wstecz=1, dni_naprzod=31):
+    """Eksport ICS (wydarzenia już rozwinięte) dla porannego raportu n8n — ten sam format, który parsował z Nextclouda."""
+    od = datetime.now(TZ).replace(hour=0, minute=0, second=0, microsecond=0) - timedelta(days=dni_wstecz)
+    linie = ["BEGIN:VCALENDAR", "VERSION:2.0", "PRODID:-//JARVIS//panel-google//PL"]
+    for w in gcal_wydarzenia(od, od + timedelta(days=dni_wstecz + dni_naprzod)):
+        if w["caly_dzien"]:
+            d = date.fromisoformat(w["start"][:10])
+            k = date.fromisoformat(w["koniec"][:10]) if w["koniec"] else d + timedelta(days=1)
+            czas = [f"DTSTART;VALUE=DATE:{d:%Y%m%d}", f"DTEND;VALUE=DATE:{k:%Y%m%d}"]
+        else:
+            czas = [f"DTSTART:{_ics_utc(w['start'])}"] + ([f"DTEND:{_ics_utc(w['koniec'])}"] if w["koniec"] else [])
+        linie += (["BEGIN:VEVENT", f"UID:{w['id']}@google"] + czas + [f"SUMMARY:{_ics_tekst(w['tytul'])}"]
+                  + ([f"LOCATION:{_ics_tekst(w['miejsce'])}"] if w["miejsce"] else []) + ["END:VEVENT"])
+    return "\r\n".join(linie + ["END:VCALENDAR", ""])
 
 
 def paperless_pobierz():
