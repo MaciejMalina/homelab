@@ -1,97 +1,57 @@
-# JARVIS — paczka: audyt stanu, backup malinki, sterowanie LED, hardening, trot
+# Homelab — JARVIS
 
-Wszystko po polsku, komentarze w skryptach też. Skrypty audytowe są **czysto
-odczytowe** — nic nie instalują i nic nie zmieniają. Skrypty `setup-*` i
-`jarvis-power-agent.sh`/`discover-bot-ssh-usage.sh` (dodane 2026-08-25) **instalują
-i zmieniają konfigurację** — czytaj komentarz na górze każdego przed uruchomieniem.
+Mój domowy asystent i homelab: Raspberry Pi działające 24/7, serwer budzony przez Wake-on-LAN tylko wtedy,
+gdy jest potrzebny, stary telefon jako dotykowy panel przy biurku i bot na Discordzie. Wszystko po polsku,
+łącznie z komentarzami w kodzie.
+
+To moja konfiguracja, a nie gotowy produkt do instalacji jednym poleceniem. Repo pokazuje, jak to
+działa, i jest kopią tego, co faktycznie chodzi na moich maszynach (bez sekretów).
+
+## Jak to działa
+
+```
+            ┌──────────────── Tailscale ────────────────┐
+ Telefon (panel, „Hey Jarvis”) ─┐                        │
+ Discord (bot) ─────────────────┼──► Malinka (RPi, 24/7) ──── WoL ───► Serwer (na żądanie)
+ Komputery (agent C#) ──────────┘    panel, bot, TODO,                 n8n, Ollama, Nextcloud,
+                                     reguły, AdGuard, NPM,             Paperless, Jellyfin + *arr,
+                                     Kuma, Vaultwarden                 Qdrant, backupy (RAID1)
+```
+
+- **Malinka** (Raspberry Pi, SSD) działa cały czas. Trzyma panel, bota, listy zadań, DNS i reverse proxy
+  oraz decyduje, kiedy obudzić serwer.
+- **Serwer** sam się wyłącza po 15 minutach bezczynności (`serwer/idle-shutdown.sh`), a budzi się przez WoL,
+  kiedy potrzebne są jego usługi: AI, dokumenty, media albo backup.
+- **Panel** to aplikacja w Pythonie bez frameworka (`malinka/live/panel`), wyświetlana na telefonie w
+  WebView. Ma zakładki: dzień i kalendarz, komputery, muzykę i Discorda, limity Claude, media, serwery, sieć,
+  trening i światło. Do tego: komendy głosowe rozpoznawane lokalnie (bez AI), budzik, minutniki,
+  wykrywanie obecności kamerą i reguły „gdy → wtedy” z kreatorem i trybem „na sucho”.
+- **Agent na PC** (`pc-agent`, C#/.NET) podaje panelowi temperatury, procesy, multimedia, mikser i stan
+  Discorda oraz wykonuje polecenia (blokada, uśpienie, wyłączenie).
+- **n8n** na serwerze składa poranny raport (kalendarz z pogodą w miejscu wydarzenia, zadania, faktury z
+  Paperlessa, maile, media, stan usług) i etykietuje maile przez lokalny model w Ollamie.
 
 ## Co gdzie leży
 
-```
-common/                          # NOWE (2026-08-25) — identyczne na obu maszynach
-  setup-ssh-hardening.sh         # PermitRootLogin no, PasswordAuthentication no
-  setup-smartmontools.sh         # smartmontools + smartd + alert Discord
-  setup-unattended-upgrades.sh   # auto-upgrade bezpieczeństwa + reboot 22:00
+| Folder | Zawartość |
+|---|---|
+| `malinka/live/` | Usługi na Raspberry Pi: `panel` (+ `android` — appka WebView), `jarvis-bot` (Discord), `todo`, `trener`, `homepage`, `adguardhome`, `npm`, `vaultwarden`, `esphome` (przedłużacze z ESP32), `olivetin`, `portainer`, `trot` |
+| `malinka/` | Backup nocny, `mail-notifier` (powiadomienia o ważnych mailach), `wake-gate`, hardening (fail2ban, log2ram), audyt |
+| `serwer/` | `idle-shutdown.sh`, backupy (restic, agent z forced command), `live/utorent` (Jellyfin + Sonarr/Radarr/qBittorrent przez gluetun), `live/paperless-gpt`, audyt |
+| `common/` | Wspólne dla obu maszyn: hardening SSH, SMART, unattended-upgrades, cotygodniowy raport zdrowia z automatyczną aktualizacją kontenerów i rollbackiem |
+| `n8n/` | Workflowy (poranny raport, etykiety maili) i kod węzła „Złóż brief” |
+| `pc-agent/` | Agent Windows dla panelu |
+| `uptime-kuma/`, `led/` | Monitoring; sterownik LED (WLED) |
+| `secrets/` | Sekrety zaszyfrowane `sops` + `age` (klucz poza repo) |
 
-malinka/
-  jarvis-audit-malinka.sh      # audyt stanu Raspberry Pi (uruchom pierwszy)
-  jarvis-backup-agent.sh       # agent backupu — forced command dla klucza serwera
-  authorized_keys.example      # wzór wpisu klucza z ograniczeniami
-  setup-log2ram.sh             # NOWE — logi w RAM, zrzut raz dziennie
-  trot/docker-compose.yml      # NOWE — appka tartaku dla wujka (port 3010)
+## Sekrety
 
-serwer/
-  jarvis-audit-serwer.sh       # audyt stanu serwera (GPU, Ollama, n8n, Qdrant, backupy)
-  backup-malinka.sh            # backup malinki: rsync + restic + obraz, retencja 30 dni
-  backup-malinka.env           # ZAKTUALIZOWANE — DEST_ROOT/RESTIC teraz na /mnt/telemetry
-  jarvis-prune-backups.sh      # globalne kasowanie kopii starszych niż miesiąc
-  jarvis-power-agent.sh        # NOWE — forced-command agent dla klucza bota (dziś: poweroff)
-  authorized_keys-power.example # NOWE — wzór wpisu dla klucza bota
-  discover-bot-ssh-usage.sh    # NOWE — tymczasowy podsłuch, czego bot używa, przed cutoverem
-  systemd/                     # timery + README-instalacja.md (krok po kroku)
+Żadnych haseł, tokenów ani kluczy w repo. Prawdziwe wartości leżą w plikach `.env` na maszynach (w repo są
+tylko `.env.example`) albo w `secrets/jarvis-secrets.enc.yaml`, zaszyfrowanym `sops`/`age`. Klucz Google do
+kalendarza i klucze SSH też są tylko na maszynach.
 
-led/
-  README-esp.md                # elektronika (MOSFET-y, piny), WLED, API
-  docker-compose.yml            # kontener z panelem sterowania
-  wled-panel/index.html        # panel: włącz/wyłącz, jasność, kolor, presety
-  wled-panel/nginx.conf        # proxy do WLED (jeden origin = zero CORS)
-  homepage-services.yaml       # fragment do services.yaml Homepage
-  n8n-narzedzie-set-light.md   # narzędzie set_light dla agenta
+## Stos
 
-docs/
-  JARVIS-storage-i-roadmapa.md         # pendrive vs SSD, backupy 3-2-1, pomysły na rozwój
-  JARVIS-trot-wdrozenie.md             # NOWE — appka tartaku krok po kroku
-  JARVIS-wdrozenie-sierpien-2026.md    # NOWE — kolejność wdrożenia paczki z 2026-08-25
-```
-
-## Krok 1 — audyt (zrób to najpierw, jeśli jeszcze nie robione)
-
-Skopiuj skrypt na każdą maszynę i puść przez `sudo`. Wynik to gotowy Markdown —
-wklej go do rozmowy, wtedy dopiero wiadomo, co jest zrobione, a co nie.
-
-```bash
-# na malince
-chmod +x jarvis-audit-malinka.sh
-sudo ./jarvis-audit-malinka.sh | tee /tmp/audyt-malinka.md
-
-# na serwerze
-chmod +x jarvis-audit-serwer.sh
-sudo ./jarvis-audit-serwer.sh | tee /tmp/audyt-serwer.md
-```
-
-Raport kończy się checklistą:
-
-- `[OK]` — zrobione
-- `[!!]` — brak albo ryzyko, z odniesieniem do punktu z audytu (P1/P2/P3)
-- `[??]` — nie dało się stwierdzić z poziomu skryptu
-- `[i ]` — informacja
-
-## Krok 2 — paczka wdrożeniowa sierpień 2026 (dopóki czekasz na SSD)
-
-**Zacznij od `docs/JARVIS-wdrozenie-sierpien-2026.md`** — tam jest sugerowana
-kolejność dla `common/*`, `malinka/setup-log2ram.sh`,
-`serwer/jarvis-power-agent.sh` + `discover-bot-ssh-usage.sh`, i zaktualizowany
-backup malinki.
-
-## Krok 3 — backup malinki
-
-Pełna instrukcja z weryfikacją po każdym kroku: `serwer/systemd/README-instalacja.md`.
-W skrócie: klucz i katalogi na serwerze → agent i konto `bkp` na malince →
-`backup-malinka.sh test` → `daily` → timery. `backup-malinka.env` w tej paczce
-już wskazuje `/mnt/telemetry` zamiast `/mnt/data`.
-
-## Krok 4 — pasek LED
-
-`led/README-esp.md` od elektroniki po kafelek w Homepage.
-**Piny GPIO w dokumencie to propozycja** — podeślij zdjęcie płytki, dopiszę
-konkretne numery pod Twoje wyprowadzenia.
-
-## Krok 5 — trot (appka tartaku dla wujka)
-
-`docs/JARVIS-trot-wdrozenie.md` — przeniesienie kodu na malinkę, port 3010,
-udostępnienie przez Tailscale albo NPM.
-
-## Krok 6 — reszta
-
-`docs/JARVIS-storage-i-roadmapa.md`: SSD vs pendrive, 3-2-1, lista kierunków
-rozwoju z oceną nakład/efekt.
+Python (stdlib, bez frameworków po stronie panelu), JavaScript (vanilla), C#/.NET 8, Docker Compose, n8n,
+Ollama, Tailscale, AdGuard Home, Nginx Proxy Manager, Uptime Kuma, Nextcloud, Paperless-ngx + paperless-gpt,
+Jellyfin, ESPHome, Google Calendar API, Open-Meteo, Discord (discord.py, webhooki).

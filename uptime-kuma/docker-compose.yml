@@ -59,7 +59,7 @@ services:
     image: louislam/uptime-kuma:1.23.16
     container_name: uptime-kuma
     # (2026-10-28) host ma w resolv.conf tylko DNS Tailscale, którego wewnętrzny DNS Dockera nie używa
-    # -> SERVFAIL dla *.maciej-home.duckdns.org, monitory HTTP(s) padały. Jak w Homepage: AdGuard, potem Cloudflare.
+    # -> SERVFAIL dla *.<twoja-domena>.duckdns.org, monitory HTTP(s) padały. Jak w Homepage: AdGuard, potem Cloudflare.
     dns:
       - 192.168.254.10
       - 1.1.1.1

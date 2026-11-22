@@ -2851,7 +2851,7 @@ _reg_mark = {}                       # id reguły -> znaczniki (raz na nieobecno
 _reg_qbit = {"snap": None, "ts": 0}  # hash -> postęp z poprzedniego sprawdzenia
 _reg_wol = {"ts": 0.0}               # kiedy wysłano WoL do serwera (dla „serwer nie wstał”)
 _reg_dysk = {"ts": 0.0}
-TELEFON_MAC = E("TELEFON_MAC", "0C:32:3A:C5:AA:2F")
+TELEFON_MAC = E("TELEFON_MAC", "")   # telefon do reguł „wychodzę z domu” (MAC z zakładki Sieć)
 
 REG_STARTOWE = [
     {"id": "pobrane", "nazwa": "Pobieranie skończone", "wl": True, "gdy": {"typ": "pobrane"}, "okno": None,

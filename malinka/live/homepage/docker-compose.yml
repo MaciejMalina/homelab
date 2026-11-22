@@ -13,7 +13,7 @@ services:
     env_file:
       - config/homepage.env
     environment:
-      - HOMEPAGE_ALLOWED_HOSTS=100.105.181.54,100.105.181.54:3000,192.168.254.10,192.168.254.10:3000,home.maciej-home.duckdns.org
+      - HOMEPAGE_ALLOWED_HOSTS=${HOMEPAGE_ALLOWED_HOSTS}   # z .env obok (adresy + domena, poza repo)
     volumes:
       - /home/macmal/homepage/config:/app/config
       - /home/macmal/homepage/config/images:/app/public/custom

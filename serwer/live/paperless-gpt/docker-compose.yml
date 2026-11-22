@@ -22,7 +22,7 @@ services:
       PGID: "1000"
       TZ: "Europe/Warsaw"
       PAPERLESS_BASE_URL: "http://host.docker.internal:8010"
-      PAPERLESS_PUBLIC_URL: "https://paperless.maciej-home.duckdns.org"
+      PAPERLESS_PUBLIC_URL: "${PAPERLESS_PUBLIC_URL}"
       # LLM — GTX 960 ma 4 GB VRAM: qwen3.5:4b (3,4 GB) się mieści, qwen3.5:9b już nie
       LLM_PROVIDER: "ollama"
       LLM_MODEL: "qwen3.5:4b"

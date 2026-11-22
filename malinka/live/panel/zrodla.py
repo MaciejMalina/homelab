@@ -1080,16 +1080,16 @@ def kalendarz_dodaj(w):
 # Konto serwisowe (klucz JSON w data/google-sa.json, poza gitem) z dostępem „wprowadzanie zmian” do kalendarza Macieja.
 # Działa niezależnie od serwera (Nextcloud był na serwerze, który śpi). Bez pliku klucza zostaje stary Nextcloud.
 GOOGLE_SA = E("GOOGLE_SA", os.path.join(DATA_DIR, "google-sa.json"))
-GCAL_ZAPIS = E("GCAL_ZAPIS", "macmalonet783@gmail.com")
-GCAL_ODCZYT = [c.strip() for c in E("GCAL_ODCZYT", "macmalonet783@gmail.com,pl.polish#holiday@group.v.calendar.google.com").split(",")
-               if c.strip()]
+GCAL_ZAPIS = E("GCAL_ZAPIS", "")   # adres kalendarza (zwykle Twój Gmail), udostępniony kontu serwisowemu z prawem zmian
+GCAL_ODCZYT = [c for c in dict.fromkeys([GCAL_ZAPIS] + [x.strip() for x in E("GCAL_ODCZYT", "pl.polish#holiday@group.v.calendar.google.com")
+                                                         .split(",")]) if c]
 GCAL_API = "https://www.googleapis.com/calendar/v3"
 _g_tok = {"t": None, "exp": 0}
 _g_lock = threading.Lock()
 
 
 def gcal_aktywny():
-    return os.path.isfile(GOOGLE_SA)
+    return bool(GCAL_ZAPIS) and os.path.isfile(GOOGLE_SA)
 
 
 def _g_token():
