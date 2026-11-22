@@ -10,6 +10,9 @@ const lsGet = (k) => { try { return localStorage.getItem(k); } catch { return nu
 const lsSet = (k, v) => { try { localStorage.setItem(k, v); } catch { /* bez pamięci */ } };
 const dwa = (n) => String(n).padStart(2, "0");
 
+// karta TO DO: wybrana lista ("" = główna „zadania”), tryb tworzenia nowej listy, ostatnie dane (2026-11-22)
+let todoLista = "", todoNowa = false, todoDane = null;
+
 const qToken = new URLSearchParams(location.search).get("token");
 if (qToken) lsSet("panelToken", qToken);
 const TOKEN = (B && B.token && B.token()) || qToken || lsGet("panelToken") || "";
@@ -138,6 +141,7 @@ function goSleep() {
   $("sen").hidden = false;
   if (B) try { B.setSleep(true); } catch (e) { /* stara appka */ }
   zamknijWidok();
+  if (todoLista || todoNowa) { todoLista = ""; todoNowa = false; renderTodo(todoDane); }  // po wygaszeniu karta wraca na „zadania”
   if (aktywna !== "przeglad") przelacz("przeglad", false);
 }
 function wake(minuty) {
@@ -347,20 +351,26 @@ function fmtTermin(due) {
 }
 
 function renderTodo(t) {
-  const ul = $("lista");
-  if (!t || !t.ok) { ul.innerHTML = `<li class="przyg">Lista TO DO nie odpowiada</li>`; $("todo-licznik").textContent = ""; return; }
+  todoDane = t;
+  const ul = $("lista"), chipy = $("todo-listy");
+  if (!t || !t.ok) { ul.innerHTML = `<li class="przyg">Lista TO DO nie odpowiada</li>`; $("todo-licznik").textContent = ""; chipy.innerHTML = ""; return; }
   const wszystkie = t.data.tasks || [];
-  const zadania = wszystkie.filter((z) => !z.lista);   // lista główna; inne listy (zakupy…) jako odnośnik
-  const inne = {};
-  wszystkie.filter((z) => z.lista).forEach((z) => { inne[z.lista] = (inne[z.lista] || 0) + 1; });
-  const odnosnik = Object.keys(inne).length
-    ? `<li class="przyg mala" data-akcja="listy-otworz" style="cursor:pointer">📋 ${Object.entries(inne).map(([n, c]) => `${esc(n)} ${c}`).join(" · ")} ›</li>` : "";
+  const ile = { "": 0 };
+  wszystkie.forEach((z) => { ile[z.lista || ""] = (ile[z.lista || ""] || 0) + 1; });
+  if (!(todoLista in ile)) todoLista = "";   // lista się opróżniła — znika (istnieje, dopóki ma pozycje)
+  const nazwy = ["", ...Object.keys(ile).filter((n) => n).sort((a, b) => a.localeCompare(b, "pl"))];
+  chipy.innerHTML = nazwy.map((n) => `<button class="chip ${!todoNowa && n === todoLista ? "aktywny" : ""}" data-akcja="todo-lista" data-l="${esc(n)}">${esc(n || "zadania")}${ile[n] ? ` <b>${ile[n]}</b>` : ""}</button>`).join("")
+    + `<button class="chip ${todoNowa ? "aktywny" : ""}" data-akcja="todo-nowa" aria-label="Nowa lista">＋</button>`;
+  $("nowe-lista").hidden = !todoNowa;
+  $("nowe-tytul").placeholder = todoNowa ? "Pierwsza pozycja…" : todoLista ? `Dodaj do: ${todoLista}…` : "Nowe zadanie…";
+  const zadania = todoNowa ? [] : wszystkie.filter((z) => (z.lista || "") === todoLista);
   $("todo-licznik").textContent = zadania.length ? String(zadania.length) : "";
-  if (!zadania.length) { ul.innerHTML = `<li class="przyg">Nic do zrobienia 🎉</li>` + odnosnik; return; }
+  if (todoNowa) { ul.innerHTML = `<li class="przyg">Wpisz nazwę listy i pierwszą pozycję — lista zniknie sama, gdy ją opróżnisz.</li>`; return; }
+  if (!zadania.length) { ul.innerHTML = `<li class="przyg">Nic do zrobienia 🎉</li>`; return; }
   ul.innerHTML = zadania.map((z) => {
     const tm = fmtTermin(z.due);
     return `<li data-id="${z.id}"><span class="ptaszek"></span><span class="t">${esc(z.title)}</span>${tm ? `<span class="termin ${tm.klasa}">${esc(tm.tekst)}</span>` : ""}</li>`;
-  }).join("") + odnosnik;
+  }).join("");
 }
 $("lista").addEventListener("click", async (e) => {
   const li = e.target.closest("li[data-id]");
@@ -371,10 +381,17 @@ $("lista").addEventListener("click", async (e) => {
 });
 $("nowe").addEventListener("submit", async (e) => {
   e.preventDefault();
-  const inp = $("nowe-tytul"), title = inp.value.trim();
+  const inp = $("nowe-tytul"), title = inp.value.trim(), pole = $("nowe-lista");
+  const lista = todoNowa ? pole.value.trim() : todoLista;
+  if (todoNowa && !lista) { pole.focus(); toast("Wpisz nazwę listy", true); return; }
   if (!title) return;
   inp.disabled = true;
-  try { await api("/api/todo", "POST", { title }); inp.value = ""; inp.blur(); toast("Dodano"); loadDash(); }
+  try {
+    const z = await api("/api/todo", "POST", { title, lista });
+    inp.value = ""; inp.blur();
+    if (todoNowa) { todoNowa = false; pole.value = ""; todoLista = (z && z.lista) || ""; }   // nazwa po normalizacji usługi todo
+    toast(lista ? `Dodano do: ${todoLista || lista}` : "Dodano"); loadDash();
+  }
   catch (err) { toast("Nie dodano: " + err.message, true); }
   finally { inp.disabled = false; }
 });
@@ -1577,6 +1594,8 @@ document.addEventListener("click", (e) => {
     case "budzik-drzemka": budzikStop(); akcjaPost(null, "/api/budzik/drzemka", {}, (r) => toast(r.msg)); break;
     case "claude-odswiez": akcjaPost(b, "/api/claude-limity/odswiez", {}, (r) => { toast(r.msg); if (aktywna === "claude") odswiezTeraz(); }); break;
     case "listy-otworz": otworzWidok("listy"); break;
+    case "todo-lista": todoLista = b.dataset.l || ""; todoNowa = false; renderTodo(todoDane); break;
+    case "todo-nowa": todoNowa = !todoNowa; renderTodo(todoDane); if (todoNowa) $("nowe-lista").focus(); break;
     case "reguly-otworz": rk = REG_NOWA(); otworzWidok("reguly"); break;
     case "reg-nowa": rk = REG_NOWA(); blokadaRenderu = 0; rysujWidok(true); break;
     case "reg-edytuj": {

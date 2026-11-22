@@ -22,7 +22,9 @@
         </div>
         <div id="todo" class="karta">
           <h2><span>TO DO</span><span id="todo-licznik" class="prawo"></span></h2>
+          <div id="todo-listy" class="todo-listy"></div>
           <div class="przewijane" data-scroll="todo"><ul id="lista"></ul></div>
+          <input id="nowe-lista" class="tekst" placeholder="Nazwa nowej listy, np. zakupy" maxlength="40" enterkeyhint="next" autocomplete="off" hidden>
           <form id="nowe" autocomplete="off">
             <input id="nowe-tytul" placeholder="Nowe zadanie…" maxlength="300" enterkeyhint="done">
             <button class="glowny" type="submit" aria-label="Dodaj">+</button>
