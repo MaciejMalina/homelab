@@ -306,3 +306,12 @@ input.tekst:focus { border-color: var(--akcent); }
 .osoba-mini img, .osoba-mini .awatar { width: 30px; height: 30px; border-radius: 50%; object-fit: cover; background: rgba(255,255,255,.12); display: inline-block; }
 .dc-ster { display: flex; gap: 8px; flex: none; align-items: center; }
 .dc-ster button { min-height: 60px; min-width: 66px; font-size: 24px; border-radius: 16px; }
+
+/* (2026-11-22) Media: długie nazwy torrentów/odcinków nie rozpychają kolumn (karty mogą się zwęzić, tekst dostaje „…”). */
+#t-inne[data-tab="media"] .siatka > * { min-width: 0; }
+/* (2026-11-22) Sieć w poziomie (S25 / Redmi): liczby z jednostkami mieszczą się w kafelkach. */
+#t-inne[data-tab="siec"] .siatka > * { min-width: 0; }
+#t-inne[data-tab="siec"] .kafel { padding: 5px 5px 6px; }
+#t-inne[data-tab="siec"] .kafel .wa { font-size: 18px; }
+#t-inne[data-tab="siec"] .kafel .wa small { font-size: 10px; margin-left: 1px; }
+#t-inne[data-tab="siec"] .kafel .et { font-size: 9px; letter-spacing: .03em; }

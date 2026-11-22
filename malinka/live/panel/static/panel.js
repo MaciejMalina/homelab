@@ -243,6 +243,7 @@ function przelacz(id, odswiez = true) {
   $("naglowek-info").innerHTML = "";
   $("t-przeglad").hidden = id !== "przeglad";
   $("t-inne").hidden = id === "przeglad";
+  $("t-inne").dataset.tab = id;  // CSS: poprawki układu dla wybranych zakładek (np. Media)
   if (id !== "przeglad") {
     $("t-inne").innerHTML = dane[id] ? "" : `<div class="pusto">Wczytuję…</div>`;
     if (dane[id]) renderuj(id, dane[id], true);
@@ -670,7 +671,7 @@ RENDER.media = (d) => {
   const jelly = jf ? `<div class="dzien-naglowek">Teraz ogląda</div>${jf.teraz.length ? jf.teraz.map((x) => `<div class="wiersz" style="display:block"><div class="v">${x.pauza ? "⏸" : "▶"} ${esc(x.serial ? x.serial + " — " : "")}${esc(x.tytul)}</div>
       ${x.postep != null ? pasek(100 * x.postep, KOL.fiolet) : ""}<div class="mala przyg">${esc(x.kto || "")} · ${esc(x.urzadzenie || "")}</div></div>`).join("") : pustoHtml("Nikt nie ogląda")}
       <div class="dzien-naglowek">Ostatnio dodane</div>${jf.ostatnie.map((x) => `<div class="wiersz"><span class="v">${x.typ === "Episode" ? "📺" : "🎬"} ${esc(x.serial ? x.serial + " — " : "")}${esc(x.tytul)}</span>${x.rok ? `<span class="k mala">${x.rok}</span>` : ""}</div>`).join("") || pustoHtml("—")}` : ej;
-  return `<div class="siatka" style="grid-template-columns:1.15fr 1fr 1fr">
+  return `<div class="siatka" style="grid-template-columns:minmax(0,.85fr) minmax(0,1fr) minmax(0,1.15fr)">
     <div class="karta"><h2>Pobieranie<span class="prawo">${q ? `↓ ${predk(q.dl)} · ↑ ${predk(q.ul)}` : ""}</span></h2><div class="przewijane" data-scroll="qb">${torr}</div></div>
     <div class="karta"><h2>Sonarr / Radarr</h2><div class="przewijane" data-scroll="arr">${sr}</div></div>
     <div class="karta"><h2>Jellyfin</h2><div class="przewijane" data-scroll="jf">${jelly}</div></div></div>`;
@@ -729,11 +730,12 @@ RENDER.siec = (d) => {
   let zte = ez;
   if (z) {
     const typ = TYP_SIECI[String(z.siec || "").toUpperCase()] || z.siec || "?";
-    zte = `<div style="display:flex;align-items:baseline;gap:10px;margin-bottom:6px"><span style="font-size:26px;font-weight:800">${esc(typ)}</span>
-        <span class="etykieta">${esc(z.pasmo ? "pasmo " + z.pasmo : "")}</span><span class="przyg mala">${esc(z.operator || "")}</span></div>
+    const pasma = [z.pasmo, z.pasmo_lte ? String(z.pasmo_lte).replace(/^LTE\s*BAND\s*/i, "B") : ""].filter(Boolean).join(" · ");
+    zte = `<div style="display:flex;align-items:baseline;flex-wrap:wrap;gap:4px 8px;margin-bottom:6px"><span style="font-size:22px;font-weight:800;white-space:nowrap">${esc(typ)}</span>
+        <span class="etykieta">${esc(pasma ? "pasmo " + pasma : "")}</span><span class="przyg mala">${esc(z.operator || "")}</span></div>
       <div class="kafle" style="grid-template-columns:1fr 1fr">
         ${kafel("5G RSRP", z.nr.rsrp ?? "–", "dBm", kolRsrp(z.nr.rsrp))}${kafel("5G SINR", z.nr.sinr ?? "–", "dB", kolSinr(z.nr.sinr))}
-        ${kafel("LTE RSRP", z.lte.rsrp ?? "–", "dBm", kolRsrp(z.lte.rsrp), z.pasmo_lte ? "pasmo " + z.pasmo_lte : "")}${kafel("LTE SINR", z.lte.sinr ?? "–", "dB", kolSinr(z.lte.sinr))}</div>
+        ${kafel("LTE RSRP", z.lte.rsrp ?? "–", "dBm", kolRsrp(z.lte.rsrp))}${kafel("LTE SINR", z.lte.sinr ?? "–", "dB", kolSinr(z.lte.sinr))}</div>
       <div class="wiersz" style="margin-top:6px"><span class="k">Teraz</span><span class="v">↓ ${predk(z.rx)} · ↑ ${predk(z.tx)}</span></div>
       <div class="wiersz"><span class="k">Miesiąc</span><span class="v">↓ ${bajty(z.miesiac_rx)} · ↑ ${bajty(z.miesiac_tx)}</span></div>
       <div class="wiersz"><span class="k">Temp.</span><span class="v">${[z.temp.modem != null ? `modem ${Math.round(z.temp.modem)}°` : null, z.temp["5g"] != null ? `5G ${Math.round(z.temp["5g"])}°` : null].filter(Boolean).join(" · ") || "–"}</span></div>
@@ -747,9 +749,9 @@ RENDER.siec = (d) => {
     <div class="dzien-naglowek">Najczęściej blokowane</div>${a.blokowane.map((k) => `<div class="wiersz"><span class="v mala">${esc(k.domena)}</span><span class="k mala">${k.n}</span></div>`).join("") || pustoHtml("—")}` : ea;
   const s = d.speedtest;
   const sp = `<div class="kafle" style="grid-template-columns:1fr 1fr 1fr">
-      ${kafel("Ping", s ? s.ping : "–", "ms", KOL.morski)}${kafel("Pobier.", s ? Math.round(s.dol) : "–", "Mb/s", KOL.ok)}${kafel("Wysył.", s ? Math.round(s.gora) : "–", "Mb/s", KOL.fiolet)}</div>
-    <div class="przyg mala" style="margin:6px 0">${s ? "Ostatni test " + temuOd(s.ts) : "Jeszcze nie testowano"} · z malinki przez ZTE (25 MB ↓, 10 MB ↑)</div>
-    <button class="glowny" data-akcja="speedtest-malinka" data-dlugie style="margin-top:auto">⇅ Testuj łącze</button>`;
+      ${kafel("Ping", s ? s.ping : "–", "ms", KOL.morski)}${kafel("Pobier.", s ? Math.round(s.dol) : "–", "Mb/s", KOL.ok)}${kafel("Wysył.", s ? Math.round(s.gora) : "–", "Mb/s", KOL.fiolet)}</div>`;
+  const spNaglowek = `<span class="prawo" style="display:flex;align-items:center;gap:6px"><span class="mala przyg" title="z malinki przez ZTE (25 MB ↓, 10 MB ↑)">${s ? temuOd(s.ts) : "jeszcze nie"}</span>
+    <button class="maly" data-akcja="speedtest-malinka" data-dlugie>⇅ Testuj</button></span>`;
   const urz = d.urzadzenia || [];
   const nowe = urz.filter((u) => !u.znane), znane = urz.filter((u) => u.znane);
   const lista = !urz.length ? pustoHtml("Pierwszy skan sieci za chwilę") :
@@ -759,7 +761,7 @@ RENDER.siec = (d) => {
     <div class="karta"><h2>Router 5G (ZTE)<span class="prawo">${z && z.kreski != null ? "▂▄▆█".slice(0, Math.max(1, Math.min(4, z.kreski))) : ""}</span></h2><div class="przewijane" data-scroll="zte">${zte}</div></div>
     <div class="siatka" style="grid-template-rows:1fr auto;gap:8px;min-height:0">
       <div class="karta"><h2>AdGuard</h2><div class="przewijane" data-scroll="ag">${ad}</div></div>
-      <div class="karta"><h2>Speedtest</h2>${sp}</div></div>
+      <div class="karta"><h2 style="display:flex;align-items:center">Speedtest${spNaglowek}</h2>${sp}</div></div>
     <div class="karta"><h2>Urządzenia<span class="prawo">${urz.filter((u) => u.online).length} w sieci</span></h2><div class="przewijane" data-scroll="urz">${lista}</div></div></div>`;
 };
 
