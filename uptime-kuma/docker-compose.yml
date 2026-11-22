@@ -59,10 +59,11 @@ services:
     image: louislam/uptime-kuma:1.23.16
     container_name: uptime-kuma
     # (2026-10-28) host ma w resolv.conf tylko DNS Tailscale, którego wewnętrzny DNS Dockera nie używa
-    # -> SERVFAIL dla *.<twoja-domena>.duckdns.org, monitory HTTP(s) padały. Jak w Homepage: AdGuard, potem Cloudflare.
+    # -> SERVFAIL dla *.<twoja-domena>.duckdns.org, monitory HTTP(s) padały.
+    # (2026-11-22) Tylko AdGuard, bez zapasowego 1.1.1.1: gdy jedno zapytanie do AdGuarda zginęło,
+    # Docker pytał 1.1.1.1, a ten zwraca publiczne IP domeny -> brak NAT loopback w routerze -> 48 s timeout.
     dns:
       - 192.168.254.10
-      - 1.1.1.1
     restart: unless-stopped
     ports:
       - "3001:3001"   # sprawdź `sudo ss -ltnp | grep 3001` — jeśli zajęte, zmień oba wystąpienia

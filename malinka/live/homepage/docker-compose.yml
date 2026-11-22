@@ -3,10 +3,10 @@ services:
     image: ghcr.io/gethomepage/homepage:latest
     container_name: homepage
     # Host ma w resolv.conf tylko DNS Tailscale (100.100.100.100) — wewnętrzny DNS Dockera go nie używa
-    # (SERVFAIL dla api.open-meteo.com, 2026-10-27). Najpierw AdGuard na malince, potem Cloudflare.
+    # (SERVFAIL dla api.open-meteo.com, 2026-10-27). Dlatego DNS = AdGuard na malince.
+    # (2026-11-22) Tylko AdGuard: zapasowy 1.1.1.1 zwraca publiczne IP domeny, które z LAN-u nie odpowiada (brak NAT loopback).
     dns:
       - 192.168.254.10
-      - 1.1.1.1
     restart: unless-stopped
     ports:
       - "3000:3000"

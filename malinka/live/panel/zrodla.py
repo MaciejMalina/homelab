@@ -1211,7 +1211,7 @@ def paperless_pobierz():
 #    zamiast chodzenia po folderach; po PAPERLESS_PACZKA plików na raz; plik jest „zrobiony” dopiero, gdy zadanie
 #    Paperlessa skończy się sukcesem albo odrzuceniem duplikatu — jeśli serwer zaśnie w trakcie, wraca do kolejki.
 NC_PAPERLESS_FOLDERY = [f.strip() for f in E("NC_PAPERLESS_FOLDERY", "Dokumenty,Studia").split(",") if f.strip()]
-PAPERLESS_PACZKA = int(E("PAPERLESS_PACZKA", "10"))
+PAPERLESS_PACZKA = int(E("PAPERLESS_PACZKA", "30"))
 FAKTURY_LAT = int(E("FAKTURY_LAT", "2"))
 NC_PL_STAN = os.path.join(DATA_DIR, "nc_paperless.json")
 _pl_lock = threading.Lock()

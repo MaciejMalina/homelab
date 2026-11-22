@@ -3124,9 +3124,11 @@ def _reg_wykonaj(a, r, kontekst):
     return "?"
 
 
-def _reg_historia(r, opis, ok, sucho=False):
+def _reg_historia(r, opis, ok, sucho=False, pominieta=False):
     with _reg_lock:
         hist = [{"ts": teraz(), "id": r["id"], "nazwa": r["nazwa"], "opis": opis[:300], "ok": ok, "sucho": sucho}]
+        if pominieta:  # wyzwalacz zadziałał, warunek nie (2026-11-22) — żeby przegląd reguł na sucho widział, że reguła „patrzy”
+            hist[0]["pominieta"] = True
         Z.pamiec_set("reguly_hist", (hist + (Z.pamiec_get("reguly_hist", []) or []))[:REG_HIST_MAX])
 
 
@@ -3136,7 +3138,10 @@ def _reg_odpal(r, kontekst, test=False):
         return
     try:
         if not _reg_warunek(r, kontekst):
-            print(f"reguły: „{r['nazwa']}” — warunek niespełniony ({REG_WAR[r['warunek']['typ']]})", flush=True)
+            opis = f"warunek niespełniony ({REG_WAR[r['warunek']['typ']]})"
+            print(f"reguły: „{r['nazwa']}” — {opis}", flush=True)
+            if not test:
+                _reg_historia(r, opis, True, sucho=bool(r.get("sucho")), pominieta=True)
             return
     except Exception as e:  # noqa: BLE001
         print(f"reguły: „{r['nazwa']}” — warunek: {e}", flush=True)

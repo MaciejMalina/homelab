@@ -1132,7 +1132,7 @@ WIDOK.reguly = {
         <button class="maly" data-akcja="reg-edytuj" data-id="${esc(r.id)}">Edytuj</button>
         <button class="maly" data-akcja="reg-cmd" data-id="${esc(r.id)}" data-cmd="test" data-dlugie>Test</button>
         <button class="maly" data-akcja="reg-cmd" data-id="${esc(r.id)}" data-cmd="usun" data-potwierdz>Usuń</button></span></div>`).join("");
-    const hist = (d.hist || []).map((h) => `<div class="wiersz"><span class="v zawijaj"><span class="${h.ok ? "" : "zle-t"}" style="${h.sucho ? "color:var(--pom)" : ""}">●</span> <b>${esc(h.nazwa)}</b>
+    const hist = (d.hist || []).map((h) => `<div class="wiersz"><span class="v zawijaj"><span class="${h.ok ? "" : "zle-t"}" style="${h.pominieta ? "color:var(--przyg)" : h.sucho ? "color:var(--pom)" : ""}">${h.pominieta ? "○" : "●"}</span> <b>${esc(h.nazwa)}</b>
         <span class="mala przyg">${esc(h.opis)}</span></span><span class="k mala">${godzMin(h.ts)}<br>${temuOd(h.ts)}</span></div>`).join("");
 
     // --- kreator
@@ -1174,7 +1174,7 @@ WIDOK.reguly = {
       <div style="display:flex;flex-direction:column;gap:8px;min-height:0">
         <div class="karta" style="flex:1.4;min-height:0"><h2>Reguły<span class="prawo">${lista.filter((r) => r.wl).length}/${lista.length} wł. · ${lista.filter((r) => r.wl && r.sucho).length} na sucho</span></h2>
           <div class="przewijane" data-scroll="reg">${wiersze || pustoHtml("Brak reguł — utwórz obok")}</div></div>
-        <div class="karta" style="flex:1;min-height:0"><h2>Ostatnio zadziałały<span class="prawo mala">🧪 = tylko zapis</span></h2><div class="przewijane" data-scroll="regh">${hist || pustoHtml("Jeszcze nic")}</div></div></div>
+        <div class="karta" style="flex:1;min-height:0"><h2>Ostatnio zadziałały<span class="prawo mala">🧪 = tylko zapis · ○ = warunek niespełniony</span></h2><div class="przewijane" data-scroll="regh">${hist || pustoHtml("Jeszcze nic")}</div></div></div>
       <div class="karta" style="gap:7px;overflow:auto"><h2>${rk.id ? "Edycja reguły" : "Nowa reguła"}<span class="prawo"><button class="maly" data-akcja="reg-nowa">＋ nowa</button></span></h2>
         <input type="text" class="tekst" id="reg-nazwa" value="${esc(rk.nazwa)}" placeholder="Nazwa, np. Wychodzę z domu" style="width:100%;flex:none;min-height:40px;font-size:16px">
         <div class="mala przyg">GDY</div><div class="chipy">${gdyChipy}</div>${param}
