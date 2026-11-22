@@ -3367,6 +3367,34 @@ def _glos_reguly(src, t):
             "akcja": {"widok": "reguly"}}
 
 
+# --------------------------------------------------------------------------- Paperless: porządki (2026-11-22)
+# Gdy serwer działa: raz w tygodniu stare zapłacone faktury do kosza (zrodla.faktury_sprzatnij), co 10 min kolejna
+# paczka PDF-ów z Nextclouda (zrodla.nc_do_paperless). Serwer budzi się po co innego — tu nikt go nie budzi.
+_pl_stan = {"ts": 0.0, "ostatni": None}
+
+
+def straznik_paperless():
+    time.sleep(120)
+    while True:
+        try:
+            if Z.PAPERLESS_URL and Z.PAPERLESS_TOKEN and serwer_up():
+                t = teraz()
+                if t - float(Z.pamiec_get("faktury_sprzatanie_ts", 0) or 0) >= 7 * 86400:
+                    Z.pamiec_set("faktury_sprzatanie_ts", t)
+                    u = Z.faktury_sprzatnij()
+                    print(f"paperless: sprzątanie faktur — do kosza {len(u)}", flush=True)
+                if Z.NC_PAPERLESS_FOLDERY and t - _pl_stan["ts"] >= 600:
+                    _pl_stan["ts"] = t
+                    w = Z.nc_do_paperless()
+                    _pl_stan["ostatni"] = {**w, "ts": t}
+                    if w["dodane"] or w["bledy"] or w["duplikaty"]:
+                        print(f"paperless: z Nextclouda dodane {len(w['dodane'])}, duplikaty {w['duplikaty']}, "
+                              f"w kolejce {w['czeka']}, błędy: {w['bledy'][:3]}", flush=True)
+        except Exception as e:  # noqa: BLE001
+            print(f"paperless: {type(e).__name__}: {e}", flush=True)
+        time.sleep(60)
+
+
 # --------------------------------------------------------------------------- zakładki
 def dash():
     with stan_lock:
@@ -3753,4 +3781,5 @@ if __name__ == "__main__":
     threading.Thread(target=straznik_zdrowia, daemon=True).start()
     threading.Thread(target=straznik_kalendarza, daemon=True).start()
     threading.Thread(target=straznik_regul, daemon=True).start()
+    threading.Thread(target=straznik_paperless, daemon=True).start()
     ThreadingHTTPServer(("0.0.0.0", PORT), H).serve_forever()

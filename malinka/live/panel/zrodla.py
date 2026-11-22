@@ -1204,6 +1204,211 @@ def paperless_pobierz():
     return wynik
 
 
+# --------------------------------------------------------------------------- Paperless: porządki (2026-11-22)
+# 1) Raz w tygodniu (gdy serwer działa): zapłacone faktury starsze niż 2 lata -> kosz Paperlessa (30 dni na odzyskanie),
+#    z pominięciem tych, których „Gwarancja do” jeszcze nie minęła. Raport na Discordzie.
+# 2) Import PDF-ów z Nextclouda (foldery NC_PAPERLESS_FOLDERY, nazwa folderu = tag). Jedno zapytanie WebDAV SEARCH
+#    zamiast chodzenia po folderach; po PAPERLESS_PACZKA plików na raz; plik jest „zrobiony” dopiero, gdy zadanie
+#    Paperlessa skończy się sukcesem albo odrzuceniem duplikatu — jeśli serwer zaśnie w trakcie, wraca do kolejki.
+NC_PAPERLESS_FOLDERY = [f.strip() for f in E("NC_PAPERLESS_FOLDERY", "Dokumenty,Studia").split(",") if f.strip()]
+PAPERLESS_PACZKA = int(E("PAPERLESS_PACZKA", "10"))
+FAKTURY_LAT = int(E("FAKTURY_LAT", "2"))
+NC_PL_STAN = os.path.join(DATA_DIR, "nc_paperless.json")
+_pl_lock = threading.Lock()
+
+
+def _pl(sciezka, method="GET", body=None, timeout=30):
+    return zadanie(PAPERLESS_URL + sciezka, method=method, body=body, timeout=timeout,
+                   headers={"Authorization": f"Token {PAPERLESS_TOKEN}"})
+
+
+def _pl_wszystkie(sciezka):
+    out, url = [], sciezka
+    while url:
+        r = _pl(url) or {}
+        out += r.get("results", [])
+        nast = r.get("next")
+        url = ("/" + nast.split("/", 3)[3]) if nast else None
+    return out
+
+
+def faktury_do_usuniecia():
+    """Zapłacone faktury starsze niż FAKTURY_LAT lat, bez ważnej gwarancji: [{id, tytul, data}]."""
+    pola = {str(p.get("name", "")).lower(): p.get("id") for p in _pl_wszystkie("/api/custom_fields/?page_size=100")}
+    typy = {str(t.get("name", "")).lower(): t.get("id") for t in _pl_wszystkie("/api/document_types/?page_size=100")}
+    zapl, gw, faktura = pola.get("zapłacone"), pola.get("gwarancja do"), typy.get("faktura")
+    if not (zapl and faktura):
+        return []
+    dzis = date.today()
+    granica = dzis.replace(year=dzis.year - FAKTURY_LAT)
+    out = []
+    for d in _pl_wszystkie(f"/api/documents/?page_size=100&document_type__id={faktura}&created__date__lt={granica.isoformat()}"
+                           "&fields=id,title,created,custom_fields"):
+        w = {cf.get("field"): cf.get("value") for cf in d.get("custom_fields") or []}
+        if w.get(zapl) is not True:
+            continue
+        try:
+            if gw and w.get(gw) and date.fromisoformat(str(w[gw])[:10]) >= dzis:
+                continue   # gwarancja jeszcze trwa — faktura to dowód
+        except ValueError:
+            continue       # nieczytelna data gwarancji — na wszelki wypadek nie ruszamy
+        out.append({"id": d["id"], "tytul": d.get("title") or f"#{d['id']}", "data": str(d.get("created"))[:10]})
+    return out
+
+
+def faktury_sprzatnij():
+    lista = faktury_do_usuniecia()
+    usuniete = []
+    for f in lista:
+        try:
+            _pl(f"/api/documents/{f['id']}/", method="DELETE")
+            usuniete.append(f)
+        except Exception as e:  # noqa: BLE001
+            print(f"paperless: usuwanie #{f['id']}: {e}", flush=True)
+    if usuniete:
+        discord_wyslij(f"🗑️ Paperless: {len(usuniete)} starych faktur do kosza",
+                       "\n".join(f"• {f['data']} — {f['tytul'][:90]}" for f in usuniete[:20])
+                       + f"\n\nZapłacone, starsze niż {FAKTURY_LAT} lata, bez trwającej gwarancji. Kosz Paperlessa trzyma je 30 dni.",
+                       ping=False)
+    return usuniete
+
+
+def _nc_baza():
+    """(host, ścieżka DAV użytkownika) z adresu kalendarza Nextclouda: http://host:8081, /remote.php/dav/files/admin/"""
+    m = re.match(r"(https?://[^/]+)(/remote\.php/dav)/calendars/([^/]+)/", NC_CAL_URLS[0] if NC_CAL_URLS else "")
+    if not m:
+        raise RuntimeError("brak NEXTCLOUD_CAL_URLS — nie znam adresu Nextclouda")
+    return m.group(1), m.group(2), m.group(3)
+
+
+def nc_pdfy(folder, strona=20000):
+    """Wszystkie PDF-y w folderze Nextclouda (z podfolderami): {href: {etag, rozmiar}} — WebDAV SEARCH, stronami
+    (Nextcloud bez limitu oddaje tylko 100 wyników, a firstresult ignoruje — więc jedno duże zapytanie)."""
+    host, dav, user = _nc_baza()
+    out, od = {}, 0
+    while True:
+        xml = ('<?xml version="1.0"?><d:searchrequest xmlns:d="DAV:" xmlns:oc="http://owncloud.org/ns"><d:basicsearch>'
+               '<d:select><d:prop><d:getetag/><d:getcontentlength/></d:prop></d:select><d:from><d:scope>'
+               f'<d:href>/files/{user}/{urllib.parse.quote(folder)}</d:href><d:depth>infinity</d:depth></d:scope></d:from>'
+               '<d:where><d:eq><d:prop><d:getcontenttype/></d:prop><d:literal>application/pdf</d:literal></d:eq></d:where>'
+               '<d:orderby><d:order><d:prop><d:getlastmodified/></d:prop><d:ascending/></d:order></d:orderby>'
+               f'<d:limit><d:nresults>{strona}</d:nresults><oc:firstresult>{od}</oc:firstresult></d:limit>'
+               '</d:basicsearch></d:searchrequest>')
+        raw, _ = zadanie(host + dav + "/", method="SEARCH", body=xml, surowe=True, timeout=120,
+                         headers={**basic(NC_USER, NC_PASS), "Content-Type": "text/xml; charset=utf-8"})
+        ile, przed = 0, len(out)
+        for r in ET.fromstring(raw).findall("{DAV:}response"):
+            ile += 1
+            href = r.findtext("{DAV:}href") or ""
+            etag = r.findtext(".//{DAV:}getetag") or ""
+            dl = r.findtext(".//{DAV:}getcontentlength") or "0"
+            if href.lower().endswith(".pdf"):
+                out[href] = {"etag": etag.strip('"'), "rozmiar": int(dl or 0)}
+        if ile < strona or len(out) == przed or od > 50_000:   # koniec albo serwer zignorował firstresult
+            return out
+        od += strona
+
+
+def _multipart(pola, plik_nazwa, plik_dane):
+    granica = "jarvis" + os.urandom(12).hex()
+    czesci = []
+    for k, v in pola:
+        czesci.append(f'--{granica}\r\nContent-Disposition: form-data; name="{k}"\r\n\r\n{v}\r\n'.encode())
+    czesci.append(f'--{granica}\r\nContent-Disposition: form-data; name="document"; filename="{plik_nazwa}"\r\n'
+                  f'Content-Type: application/pdf\r\n\r\n'.encode() + plik_dane + b"\r\n")
+    czesci.append(f"--{granica}--\r\n".encode())
+    return b"".join(czesci), f"multipart/form-data; boundary={granica}"
+
+
+def _pl_tag(nazwa, cache_tagow):
+    if nazwa not in cache_tagow:
+        t = next((x for x in _pl_wszystkie("/api/tags/?page_size=100&name__iexact=" + urllib.parse.quote(nazwa))), None)
+        cache_tagow[nazwa] = t["id"] if t else _pl("/api/tags/", method="POST", body={"name": nazwa})["id"]
+    return cache_tagow[nazwa]
+
+
+def _nc_stan():
+    try:
+        with open(NC_PL_STAN, encoding="utf-8") as f:
+            return json.load(f)
+    except (OSError, json.JSONDecodeError):
+        return {}
+
+
+def _nc_stan_zapisz(s):
+    tmp = NC_PL_STAN + ".tmp"
+    with open(tmp, "w", encoding="utf-8") as f:
+        json.dump(s, f, ensure_ascii=False)
+    os.replace(tmp, NC_PL_STAN)
+
+
+def nc_do_paperless(limit=None):
+    """Jeden przebieg: sprawdza wysłane wcześniej zadania, wysyła kolejne pliki. Zwraca {dodane, duplikaty, bledy, czeka}."""
+    limit = limit or PAPERLESS_PACZKA
+    host, _, _ = _nc_baza()
+    with _pl_lock:
+        stan = _nc_stan()
+        wynik = {"dodane": [], "duplikaty": 0, "bledy": [], "czeka": 0}
+        tagi_dup = {}
+        # 1) zadania wysłane wcześniej: SUCCESS / duplikat = zrobione; FAILURE inne = błąd (spróbuje przy zmianie pliku)
+        for href, s in stan.items():
+            if s.get("stan") != "wyslane":
+                continue
+            try:
+                t = (_pl(f"/api/tasks/?task_id={s['task']}") or [None])
+                t = t[0] if isinstance(t, list) and t else None
+            except Exception:  # noqa: BLE001
+                continue
+            if not t:   # serwer zasnął i zadanie przepadło — wróci do kolejki
+                if time.time() - s.get("ts", 0) > 3600:
+                    s["stan"] = "nowe"
+                continue
+            if t.get("status") in ("PENDING", "STARTED") and time.time() - s.get("ts", 0) > 6 * 3600:
+                s["stan"] = "nowe"   # serwer wyłączył się w trakcie OCR — wyślemy jeszcze raz (duplikat Paperless odrzuci)
+            elif t.get("status") == "SUCCESS":
+                s["stan"] = "ok"
+                wynik["dodane"].append(s.get("folder", "?"))
+            elif t.get("status") == "FAILURE":
+                tekst = str(t.get("result") or "")
+                s["stan"] = "ok" if "duplicate" in tekst.lower() or "duplikat" in tekst.lower() else "blad"
+                if s["stan"] == "ok":
+                    wynik["duplikaty"] += 1
+                    m = re.search(r"\(#(\d+)\)", tekst)   # już był w Paperlessie — dopisz mu tag folderu
+                    if m:
+                        try:
+                            _pl("/api/documents/bulk_edit/", method="POST", body={
+                                "documents": [int(m.group(1))], "method": "add_tag",
+                                "parameters": {"tag": _pl_tag(s.get("folder", "Nextcloud"), tagi_dup)}})
+                        except Exception as e:  # noqa: BLE001
+                            print(f"paperless: tag dla #{m.group(1)}: {e}", flush=True)
+                else:
+                    s["blad"] = tekst[:200]
+                    wynik["bledy"].append(urllib.parse.unquote(href.rsplit("/", 1)[-1]))
+        # 2) co jest w Nextcloudzie (nowe albo zmienione = inny etag)
+        do_wyslania = []
+        for folder in NC_PAPERLESS_FOLDERY:
+            for href, p in nc_pdfy(folder).items():
+                s = stan.get(href)
+                if p["rozmiar"] > 80_000_000:
+                    continue
+                if not s or (s.get("etag") != p["etag"] and s.get("stan") != "wyslane") or s.get("stan") == "nowe":
+                    do_wyslania.append((href, folder, p["etag"]))
+        wynik["czeka"] = max(0, len(do_wyslania) - limit)
+        tagi = {}
+        for href, folder, etag in do_wyslania[:limit]:
+            nazwa = urllib.parse.unquote(href.rsplit("/", 1)[-1])
+            try:
+                dane, _ = zadanie(host + href, headers=basic(NC_USER, NC_PASS), surowe=True, timeout=120)
+                body, ct = _multipart([("title", nazwa[:-4][:120]), ("tags", _pl_tag(folder, tagi))], nazwa, dane)
+                task = zadanie(PAPERLESS_URL + "/api/documents/post_document/", method="POST", body=body, timeout=120,
+                               headers={"Authorization": f"Token {PAPERLESS_TOKEN}", "Content-Type": ct})
+                stan[href] = {"etag": etag, "folder": folder, "stan": "wyslane", "task": str(task).strip('"'), "ts": time.time()}
+            except Exception as e:  # noqa: BLE001
+                wynik["bledy"].append(f"{nazwa}: {e}"[:150])
+        _nc_stan_zapisz(stan)
+    return wynik
+
+
 def poczta():
     try:
         with open(MAIL_STAN, encoding="utf-8") as f:

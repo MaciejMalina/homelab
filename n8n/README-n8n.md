@@ -111,3 +111,9 @@ W workflow „poranny brief” w węźle **Kalendarz** (HTTP Request) zmień tyl
 - Response Format zostaje **Text**, kod „Złóż brief” bez zmian.
 
 Kalendarz Nextclouda nie jest już nigdzie czytany (90 wydarzeń przeniesione do Google 2026-11-22, zostaje jako archiwum).
+
+## Paperless: PDF-y z Nextclouda w raporcie (2026-11-22)
+
+Panel na malince wrzuca do Paperlessa PDF-y z folderów Nextclouda „Dokumenty” i „Studia” (tagi o tych nazwach,
+ID 5 i 6). Żeby poranny raport nie wypisywał ich pojedynczo, „Złóż brief” zbiera je w jedną linię
+`📂 z Nextclouda — Studia: N`. **Podmień kod w węźle „Złóż brief” na aktualny `n8n/zloz-brief.js`.**

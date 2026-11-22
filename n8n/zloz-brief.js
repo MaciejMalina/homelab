@@ -292,13 +292,20 @@ if (!blad('Paperless nowe', pnw)) {
   const nazwaPola = {};
   for (const f of ((ppl[0] || {}).results || [])) nazwaPola[f.id] = f.name;
   const polaDat = new Set(Object.values(POLA).filter(n => !/zapłacone|kwota/i.test(n)).map(n => n.toLowerCase()));
+  // PDF-y importowane przez panel z Nextclouda (tag = folder) — jedna zbiorcza linia zamiast listy
+  const TAGI_NEXTCLOUD = { 5: 'Dokumenty', 6: 'Studia' };
+  const zNc = {};
   for (const d of ((pnw[0] || {}).results || [])) {
+    const nc = (d.tags || []).map(t => TAGI_NEXTCLOUD[t]).find(Boolean);
+    if (nc) { zNc[nc] = (zNc[nc] || 0) + 1; continue; }
     const puste = (d.custom_fields || [])
       .filter(cf => (cf.value === null || cf.value === '') && polaDat.has(String(nazwaPola[cf.field] || '').toLowerCase()))
       .map(cf => nazwaPola[cf.field]);
     const t = String(d.title || 'dokument').replace(/[\[\]]/g, '').slice(0, 70);
     linieNowe.push(`• [${t}](${PAPERLESS_URL}/documents/${d.id}/details)${puste.length ? ` — ⚠️ uzupełnij: ${puste.join(', ')}` : ''}`);
   }
+  const ncOpis = Object.entries(zNc).map(([f, n]) => `${f}: ${n}`).join(', ');
+  if (ncOpis) linieNowe.push(`• 📂 z Nextclouda — ${ncOpis}`);
 }
 
 // ---------- Ważne maile (24 h, etykiety AI: BIZNES / OSOBISTE) ----------
