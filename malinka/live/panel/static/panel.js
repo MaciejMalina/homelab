@@ -1017,10 +1017,10 @@ RENDER.claude = (d) => {
   const karty = lim.map((x) => `<div class="karta" style="gap:6px"><h2>${esc(x.nazwa)}${x.aktywny ? '<span class="prawo">teraz liczy się ten</span>' : ""}</h2>
       <div style="font-size:54px;font-weight:800;line-height:1;color:${kolClaude(x)}">${Math.round(x.proc)}<small style="font-size:22px">%</small></div>
       ${pasek(x.proc, kolClaude(x))}<div class="mala przyg">${esc(doResetu(x.reset))}</div>${x.kind === "weekly_all" ? tempo : ""}</div>`).join("");
-  const podzial = (c.podzial || []).map((r) => `<div class="wiersz"><span class="v">${esc(r.nazwa)}</span><span class="k mala">${Math.round(r.udzial)}% tygodnia · ${Math.round(r.limitu)}% limitu</span></div>`).join("");
+  const podzial = (c.podzial || []).map((r) => `<div class="wiersz" style="display:block"><div class="v">${esc(r.nazwa)}</div><div class="mala przyg">${Math.round(r.udzial)}% tygodnia · ${Math.round(r.limitu)}% limitu</div></div>`).join("");
   const stan = `${c.plan ? "Plan " + esc(c.plan) + " · " : ""}dane ${c.ts ? temuOd(c.ts) : "—"}${c.blad && c.blad_ts > (c.ts || 0) ? ` · <span class="zle-t">${esc(c.blad)}</span>` : ""}`;
   return `<div style="display:flex;flex-direction:column;gap:8px;height:100%">
-    <div class="siatka" style="grid-template-columns:repeat(${Math.min(lim.length, 3)},1fr);flex:none">${karty}</div>
+    <div class="siatka" style="grid-template-columns:repeat(${Math.min(lim.length, 3)},1fr);flex:none;height:auto">${karty}</div>
     <div class="siatka" style="grid-template-columns:minmax(0,1.35fr) minmax(0,1.1fr) minmax(0,.85fr);flex:1;min-height:0">
       <div class="karta"><h2>Historia</h2>${wykresClaude(d.hist || [])}</div>
       <div class="karta"><h2>Powiadomienia<span class="prawo">${(d.powiadomienia || []).filter((x) => x.aktywne).length ? "● czeka" : ""}</span></h2>
