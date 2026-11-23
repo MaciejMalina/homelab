@@ -1,0 +1,13 @@
+services:
+  whisper:
+    image: onerahmet/openai-whisper-asr-webservice:latest
+    container_name: whisper
+    restart: unless-stopped
+    ports:
+      - "9000:9000"
+    environment:
+      - ASR_ENGINE=faster_whisper
+      - ASR_MODEL=small          # base = szybszy/slabszy, medium = lepszy ale ciezszy
+      - ASR_COMPUTE_TYPE=int8    # int8 = lekki na CPU
+    volumes:
+      - /mnt/data/whisper-cache:/root/.cache   # cache modelu na RAID (nie pobiera za kazdym razem)

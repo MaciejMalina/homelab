@@ -1,0 +1,24 @@
+version: '3.8'
+
+services:
+  glances:
+    image: nicolargo/glances:ubuntu-latest-full
+    container_name: monitoring_glances
+    restart: unless-stopped
+    ports:
+      - "61208:61208"
+      - "61209:61209"
+    pid: host
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock:ro
+      - /:/host:ro
+      - /sys:/sys:ro
+      - /run/udev:/run/udev:ro
+    environment:
+      - GLANCES_OPT=-w
+    networks:
+      - jarvis_mesh
+
+networks:
+  jarvis_mesh:
+    external: true

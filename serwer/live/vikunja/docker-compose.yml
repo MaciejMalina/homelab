@@ -1,0 +1,17 @@
+services:
+  vikunja:
+    image: vikunja/vikunja:latest
+    container_name: vikunja
+    restart: unless-stopped
+    ports:
+      - "3456:3456"
+    environment:
+      - VIKUNJA_SERVICE_PUBLICURL=https://vikunja.${DOMENA}
+      - VIKUNJA_SERVICE_JWTSECRET=${VIKUNJA_SERVICE_JWTSECRET}
+      - VIKUNJA_DATABASE_TYPE=sqlite
+      - VIKUNJA_DATABASE_PATH=/db/vikunja.db
+      - VIKUNJA_SERVICE_TIMEZONE=Europe/Warsaw
+      - VIKUNJA_SERVICE_ENABLEREGISTRATION=false
+    volumes:
+      - /mnt/data/vikunja/files:/app/vikunja/files
+      - /mnt/data/vikunja/db:/db

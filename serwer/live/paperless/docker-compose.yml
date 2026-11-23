@@ -1,0 +1,47 @@
+services:
+  paperless-broker:
+    image: redis:7-alpine
+    container_name: paperless_broker
+    restart: unless-stopped
+    volumes:
+      - /mnt/data/paperless/redis:/data
+
+  paperless-db:
+    image: postgres:16-alpine
+    container_name: paperless_db
+    restart: unless-stopped
+    environment:
+      - POSTGRES_DB=paperless
+      - POSTGRES_USER=paperless
+      - POSTGRES_PASSWORD=${POSTGRES_PASSWORD}
+    volumes:
+      - /mnt/data/paperless/db:/var/lib/postgresql/data
+
+  paperless:
+    image: ghcr.io/paperless-ngx/paperless-ngx:latest
+    container_name: paperless
+    restart: unless-stopped
+    depends_on:
+      - paperless-db
+      - paperless-broker
+    ports:
+      - "8010:8000"
+    environment:
+      - PAPERLESS_REDIS=redis://paperless-broker:6379
+      - PAPERLESS_DBHOST=paperless-db
+      - PAPERLESS_DBNAME=paperless
+      - PAPERLESS_DBUSER=paperless
+      - PAPERLESS_DBPASS=${POSTGRES_PASSWORD}
+      - PAPERLESS_URL=https://paperless.${DOMENA}
+      - PAPERLESS_CSRF_TRUSTED_ORIGINS=https://paperless.${DOMENA}
+      - PAPERLESS_OCR_LANGUAGE=pol+eng
+      - PAPERLESS_OCR_LANGUAGES=pol eng
+      - PAPERLESS_OCR_SKIP_ARCHIVE_FILE=with_text
+      - PAPERLESS_TIME_ZONE=Europe/Warsaw
+      - PAPERLESS_ADMIN_USER=admin
+      - PAPERLESS_ADMIN_PASSWORD=${POSTGRES_PASSWORD}
+    volumes:
+      - /mnt/data/paperless/data:/usr/src/paperless/data
+      - /mnt/data/paperless/media:/usr/src/paperless/media
+      - /mnt/data/paperless/consume:/usr/src/paperless/consume
+      - /mnt/data/paperless/export:/usr/src/paperless/export

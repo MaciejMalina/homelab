@@ -1,0 +1,30 @@
+version: '3.8'
+
+services:
+  ollama:
+    image: ollama/ollama:latest
+    container_name: ai_ollama
+    restart: unless-stopped
+    ports:
+      - "11434:11434"
+    dns:
+      - 8.8.8.8
+      - 1.1.1.1
+    environment:
+      - OLLAMA_MAX_LOADED_MODELS=2
+      - OLLAMA_KEEP_ALIVE=2m
+    volumes:
+      - /mnt/data/ollama:/root/.ollama
+    networks:
+      - jarvis_mesh
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: 1
+              capabilities: [gpu]
+
+networks:
+  jarvis_mesh:
+    external: true

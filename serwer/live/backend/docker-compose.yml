@@ -1,0 +1,58 @@
+version: '3.8'
+
+services:
+  postgres:
+    image: postgres:15-alpine
+    container_name: backend_postgres
+    restart: unless-stopped
+    environment:
+      - POSTGRES_USER=jarvis
+      - POSTGRES_PASSWORD=${POSTGRES_PASSWORD}
+      - POSTGRES_DB=jarvis_db
+    volumes:
+      - /mnt/data/postgres:/var/lib/postgresql/data
+    networks:
+      - jarvis_mesh
+
+  qdrant:
+    image: qdrant/qdrant:latest
+    container_name: backend_qdrant
+    restart: unless-stopped
+    volumes:
+      - /mnt/data/qdrant:/qdrant/storage
+    networks:
+      - jarvis_mesh
+
+  n8n:
+    image: n8nio/n8n:latest
+    container_name: backend_n8n
+    restart: unless-stopped
+    ports:
+      - "5678:5678"
+    environment:
+      - DB_TYPE=postgresdb
+      - DB_POSTGRESDB_HOST=postgres
+      - DB_POSTGRESDB_PORT=5432
+      - DB_POSTGRESDB_DATABASE=jarvis_db
+      - DB_POSTGRESDB_USER=jarvis
+      - DB_POSTGRESDB_PASSWORD=${POSTGRES_PASSWORD}
+      - N8N_ENFORCEMENT_USER_ID=root
+      - EXECUTIONS_DATA_SAVE_ON_ERROR=all
+      - EXECUTIONS_DATA_SAVE_ON_SUCCESS=none
+      - N8N_SECURE_COOKIE=false
+      - N8N_HOST=n8n.${DOMENA}
+      - N8N_PROTOCOL=https
+      - WEBHOOK_URL=https://n8n.${DOMENA}/
+      - N8N_PROXY_HOPS=1
+    volumes:
+      - /mnt/data/n8n:/home/node/.n8n
+      - /mnt/telemetry/n8n_tmp:/tmp
+      - /opt/jarvis/ssh:/home/node/.ssh:ro
+    networks:
+      - jarvis_mesh
+    depends_on:
+      - postgres
+
+networks:
+  jarvis_mesh:
+    external: true
