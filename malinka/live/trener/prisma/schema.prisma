@@ -118,6 +118,7 @@ model Exercise {
   instructions String?
   createdAt    DateTime @default(now())
   items     SessionExercise[]
+  templateItems TemplateExercise[]
 }
 
 model StrengthSession {
@@ -129,6 +130,8 @@ model StrengthSession {
   notes       String    @default("")
   analysis    String?
   plannedId   Int?
+  /// szablon, z którego założono trening
+  templateId  Int?
   exercises   SessionExercise[]
 }
 
@@ -140,6 +143,8 @@ model SessionExercise {
   notes      String          @default("")
   /// cel z planu, np. "4x5 @ 80 kg"
   target     String          @default("")
+  /// numer superserii (ćwiczenia z tym samym numerem robi się naprzemiennie), null = zwykłe
+  superset   Int?
   session    StrengthSession @relation(fields: [sessionId], references: [id], onDelete: Cascade)
   exercise   Exercise        @relation(fields: [exerciseId], references: [id])
   sets       StrengthSet[]
@@ -159,6 +164,31 @@ model StrengthSet {
   warmup            Boolean         @default(false)
   done              Boolean         @default(false)
   item              SessionExercise @relation(fields: [sessionExerciseId], references: [id], onDelete: Cascade)
+}
+
+/// Zapisany szablon treningu (rutyna), z którego zakłada się trening jednym kliknięciem
+model Template {
+  id        Int       @id @default(autoincrement())
+  name      String
+  notes     String    @default("")
+  lastUsed  DateTime?
+  createdAt DateTime  @default(now())
+  updatedAt DateTime  @updatedAt
+  items     TemplateExercise[]
+}
+
+model TemplateExercise {
+  id         Int      @id @default(autoincrement())
+  templateId Int
+  exerciseId Int
+  order      Int
+  /// ile serii roboczych założyć
+  sets       Int      @default(3)
+  /// cel, np. "8-10" albo "5 @ 80 kg"
+  target     String   @default("")
+  superset   Int?
+  template   Template @relation(fields: [templateId], references: [id], onDelete: Cascade)
+  exercise   Exercise @relation(fields: [exerciseId], references: [id])
 }
 
 /// Plan tygodniowy od AI

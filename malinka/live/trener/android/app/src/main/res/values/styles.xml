@@ -1,0 +1,13 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <!-- ciemne tło od pierwszej klatki (bez białego błysku), paski systemowe w kolorze appki,
+         bez wymuszonego edge-to-edge z Androida 15 — strona sama nie obsługuje wcięć w WebView -->
+    <style name="Trener" parent="@android:style/Theme.Material.NoActionBar">
+        <item name="android:windowBackground">@android:color/black</item>
+        <item name="android:colorBackground">#0d0f12</item>
+        <item name="android:statusBarColor">#0d0f12</item>
+        <item name="android:navigationBarColor">#0d0f12</item>
+        <item name="android:windowLightStatusBar">false</item>
+        <item name="android:windowOptOutEdgeToEdgeEnforcement">true</item>
+    </style>
+</resources>

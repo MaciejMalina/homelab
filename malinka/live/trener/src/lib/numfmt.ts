@@ -12,7 +12,9 @@ export function parseNum(t: string, mode: Mode): number | null | undefined {
   }
   const n = Number(v.replace(",", "."));
   if (!isFinite(n) || n < 0) return undefined;
-  return mode === "int" ? Math.round(n) : Math.round(n * 1000) / 1000;
+  // powtórzenia: tylko całe liczby (13,5 nie zamienia się po cichu w 14)
+  if (mode === "int") return Number.isInteger(n) ? n : undefined;
+  return Math.round(n * 1000) / 1000;
 }
 
 export function fmtNum(n: number | null | undefined, mode: Mode): string {

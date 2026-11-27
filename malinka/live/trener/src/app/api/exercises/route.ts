@@ -1,5 +1,6 @@
 import { prisma, ensureSeed } from "@/lib/db";
 import { asKind, guessKind } from "@/lib/exercises";
+import { firstImage } from "@/lib/session";
 
 export const dynamic = "force-dynamic";
 
@@ -23,6 +24,7 @@ export async function GET() {
       core: e.core,
       muscles: e.muscles,
       info: !!(e.images || e.instructions),
+      thumb: firstImage(e.images),
       used: ile.get(e.id) ?? 0,
     })),
   );
@@ -38,5 +40,5 @@ export async function POST(req: Request) {
     update: {},
     create: { name, category: String(b.category || "Inne").slice(0, 40), rest: Math.min(600, Math.max(15, Number(b.rest) || 90)), kind },
   });
-  return Response.json({ ...ex, kind: asKind(ex.kind), info: false, used: 0 });
+  return Response.json({ ...ex, kind: asKind(ex.kind), info: false, thumb: null, used: 0 });
 }

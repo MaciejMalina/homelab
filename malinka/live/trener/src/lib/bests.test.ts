@@ -11,6 +11,8 @@ test("pole liczbowe: przecinek i czas", () => {
   assert.equal(parseNum("", "decimal"), null);
   assert.equal(parseNum("abc", "decimal"), undefined);
   assert.equal(parseNum("8", "int"), 8);
+  assert.equal(parseNum("13,5", "int"), undefined); // powtórzenia tylko całe
+  assert.equal(parseNum("10,", "int"), 10);
   assert.equal(parseNum("1:30", "time"), 90);
   assert.equal(parseNum("45", "time"), 45);
   assert.equal(parseNum("1:", "time"), undefined);

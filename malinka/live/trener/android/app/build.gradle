@@ -1,0 +1,45 @@
+plugins {
+    id 'com.android.application'
+}
+
+android {
+    namespace 'pl.maciej.jarvistrener'
+    compileSdk 35
+
+    defaultConfig {
+        applicationId 'pl.maciej.jarvistrener'
+        minSdk 26
+        targetSdk 35
+        versionCode 1
+        versionName '1.0'
+    }
+
+    // Stały klucz podpisu (ten sam co panelu, z sekretów GitHuba), żeby nowa wersja instalowała się NA starą.
+    // Bez zmiennych TRENER_KS* zostaje zwykły klucz debug.
+    signingConfigs {
+        stala {
+            def ks = System.getenv('TRENER_KS_FILE')
+            if (ks) {
+                storeFile file(ks)
+                storeType 'pkcs12'
+                storePassword System.getenv('TRENER_KS_PASS')
+                keyAlias System.getenv('TRENER_KS_ALIAS') ?: 'panel'
+                keyPassword System.getenv('TRENER_KS_PASS')
+            }
+        }
+    }
+    buildTypes {
+        debug {
+            if (System.getenv('TRENER_KS_FILE')) signingConfig signingConfigs.stala
+        }
+    }
+
+    compileOptions {
+        sourceCompatibility JavaVersion.VERSION_17
+        targetCompatibility JavaVersion.VERSION_17
+    }
+    lint {
+        abortOnError false
+        checkReleaseBuilds false
+    }
+}

@@ -21,6 +21,10 @@ export interface ItemDTO {
   kind: Kind;
   /** czy ćwiczenie ma zdjęcia/instrukcję z biblioteki */
   info: boolean;
+  /** pierwsze zdjęcie z biblioteki (ścieżka względem IMG_BASE) — miniatura w karcie */
+  thumb: string | null;
+  /** numer superserii albo null */
+  superset: number | null;
   rest: number;
   notes: string;
   target: string;
@@ -37,6 +41,7 @@ export interface SessionDTO {
   notes: string;
   analysis: string | null;
   plannedTitle: string | null;
+  templateId: number | null;
   items: ItemDTO[];
 }
 
@@ -64,6 +69,8 @@ export async function loadSession(id: number): Promise<SessionDTO | null> {
       category: e.exercise.category,
       kind: asKind(e.exercise.kind),
       info: !!(e.exercise.images || e.exercise.instructions),
+      thumb: firstImage(e.exercise.images),
+      superset: e.superset,
       rest: e.exercise.rest,
       notes: e.notes,
       target: e.target,
@@ -80,8 +87,20 @@ export async function loadSession(id: number): Promise<SessionDTO | null> {
     notes: s.notes,
     analysis: s.analysis,
     plannedTitle: planned?.title ?? null,
+    templateId: s.templateId,
     items,
   };
+}
+
+/** Pierwsza ścieżka z JSON-a zdjęć ćwiczenia */
+export function firstImage(images: string | null | undefined): string | null {
+  if (!images) return null;
+  try {
+    const a = JSON.parse(images);
+    return Array.isArray(a) && typeof a[0] === "string" ? a[0] : null;
+  } catch {
+    return null;
+  }
 }
 
 const num = (v: unknown) => (typeof v === "number" && isFinite(v) ? v : null);
@@ -108,6 +127,7 @@ export async function saveSession(id: number, body: { name?: string; notes?: str
           order: i,
           notes: String(it.notes ?? "").slice(0, 500),
           target: String(it.target ?? "").slice(0, 200),
+          superset: typeof it.superset === "number" && isFinite(it.superset) ? Math.round(it.superset) : null,
           sets: {
             create: (Array.isArray(it.sets) ? it.sets : []).slice(0, 30).map((x, j) => ({
               order: j,
@@ -132,7 +152,29 @@ const firstNum = (t: string) => {
   return m ? Number(m[0]) : null;
 };
 
-export async function createSession(opts: { plannedId?: number | null; name?: string }) {
+export async function createSession(opts: { plannedId?: number | null; templateId?: number | null; name?: string }) {
+  if (opts.templateId) {
+    const t = await prisma.template.findUnique({ where: { id: opts.templateId }, include: { items: { orderBy: { order: "asc" } } } });
+    if (t) {
+      const s = await prisma.strengthSession.create({
+        data: { name: (opts.name || t.name).slice(0, 120), date: todayPL(), templateId: t.id, notes: "" },
+      });
+      for (const it of t.items) {
+        await prisma.sessionExercise.create({
+          data: {
+            sessionId: s.id,
+            exerciseId: it.exerciseId,
+            order: it.order,
+            target: it.target,
+            superset: it.superset,
+            sets: { create: Array.from({ length: Math.min(Math.max(1, it.sets), 10) }, (_, j) => ({ order: j })) },
+          },
+        });
+      }
+      await prisma.template.update({ where: { id: t.id }, data: { lastUsed: new Date() } });
+      return s.id;
+    }
+  }
   const planned = opts.plannedId ? await prisma.plannedWorkout.findUnique({ where: { id: opts.plannedId } }) : null;
   const s = await prisma.strengthSession.create({
     data: { name: (opts.name || planned?.title || "Trening siłowy").slice(0, 120), date: todayPL(), plannedId: planned?.id ?? null },

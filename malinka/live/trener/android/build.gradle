@@ -1,0 +1,4 @@
+// JARVIS Trener — nakładka WebView na appkę z malinki. Bez zależności poza samym Androidem.
+plugins {
+    id 'com.android.application' version '8.7.3' apply false
+}

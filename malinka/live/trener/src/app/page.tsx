@@ -4,6 +4,7 @@ import { goalStatus } from "@/lib/context";
 import { addDays, fmtDate, fmtDuration, fmtKm, fmtPace, todayPL, weekStart } from "@/lib/time";
 import { ICON, PLAN_ICON, sportGroup, sportName } from "@/lib/sport";
 import ActionButton from "@/components/ActionButton";
+import Icon from "@/components/Icon";
 import StartStrength from "@/components/StartStrength";
 import { zalegle } from "@/lib/move";
 
@@ -37,7 +38,7 @@ export default async function Home() {
     <>
       <div className="top">
         <h1>Cześć, {s.name} 👋</h1>
-        <Link href="/ustawienia" className="btn" aria-label="Ustawienia">⚙️</Link>
+        <Link href="/ustawienia" className="btn ibtn" aria-label="Ustawienia"><Icon name="gear" size={20} /></Link>
       </div>
 
       {open && (

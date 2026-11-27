@@ -1,0 +1,63 @@
+# Buduje APK appki "JARVIS Trener" (malinka/live/trener/android) — nakładka WebView na https://malinka…:8444.
+# Uruchamia się po zmianie w android/ albo ręcznie: Actions -> "Trener APK" -> Run workflow.
+# Wynik: artefakt "jarvis-trener-apk" oraz wydanie "trener-apk" z plikiem jarvis-trener.apk (stały link do pobrania).
+# Podpis: ten sam klucz co panel (sekrety PANEL_KEYSTORE_B64 / PANEL_KEYSTORE_PASS), bez nich klucz debug.
+name: Trener APK
+
+on:
+  workflow_dispatch:
+  push:
+    paths:
+      - "malinka/live/trener/android/**"
+      - ".github/workflows/trener-apk.yml"
+
+permissions:
+  contents: write
+
+jobs:
+  apk:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "17"
+
+      - uses: gradle/actions/setup-gradle@v4
+        with:
+          gradle-version: "8.10.2"
+
+      - name: Klucz podpisu (jeśli są sekrety)
+        env:
+          KS_B64: ${{ secrets.PANEL_KEYSTORE_B64 }}
+          KS_PASS: ${{ secrets.PANEL_KEYSTORE_PASS }}
+        run: |
+          if [ -n "$KS_B64" ] && [ -n "$KS_PASS" ]; then
+            echo "$KS_B64" | base64 -d > "$RUNNER_TEMP/trener.jks"
+            echo "TRENER_KS_FILE=$RUNNER_TEMP/trener.jks" >> "$GITHUB_ENV"
+            echo "TRENER_KS_PASS=$KS_PASS" >> "$GITHUB_ENV"
+            echo "Podpis: stały klucz z sekretów"
+          else
+            echo "Podpis: klucz debug (każda wersja wymaga odinstalowania poprzedniej)"
+          fi
+
+      - name: Build
+        run: |
+          gradle --no-daemon -p malinka/live/trener/android assembleDebug
+          cp malinka/live/trener/android/app/build/outputs/apk/debug/app-debug.apk jarvis-trener.apk
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: jarvis-trener-apk
+          path: jarvis-trener.apk
+          if-no-files-found: error
+
+      - name: Wydanie z plikiem do pobrania na telefon
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release view trener-apk >/dev/null 2>&1 || gh release create trener-apk --prerelease --title "JARVIS Trener (APK)" \
+            --notes "Nakładka WebView na appkę treningową z malinki. Wymaga Tailscale na telefonie."
+          gh release upload trener-apk jarvis-trener.apk --clobber
